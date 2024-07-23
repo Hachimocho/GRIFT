@@ -160,3 +160,14 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+!others/attributes/.gitkeep
+others/attributes/*
+
+other/attributes/A-Celeb-DF.csv
+other/attributes/A-DF1.0.csv
+models/detectors/face_extraction/mmod_human_face_detector.dat
+models/detectors/face_extraction/res10_300x300_ssd_iter_140000.caffemodel
+models/detectors/face_extraction/shape_predictor_68_face_landmarks.dat
+other/attributes/A-DFD.csv
+other/attributes/A-DFDC.csv
+other/attributes/A-FF++.csv
