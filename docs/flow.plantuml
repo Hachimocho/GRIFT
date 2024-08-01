@@ -1,0 +1,30 @@
+@startuml flow
+skinparam ParticipantPadding 5
+skinparam BoxPadding 5
+skinParam MaxAsciiMessageLength 15
+
+User->Trainer: <size:15>Initiate with WandB config
+Trainer->Dataset: <size:15>Request all datasets in config\n<size:15> with node preference config
+Dataset->Nodes: <size:15>Request available node types \n<size:15>compatible with data types
+Nodes->Dataset: <size:15>Return available node types
+Dataset->Trainer: <size:15>Return requested datasets\n<size:15> in requested nodes
+Trainer->User: <size:15>Report that datasets have been loaded
+Trainer->DataLoader: <size:15>Request graph from loaded\n<size:15> datasets with edge preference config
+DataLoader->Edges: <size:15>Request available edge types\n<size:15> for compatible with data types
+Edges->DataLoader: <size:15>Return available edge types
+DataLoader->Trainer: <size:15>Return labeled HyperGraph\n<size:15> with specified edge types
+Trainer->User: <size:15>Report that HyperGraph has been loaded
+Trainer-->GraphManager: <size:15>Request wrappers for graph\n<size:15> if specified in config
+GraphManager-->Trainer: <size:15>Return complete GraphManager/\n<size:15>Hypergraph with wrappers
+Trainer->User: <size:15>Report that GraphManager initialization is complete
+Trainer->Traversals: <size:15>Request traversals provided in config
+Traversals->Trainer: <size:15>Return requested traversals
+Trainer->User: <size:15>Report that traversals have been loaded
+Trainer->Models: <size:15>Request available model types\n<size:15> according to config
+Models->Trainer: <size:15>Return available model types
+Trainer->Models: <size:15>Initialize models for each pointer
+Models->Trainer: <size:15>Report successful initialization
+Trainer->User: <size:15>Report successful model initalization
+Trainer->Trainer: <size:15>Train and validate for num_epochs, then test
+Trainer->User: <size:15>Return WandB logs and saved models
+@enduml

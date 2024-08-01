@@ -40,7 +40,7 @@ class Data():
     def __init__(self, indata):
         self.data = indata
         
-    def get_data(self):
+    def load_data(self):
         return self.data
     
     def set_data(self, indata):

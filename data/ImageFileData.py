@@ -48,5 +48,5 @@ class ImageFileData(Data):
         assert indata.split('.')[-1] in self.supported_extensions
         super().set_data(indata)
         
-    def get_data(self):
+    def load_data(self):
         return cv2.imread(self.data)

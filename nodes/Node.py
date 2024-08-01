@@ -38,10 +38,18 @@ class Node():
         self.x = x
         
     def match(self, other):
-        assert isinstance(other, Node)
-        pass
+        if isinstance(other, Node):
+            return True
+        else:
+            return False
     
     def __len__(self):
         return len(self.x)
+    
+    def get_data(self):
+        return self.x
+    
+    def set_data(self, x):
+        self.x = x
         
         

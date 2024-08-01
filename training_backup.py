@@ -48,65 +48,17 @@ CHOSEN_ATTRIBUTES = {
 # W&B setup
 wandb.login(key="8e2ea87ef9c3afd51f009eaf850d7b22e935fa1e")
 
-"""
-Config explanation:
-datasets: Full list of datasets to load into a single HyperGraph. Must be a valid Dataset class.
-    nodes: List of node types to be used for the dataset. Must be valid Node classes.
-    node_selection_method: How nodes are picked from the "nodes" list.
-        "exact": Only the one given node type will be used. Errors if more than one node type is given.
-        TODO: add more node selection methods
-    args (optional): Extra arguments for the given dataset.
-    
-dataloader: One given dataloader to create the HyperGraph.
-    edges: List of edge types to be used in the HyperGraph. Must be valid Edge classes.
-    edge_selection_method: How edges are added using the "edges" list.
-        "exact": Only the one given edge type will be used. Errors if more than one edge type is given.
-        TODO: add more node selection methods
-    args (optional): Extra arguments for the given dataloader.
-
-models: Full list of models to be trained. Must be valid Model classes. (TODO: Add data compatibility check here)
-
-"""
-
 wandb.init(
     # set the wandb project where this run will be logged
     project="DeepEARL",
 
     # track hyperparameters and run metadata
     config={
-    "datasets": {
-        "CDFDataset": {
-            "nodes": ["AttributeNode"],
-            "node_selection_method": "exact",
-            "args": {
-                "frames_per_video": 15
-            }
-        }
-    },
-    "dataloader": {
-        "DeepfakeDataLoader": {
-            "edges": ["AttributeEdge"],
-            "edge_selection_method": "exact"
-        }
-    },
-    "models": {
-        "CNNModel": {
-            "learning_rate": 0.001,
-            "args": {
-                "model_name": "resnestdf"
-            }
-        }
-    },
-    "traversals": {
-        "WarpTraversal": {
-            "args": {
-                "warp_threshold": 0.01,
-            },
-        },
-    },
+    "model": "resnestdf_all",
+    "learning_rate": 0.001,
     "epochs": 5,
-    
-    
+    "frames_per_video": 15,
+    "warp_threshold": 0.01,
     "num_models": 2,
     "steps_per_epoch": 100,
     "timesteps_before_return_allowed": 3,
@@ -114,6 +66,7 @@ wandb.init(
     "train_traversal_method": "attribute_delay_repeat",
     "val_test_traversal_method": "attribute_boring_comprehensive",
     "key_attributes": "gender",
+    "datasets": ["CDF"]
     }
 )
 # ["FF", "DFD", "DF1", "CDF"]

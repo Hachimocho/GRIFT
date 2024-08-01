@@ -1,0 +1,82 @@
+@startuml main
+abstract class Node {
+    object data
+    str[] tags
+    method get_data()
+    method set_data(any)
+    method match(Node)
+}
+abstract class Edge {
+    object data
+    float traversal_weight
+    str[] tags
+    method set_node1(Node)
+    method set_node2(Node)
+    method set_nodes(Node, Node)
+    method get_node1()
+    method get_node2()
+    method get_nodes()
+    method set_data(any)
+    method get_data()
+    method set_traversal_weight(float)
+    method get_traversal_weight()
+}
+abstract class Model {
+    object loss_func
+    object optim_func
+    float lr
+    method train(batch)
+    method validate(batch)
+    method test(batch)
+}
+abstract class HyperGraph {
+    Node[] nodes
+    Edge[] edges
+    method get_node(index)
+    method get_nodes()
+    method set_node(index, Node)
+    method set_nodes(Node[])
+}
+abstract class GraphManager {
+    HyperGraph managed_graph
+    method on_epoch_end()
+    method on_model_success(Model)
+    method on_model_fail(Model)
+}
+abstract class Trainer {
+    (Traversal, float)[] traversals
+    method run(num_epochs)
+    method test()
+}
+abstract class Data {
+    Object data
+    method load_data()
+    method set_data(x)
+}
+abstract class DataLoader {
+    method get_graph()
+}
+abstract class Traversal {
+    method move_pointers(HyperGraph, pointers)
+}
+abstract class Dataset {
+    method load()
+}
+Edge->Node: Links
+Edge->Traversal: Defines cost
+Edge->DataLoader: Used in
+Node-down->DataLoader: Used in
+Node->Node: Connected to
+Model-down->Trainer: Used for TVT
+Data->Node: Defines valid data types
+Data->Dataset: Defines valid data types
+Dataset->DataLoader: Loaded into
+DataLoader-down->HyperGraph: Generates
+HyperGraph-down->GraphManager: Loaded into
+HyperGraph->Trainer: Used as env
+GraphManager->Trainer: Used as env
+HyperGraph->HyperGraph: Contains
+Node->Traversal: Defines valid destinations
+Traversal-left->Trainer: Used for moving pointers
+Data->HyperGraph: Contained in
+@enduml

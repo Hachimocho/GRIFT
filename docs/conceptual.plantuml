@@ -1,0 +1,44 @@
+@startuml concept
+Object Trainer {
+    Uses everything else to \nactually run the project.
+}
+Object Nodes {
+    Stores and loads \nspecific data types
+}
+Object Edges {
+    Connects nodes and \nassigns traversal costs
+}
+Object HyperGraph {
+    Stores all data in spatiotemporal \nrecursive format
+}
+Object GraphManager {
+    Updates HyperGraph over time or\n in response to agents
+}
+Object Traversals {
+    Moves pointers around a \nHyperGraph
+}
+Object Data {
+    Loads a specific dataset into\n a NetworkX Graph format.
+}
+Object DataLoader {
+    Loads a set of Data objects \ninto a single HyperGraph with \nmarked training/validation/testing nodes.
+}
+Object Model {
+    Takes batched data from nodes\nand trains/validates/tests on it
+}
+Object Dataset {
+    Loads a specific dataset into a NetworkX Graph format.
+}
+Data-left->Nodes: Stored in
+HyperGraph-up->Nodes: Stored in
+Dataset-left->DataLoader: Loaded into
+DataLoader-down->HyperGraph: Generates
+HyperGraph->GraphManager: Can be loaded into
+Nodes-down->DataLoader: Used in
+Edges-down->DataLoader: Used in
+HyperGraph-down->Trainer: Used in
+GraphManager-down->Trainer: Used in
+Traversals->Trainer: Used for graph navigation
+Model-left->Trainer: Trained in
+
+@enduml
