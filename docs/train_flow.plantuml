@@ -1,0 +1,80 @@
+@startuml train_flow
+skinparam ParticipantPadding 5
+skinparam BoxPadding 5
+skinParam MaxAsciiMessageLength 15
+
+User->Trainer: Run trainer after initialization
+loop num_epochs
+    group train
+        loop while True
+            Trainer->Train_Traversal: Ask if traversal for epoch is finished
+            Train_Traversal->Trainer: Respond
+            alt Traversal is finished
+                break
+                end
+            else Traversal not finished
+                Trainer->Train_Traversal: Move all pointers once
+                Train_Traversal->Trainer: Confirm pointer movement
+                loop for each model
+                    
+                    Trainer->Train_Traversal: Get local data batch for first pointer
+                    Train_Traversal->Trainer: Return batch
+                    Trainer->Model: Train model with data batch
+                    Model->Trainer: Return confirmation + WandB logs
+                end
+            end
+        end
+    end
+    group validate
+        loop while True
+            Trainer->Test_Traversal: Ask if traversal for epoch is finished
+            Test_Traversal->Trainer: Respond
+            alt Traversal is finished
+                break
+                end
+            else Traversal not finished
+                Trainer->Test_Traversal: Move all pointers once
+                Test_Traversal->Trainer: Confirm pointer movement
+                loop for each model
+                    Trainer->Test_Traversal: Get local data batch for first pointer
+                    Test_Traversal->Trainer: Return batch
+                    Trainer->Model: Validate model with data batch
+                    Model->Trainer: Return confirmation + WandB logs
+                end
+            end
+            
+        end
+        loop for each model
+            alt model accuracy decreased
+                Trainer->Model: Reset to last checkpoint
+                Model->Trainer: Confirm reset
+            else model accuracy increased or stayed the same
+                Trainer->Model: Save new checkpoint
+                Model->Trainer: Confirm checkpoint saved
+            end
+        end
+    end
+Trainer->User: Report finished epoch
+end
+User->Trainer: Run testing
+group test
+    loop while True
+        Trainer->Test_Traversal: Ask if traversal for epoch is finished
+        Test_Traversal->Trainer: Respond
+        alt Traversal is finished
+            break
+            end
+        else Traversal not finished
+            Trainer->Test_Traversal: Move all pointers once
+            Test_Traversal->Trainer: Confirm pointer movement
+            loop for each model
+                Trainer->Test_Traversal: Get local data batch for first pointer
+                Test_Traversal->Trainer: Return batch
+                Trainer->Model: Test model with data batch
+                Model->Trainer: Return confirmation + WandB logs
+            end
+        end
+    end
+end
+Trainer->User: Return WandB logs and saved models
+@enduml

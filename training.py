@@ -28,22 +28,11 @@ from sklearn import preprocessing
 from models.CNNModel import CNNModel
 from DeepfakeDataset import DeepfakeDataset
 import wandb
+from utils.import_utils import import_classes_from_directory, get_classes_from_module
+from trainers import *
 
 # Set random seed for consistent results (need to test)
 random.seed(785134785632495632479853246798)
-
-# Label key (0 for not present, 1 for unknown, 2 for present):
-# male,young,middle_aged,senior,asian,white,black,shiny_skin,bald,wavy_hair,receding_hairline,bangs,black_hair,blond_hair,gray_hair,no_beard,mustache,goatee,oval_face,square_face,double_chain,chubby,obstructed_forehead,fully_visible_forehead,brown_eyes,bags_under_eyes,bushy_eyebrows,arched_eyebrows,mouth_closed,smiling,big_lips,big_nose,pointy_nose,heavy_makeup,wearing_hat,wearing_necktie,wearing_lipstick,no_eyewear,eyeglasses,attractive
-ATTRIBUTES = "male,young,middle_aged,senior,asian,white,black,shiny_skin,bald,wavy_hair,receding_hairline,bangs,black_hair,blond_hair,gray_hair,no_beard,mustache,goatee,oval_face,square_face,double_chain,chubby,obstructed_forehead,fully_visible_forehead,brown_eyes,bags_under_eyes,bushy_eyebrows,arched_eyebrows,mouth_closed,smiling,big_lips,big_nose,pointy_nose,heavy_makeup,wearing_hat,wearing_necktie,wearing_lipstick,no_eyewear,eyeglasses,attractive".split(',')
-
-ATTRIBUTE_DICT = {i : val for i, val in enumerate(ATTRIBUTES)}
-
-CHOSEN_ATTRIBUTES = {
-    "race": [ATTRIBUTES.index("white"), ATTRIBUTES.index("black"), ATTRIBUTES.index("asian")],
-    "gender": [ATTRIBUTES.index("male")],
-    "age": [ATTRIBUTES.index("young"), ATTRIBUTES.index("middle_aged"), ATTRIBUTES.index("senior")],
-    "none": []
-}
 
 # W&B setup
 wandb.login(key="8e2ea87ef9c3afd51f009eaf850d7b22e935fa1e")
@@ -74,6 +63,14 @@ wandb.init(
 
     # track hyperparameters and run metadata
     config={
+    "trainer": {
+        "DeepfakeAttributeTrainer": {
+            "epochs": 5,
+            "args": {
+                "key_attributes": "gender"
+            }
+        },
+    },
     "datasets": {
         "CDFDataset": {
             "nodes": ["AttributeNode"],
@@ -90,48 +87,50 @@ wandb.init(
         }
     },
     "models": {
-        "CNNModel": {
-            "learning_rate": 0.001,
-            "args": {
-                "model_name": "resnestdf"
+        "num_models": 2,
+        "model_selection_method": "exact",
+        "model_list": {
+            "CNNModel": {
+                "hops_to_analyze": 0,
+                "learning_rate": 0.001,
+                "args": {
+                    "model_name": "resnestdf"
+                }
             }
-        }
-    },
-    "traversals": {
-        "WarpTraversal": {
-            "args": {
-                "warp_threshold": 0.01,
-            },
         },
     },
-    "epochs": 5,
-    
-    
-    "num_models": 2,
-    "steps_per_epoch": 100,
-    "timesteps_before_return_allowed": 3,
-    "hops_to_analyze": 0,
-    "train_traversal_method": "attribute_delay_repeat",
-    "val_test_traversal_method": "attribute_boring_comprehensive",
-    "key_attributes": "gender",
+    "traversals": {
+        "train": {
+            "AttributeWarpTraversal": {
+                "args": {
+                    "warp_threshold": 0.01,
+                    "steps_per_epoch": 100,
+                    "timesteps_before_return_allowed": 3,
+                },
+            },
+        },
+        "test": {
+            "AttributeBoringTraversal": {
+                "args": {
+                    "warp_threshold": 0.01,
+                    "steps_per_epoch": 100,
+                    "timesteps_before_return_allowed": 3,
+                },
+            },
+        },
+    }
     }
 )
-# ["FF", "DFD", "DF1", "CDF"]
-# Choose key attributes
-try:
-    key_attributes = CHOSEN_ATTRIBUTES[wandb.config["key_attributes"]]
-except Exception as _:
-    print("Invalid key_attributes selection.")
-    sys.exit()
-try:
-    assert (wandb.config["num_models"] % (len(key_attributes)) * 2) == 0
-except Exception as _:
-    print("Invalid number of models for the selected key attributes. Number of models must be divsible by number of key attributes * 2.")
-    sys.exit()
 
-dataset = DeepfakeDataset(dataset_root='/home/brg2890/major/preprocessed', attribute_root='/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/attributes', splits_root = "/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/datasets", datasets=wandb.config["datasets"], auto_threshold=False, string_threshold=38)
-model = CNNModel(wandb.config["model"], wandb.config["frames_per_video"], dataset, wandb.config["warp_threshold"], wandb.config["num_models"], wandb.config["steps_per_epoch"], wandb.config["timesteps_before_return_allowed"], wandb.config["train_traversal_method"], wandb.config["hops_to_analyze"], wandb.config["val_test_traversal_method"], key_attributes, ATTRIBUTE_DICT)
-for epoch in tqdm(range(wandb.config["epochs"])):
-    model.train()
-    model.validate()
-model.test()
+# Several asserts to make sure config is in correct format
+assert len(wandb.config["trainer"]) == 1
+assert len(wandb.config["dataloader"]) == 1
+assert len(wandb.config["datasets"]) >= 1
+assert len(wandb.config["models"]["model_list"]) >= 1
+assert len(wandb.config["traversals"]) >= 1
+assert ("graphmanager" not in wandb.config.keys()) or (len(wandb.config["graphmanager"] == 1))
+# Start up trainer
+
+trainer = globals()[next(iter(wandb.config["trainer"]))](wandb.config["trainer"][next(iter(wandb.config["trainer"]))], wandb.config)
+trainer.run()
+trainer.test()

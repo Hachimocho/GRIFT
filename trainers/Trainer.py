@@ -32,27 +32,53 @@ from HyperGraph import HyperGraph
 from models.CNNModel import CNNModel
 from DeepfakeDataset import DeepfakeDataset
 import wandb
+from utils.import_utils import import_classes_from_directory, get_classes_from_module
+from datasets import *
+from dataloaders import *
+from managers import *
 
 class Trainer():
     """
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
-    def __init__(self, dataloader, rng_threshold, num_pointers, num_steps=1000, X=5, traversal_method='random_delay_repeat', K=1, val_test_traversal_method="boring_comprehensive", key_attributes=[]):
-        self.dataloader = dataloader
-        self.rng_threshold = rng_threshold
-        self.num_pointers = num_pointers
-        self.num_steps = num_steps
-        self.X = X
-        self.train_traversal_method = str.lower(traversal_method)
-        self.val_test_traversal_method = str.lower(val_test_traversal_method)
-        self.K = K
-        self.key_attributes = key_attributes
-
-    @staticmethod
-    def available_methods():
-        # TODO
-        pass
-
+    def __init__(self, trainer_config, full_config):
+        print("Starting trainer.")
+        self.config = full_config
+        self.num_epochs = trainer_config["epochs"]
+        datasets = []
+        for dataset_name, dataset_args in full_config["datasets"].items():
+            print("Loading dataset " + dataset_name)
+            datasets.append(globals()[dataset_name](dataset_args))
+        print("Finished loading datasets. Now creating graph.")
+        self.graph = globals()[next(iter(full_config["dataloader"]))](full_config["dataloader"][next(iter(full_config["dataloader"]))]).get_graph()
+        print("Finished HyperGraph creation. Moving to GraphManager initialization.")  
+        if "graphmanager" in full_config.keys():
+            self.graph = globals()[next(iter(full_config["graphmanager"]))](full_config["graphmanager"][next(iter(full_config["graphmanager"]))])
+            print("Graphmanager successfully initialized. Now loading traversals.")
+        else:
+            print("Skipped, no GraphManager used in config. Now loading traversals.")
+        self.train_traversal = globals()[next(iter(full_config["traversals"]["train"]))()](full_config["traversals"]["train"][next(iter(full_config["traversals"]["train"]))], full_config["models"]["num_models"])
+        self.test_traversal = globals()[next(iter(full_config["traversals"]["test"]))()](full_config["traversals"]["test"][next(iter(full_config["traversals"]["test"]))], full_config["models"]["num_models"])
+        print("Traversals loaded, now initializing pointers and models.")
+        if full_config["models"]["model_selection_method"] == "exact":
+            self.models = [globals()[next(iter(full_config["models"]["model_list"]))](full_config["models"]["model_list"][next(iter(full_config["models"]["model_list"]))]) for _ in range(full_config["models"]["num_models"])]
+        else:
+            raise NotImplementedError("Not-exact model selection not yet implemented.")
+        print("Models loaded, trainer startup finished.")
+    def run():
+        print("Running trainer.")
+        for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
+            self.model.train()
+            self.model.validate()
+        
+    def test():
+        self.model.test()
+        print("Finished.")
+        # Since a model should never be tested more than once to avoid data leakage, we put some safeguards here.
+        wandb.finish()
+        self.model = None
+        self.dataset = None
+        
     def traverse_graph(self, mode="train"):
         """ Moves one or more pointers around the given graph using some traversal method.
         Args:
@@ -318,67 +344,20 @@ class Trainer():
     
     def train(self):
         #print("Training started.")
-        self.traverse_graph(mode="train")
+        if self.train_traversal.is_finished() == False:
+            self.train_traversal.move_pointers()
+            
+            self.traverse_graph(mode="train")
         #print("Training finished.")
         
     def validate(self):
         #print("Validation started.")
+        self.test_traversal.move_pointers()
         self.traverse_graph(mode="val")
         #print("Validation finished.")
         
     def test(self):
         #print("Testing started.")
+        self.test_traversal.reset_pointers()
         self.traverse_graph(mode="test")
-        #print("Testing finished.")
-        
-import torch
-from torch_geometric.data import Data
-import random
-from torch_geometric.utils import k_hop_subgraph, to_undirected
-from skimage import io
-from skimage.metrics import structural_similarity
-from skimage.color import rgb2gray
-import os
-import glob
-import sys
-import tqdm
-from itertools import combinations
-import csv
-from math import comb
-from torch_geometric.utils.convert import to_networkx
-import networkx as nx
-import matplotlib.pyplot as plt
-import cv2
-from tqdm import tqdm
-from PIL import Image
-from concurrent.futures import ThreadPoolExecutor
-import time
-import numpy as np
-import re
-from collections import Counter
-from sklearn import preprocessing
-
-
-
-class Trainer():
-
-    """
-    This is a generic trainer. TODO desc
-    """
-
-    def __init__(self, config):
-        self.dataset = DeepfakeDataset(dataset_root='/home/brg2890/major/preprocessed', attribute_root='/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/attributes', splits_root = "/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/datasets", datasets=wandb.config["datasets"], auto_threshold=False, string_threshold=38)
-        self.model = CNNModel(wandb.config["model"], wandb.config["frames_per_video"], dataset, wandb.config["warp_threshold"], wandb.config["num_models"], wandb.config["steps_per_epoch"], wandb.config["timesteps_before_return_allowed"], wandb.config["train_traversal_method"], wandb.config["hops_to_analyze"], wandb.config["val_test_traversal_method"], key_attributes, ATTRIBUTE_DICT)
-    
-    def run(num_epochs):
-        for epoch in tqdm(range(num_epochs), desc="Number of epochs run"):
-            self.model.train()
-            self.model.validate()
-        
-    def test():
-        self.model.test()
-        # Since a model should never be tested more than once to avoid data leakage, we put some safeguards here.
-        wandb.finish()
-        self.model = None
-        self.dataset = None
-        
+        #print("Testing finished.") 
