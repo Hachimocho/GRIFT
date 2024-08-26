@@ -32,7 +32,7 @@ class Node():
     Each node class must have a set of tags which matches what data types and/or datasets it can be used with.
     Invalid tags might cause bad things, so don't do that.
     """ 
-    self.tags = ["all"]
+    tags = ["all"]
     
     def __init__(self, x):
         self.x = x

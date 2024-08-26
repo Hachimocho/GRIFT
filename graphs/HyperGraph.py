@@ -98,6 +98,7 @@ class HyperGraph(Graph):
     It provides several basic functions for management and traversal of data graphs.
     Remember to  overwrite the indicated functions when subclassing.
     """
+    tags = ["none"]
     
     def __init__(self, data: list, edges = None):
         # for graph in graphs:

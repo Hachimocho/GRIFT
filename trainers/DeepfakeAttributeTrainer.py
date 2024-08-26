@@ -28,9 +28,9 @@ import json
 import copy
 import networkx as nx
 from networkx import Graph
-from HyperGraph import HyperGraph
+from graphs.HyperGraph import HyperGraph
 from models.CNNModel import CNNModel
-from DeepfakeDataset import DeepfakeDataset
+from datasets.DeepfakeDataset import DeepfakeDataset
 import wandb
 from trainers.Trainer import Trainer
 
@@ -38,6 +38,7 @@ class DeepfakeAttributeTrainer(Trainer):
     """
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
+    tags = ["deepfakes"]
     def __init__(self, dataloader, rng_threshold, num_pointers, num_steps=1000, X=5, traversal_method='random_delay_repeat', K=1, val_test_traversal_method="boring_comprehensive", key_attributes=[]):
         self.dataloader = dataloader
         self.rng_threshold = rng_threshold

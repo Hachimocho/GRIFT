@@ -35,7 +35,7 @@ class Edge():
     All edges must have a set of tags to denote what data types/sets they can be used with.
     Bad tags could break things, so please don't do that.
     """
-    self.tags = ["all"]
+    tags = ["all"]
     
     def __init__(self, node1, node2, x, traversal_weight=1):
         self.node1 = node1

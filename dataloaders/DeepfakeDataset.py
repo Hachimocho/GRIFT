@@ -28,7 +28,7 @@ import json
 import copy
 
 class DeepfakeDataset():
-    
+    tags = ["deepfakes"]
     def __init__(self, dataset_root, attribute_root, splits_root, datasets, auto_threshold=False, string_threshold=30):
         self.datasets = datasets
         self.string_threshold = string_threshold

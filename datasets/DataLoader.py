@@ -37,6 +37,7 @@ class DataLoader():
     """
     Takes a set of Dataset objects and loads them into a HyperGraph.
     """
+    tags = ["none"]
     
     def __init__(self, data_root):
         assert os.path.isdir(data_root)

@@ -32,7 +32,7 @@ class Model():
         list of tags used for selecting what kinds of data the model can process.
     Incorrect tagging could lead to unsupported data being fed into the model, so don't do that.
     """
-    self.tags = []
+    tags = ["none"]
     
     def train(self, batch):
         raise NotImplementedError()

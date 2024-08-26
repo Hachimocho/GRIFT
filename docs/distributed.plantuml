@@ -1,0 +1,33 @@
+@startuml distributed
+
+control Controller
+queue Sweeps
+frame For_Each_Available_Computer {
+entity ComputerX
+
+Controller->Sweeps: Creates
+Sweeps->ComputerX: Sends sweeps to
+Component CX_GPUS {
+    node CX_GPU1
+    node CX_GPU2
+}
+ComputerX-down->CX_GPUS: Distributes sweeps among
+stack GPU1_Workers {
+    process GPU1_Worker1
+    process GPU1_Worker2
+}
+CX_GPU1-down->GPU1_Workers: Creates as many as possible
+stack GPU2_Workers {
+    process GPU2_Worker1
+    process GPU2_Worker2
+}
+CX_GPU2-down->GPU2_Workers: Creates as many as possible
+}
+ComputerX-up->Controller: Reports available sweep capacity
+Controller->Sweeps: Kills when all sweeps finished
+Controller->ComputerX: Kills when all sweeps finished
+GPU1_Worker1-up->ComputerX: Reports when sweep is finished
+GPU1_Worker2-up->ComputerX: Reports when sweep is finished
+GPU2_Worker1-up->ComputerX: Reports when sweep is finished
+GPU2_Worker2-up->ComputerX: Reports when sweep is finished
+@enduml

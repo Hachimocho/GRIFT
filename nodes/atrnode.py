@@ -30,7 +30,7 @@ from nodes.Node import Node
 
 class AttributeNode(Node):
     # Node tags:
-    self.tags = ["attributes"]
+    tags = ["attributes"]
     
     
     def __init__(self, path, attributes, labels, threshold):

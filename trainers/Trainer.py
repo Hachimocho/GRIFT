@@ -28,9 +28,9 @@ import json
 import copy
 import networkx as nx
 from networkx import Graph
-from HyperGraph import HyperGraph
+from graphs.HyperGraph import HyperGraph
 from models.CNNModel import CNNModel
-from DeepfakeDataset import DeepfakeDataset
+from datasets.DeepfakeDataset import DeepfakeDataset
 import wandb
 from utils.import_utils import import_classes_from_directory, get_classes_from_module
 from datasets import *
@@ -41,25 +41,31 @@ class Trainer():
     """
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
+    tags = ["all"]
     def __init__(self, trainer_config, full_config):
         print("Starting trainer.")
         self.config = full_config
         self.num_epochs = trainer_config["epochs"]
+        # Dynamically load requested datasets
         datasets = []
         for dataset_name, dataset_args in full_config["datasets"].items():
             print("Loading dataset " + dataset_name)
             datasets.append(globals()[dataset_name](dataset_args))
         print("Finished loading datasets. Now creating graph.")
+        # Dynamically load graph using requested dataloader
         self.graph = globals()[next(iter(full_config["dataloader"]))](full_config["dataloader"][next(iter(full_config["dataloader"]))]).get_graph()
         print("Finished HyperGraph creation. Moving to GraphManager initialization.")  
+        # Dynamically load graph manager if present
         if "graphmanager" in full_config.keys():
             self.graph = globals()[next(iter(full_config["graphmanager"]))](full_config["graphmanager"][next(iter(full_config["graphmanager"]))])
             print("Graphmanager successfully initialized. Now loading traversals.")
         else:
             print("Skipped, no GraphManager used in config. Now loading traversals.")
+        # Dynamically load requested traversals
         self.train_traversal = globals()[next(iter(full_config["traversals"]["train"]))()](full_config["traversals"]["train"][next(iter(full_config["traversals"]["train"]))], full_config["models"]["num_models"])
         self.test_traversal = globals()[next(iter(full_config["traversals"]["test"]))()](full_config["traversals"]["test"][next(iter(full_config["traversals"]["test"]))], full_config["models"]["num_models"])
         print("Traversals loaded, now initializing pointers and models.")
+        # Dynamically load requested models
         if full_config["models"]["model_selection_method"] == "exact":
             self.models = [globals()[next(iter(full_config["models"]["model_list"]))](full_config["models"]["model_list"][next(iter(full_config["models"]["model_list"]))]) for _ in range(full_config["models"]["num_models"])]
         else:

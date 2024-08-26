@@ -35,8 +35,8 @@ class ImageFileData(Data):
     Low RAM overhead, high runtime impact.
     """
     
-    self.tags = [["image", "file"]]
-    self.supported_extensions = ["jpg", "jpeg", "png"]
+    tags = [["image", "file"]]
+    supported_extensions = ["jpg", "jpeg", "png"]
     
     def __init__(self, indata):
         assert os.path.isfile(indata) 

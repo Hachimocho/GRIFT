@@ -29,6 +29,7 @@ from models.CNNModel import CNNModel
 from DeepfakeDataset import DeepfakeDataset
 import wandb
 from utils.import_utils import import_classes_from_directory, get_classes_from_module
+from utils.tag_list_updater import update_tag_list
 from trainers import *
 
 # Set random seed for consistent results (need to test)
@@ -129,8 +130,11 @@ assert len(wandb.config["datasets"]) >= 1
 assert len(wandb.config["models"]["model_list"]) >= 1
 assert len(wandb.config["traversals"]) >= 1
 assert ("graphmanager" not in wandb.config.keys()) or (len(wandb.config["graphmanager"] == 1))
-# Start up trainer
 
+# Update tag list
+update_tag_list()
+
+# Start up trainer
 trainer = globals()[next(iter(wandb.config["trainer"]))](wandb.config["trainer"][next(iter(wandb.config["trainer"]))], wandb.config)
 trainer.run()
 trainer.test()

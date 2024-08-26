@@ -1,9 +1,3 @@
-from utils.import_utils import import_classes_from_directory
+from utils.tag_list_updater import update_tag_list
 
-# Usage
-classes = import_classes_from_directory('./dataloaders')
-
-# Get list of class names as strings
-print("Imported classes:", classes)
-
-d = DataLoader("./dataloaders")
+update_tag_list()

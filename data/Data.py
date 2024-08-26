@@ -35,7 +35,7 @@ class Data():
     Must have a tags attribute so other modules can define compatability with it.
     """
     
-    self.tags = ["all"]
+    tags = ["all"]
     
     def __init__(self, indata):
         self.data = indata

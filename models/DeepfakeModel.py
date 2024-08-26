@@ -24,11 +24,13 @@ import numpy as np
 import re
 from collections import Counter
 from sklearn import preprocessing
+from models.Model import Model
 
 class DeepfakeModel(Model):
     """ Main class for deepfake models. Should be subclassed for actual usage.
         Note: Currently, pointers reset every epoch.
     """
+    tags = ["none"]
     
     def __init__(self, dataset, rng_threshold, num_pointers, num_steps=1000, X=5, traversal_method='random_delay_repeat', K=1, val_test_traversal_method="boring_comprehensive", key_attributes=[]):
         self.implemented_methods = ['random_delay_repeat', 'random_never_repeat_comprehensive', 'boring_comprehensive']

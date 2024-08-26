@@ -33,6 +33,7 @@ import torchmetrics
 
 
 class CNNModel(DeepfakeModel):
+    tags = ["cnn", "deepfakes"]
     def __init__(self, model_name, frames_per_video, dataset, rng_threshold, num_pointers, num_steps=100, X=5, traversal_method='random_delay_repeat', K=0, val_test_traversal_method="boring_comprehensive", key_attributes=[], attribute_dict={}):
         super().__init__(dataset, rng_threshold, num_pointers, num_steps, X, traversal_method, K, val_test_traversal_method, key_attributes)
         self.frames_per_video = frames_per_video

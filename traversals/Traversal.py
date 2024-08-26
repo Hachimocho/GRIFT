@@ -33,3 +33,4 @@ class Traversal():
     """
     Defines a method through which a pointer located on some node can move to other nodes in the graph.
     """
+    tags = ["all"]
