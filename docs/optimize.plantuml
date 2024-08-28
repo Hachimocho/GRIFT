@@ -1,0 +1,55 @@
+@startuml optimize
+
+User->Server: Start training with provided meta-config
+Server->Server: Automatically update tag list
+Server->Server: Using meta-config, build all possible combinations of valid modules
+loop for each combination
+    Server->Modules: Request module hyperparamenters and ranges
+    Modules->Server: Return module hyperparameters and ranges
+    Server->Server: Generate unique sweep name using module names
+    Server->Server: Create sweep config using module hyperparameters and ranges
+    Server->Server: Add max tries using meta-config
+    Server->Server: Add GPU memory usage info using model info
+    Server->Server: Save sweep config to queue
+end
+Server->Server: Record min GPU memory usage needed for sweep
+Server->Server: Record max GPU memory usage needed for sweep
+Server->User: Report total number of planned sweeps to user
+alt User denies
+    User->Server: Send shutdown request
+    Server->Server: Shutdown server
+else User accepts:
+    User->Server: Send start request
+    Server->Server: Open up sweep config queue to port 9998
+    User->Clients: Send startup signal to clients
+    Clients->User: Confirm startup
+    loop While sweeps available
+        loop For each active client
+            loop while Client has more GPU memory left than min sweep size
+                Clients->Server: Request sweep with GPU memory size <= available
+                alt Sweep with requested size unavailable
+                    alt Client has no sweeps running
+                        Server->Clients: Send shutdown signal to client
+                        Clients->Server: Confirm shutdown request
+                        Clients->Clients: Shutdown
+                    else Client has sweep running
+                        Server->Clients: Report no sweep available
+                    end
+                else Sweep with requested size available
+                    Server->Clients: Send largest possible sweep to client
+                    Clients->Server: Confirm start request
+                    Clients->Clients: Start sweep
+                end
+            end
+        end
+    end
+    Server->Clients: Send shutdown signal to client
+    Clients->Server: Confirm shutdown request
+    Clients->Clients: Shutdown all clients
+    Server->User: Report sweeps finished
+    Server->User: Report metrics if available
+    Server->Server: Shutdown server
+end
+
+
+@enduml

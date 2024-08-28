@@ -1,0 +1,5 @@
+{
+    "plantuml.exportOutDir": "docs",
+    "plantuml.exportSubFolder": false,
+    "plantuml.exportIncludeFolderHeirarchy": false
+}
