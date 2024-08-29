@@ -1,0 +1,171 @@
+@startuml complete
+User->Server: Start training with provided meta-config
+Server->Server: Automatically update tag list
+Server->Server: Using meta-config, build \nall possible combinations of valid modules
+Server->Server: Using # of combos and max optimization \ntries, calculate # of sweeps required
+alt # of required sweeps <= # of desired sweeps
+    Server->User: Report # of required sweeps to user
+else # of required sweeps > # of desired sweeps
+    Server->Server: Initialize Advanced Correlation Engine v1
+    group Advanced Correlation Engine
+        Server->Server: Load tags list
+        Server->Server: Load meta-config
+        Server->Server: Create neural network with input neurons = (# of modules * 2) and 2 output neurons
+        Server->Server: Generate list of all valid module combinations and create queue
+        loop While # of total sweeps < max
+            Server->Server: Run X sweeps (specified in meta-config): e% chosen randomly and (1-e)% picked from top of queue
+            Server->Server: Save each sweep as a result with each module's acc and time info
+            Server->Server: Train neural network do predict acc and time from active modules
+            Server->Server: Reorder queue with scores (score = (1-TF) * |acc| + TF * |(time * mem usage) + g * waste|)
+            Server->Server: Update: (e = e * e_mult if e > e_min)
+        end
+    end
+end
+loop for each combination
+    Server->Modules: Request module hyperparamenters and ranges
+    Modules->Server: Return module hyperparameters and ranges
+    Server->Server: Generate unique sweep name using module names
+    Server->Server: Create sweep config using module hyperparameters and ranges
+    Server->Server: Add max tries using meta-config
+    Server->Server: Add GPU memory usage info using model info
+    Server->Server: Save sweep config to queue
+end
+Server->Server: Record min GPU memory usage needed for sweep
+Server->Server: Record max GPU memory usage needed for sweep
+Server->User: Report total number of planned sweeps to user
+alt User denies
+    User->Server: Send shutdown request
+    Server->Server: Shutdown server
+else User accepts:
+    User->Server: Send start request
+    Server->Server: Open up sweep config queue to port 9998
+    User->Clients: Send startup signal to clients
+    Clients->User: Confirm startup
+    loop While sweeps available
+        loop For each active client
+            loop while Client has more GPU memory left than min sweep size
+                Clients->Server: Request sweep with GPU memory size <= available
+                alt Sweep with requested size unavailable
+                    alt Client has no sweeps running
+                        Server->Clients: Send shutdown signal to client
+                        Clients->Server: Confirm shutdown request
+                        Clients->Clients: Shutdown
+                    else Client has sweep running
+                        Server->Clients: Report no sweep available
+                    end
+                else Sweep with requested size available
+                    
+                    Server->Clients: Send largest possible sweep to client
+                    Clients->Server: Confirm start request
+                    loop While sweep not run for max tries (specified in meta-config)
+                        Clients->Trainer: Start sweep
+                        Trainer->Dataset: Request all datasets in config\n with node preference config
+                        Dataset->Nodes: Request available node types \ncompatible with data types
+                        Nodes->Dataset: Return available node types
+                        Dataset->Trainer: Return requested datasets\n in requested nodes
+                        Trainer->Clients: Report that datasets have been loaded
+                        Trainer->DataLoader: Request graph from loaded\n datasets with edge preference config
+                        DataLoader->Edges: Request available edge types\n for compatible with data types
+                        Edges->DataLoader: Return available edge types
+                        DataLoader->Trainer: Return labeled HyperGraph\n with specified edge types
+                        Trainer->Clients: Report that HyperGraph has been loaded
+                        Trainer-->GraphManager: Request wrappers for graph\n if specified in config
+                        GraphManager-->Trainer: Return complete GraphManager/\nHypergraph with wrappers
+                        Trainer->Clients: Report that GraphManager initialization is complete
+                        Trainer->Traversals: Request traversals provided in config
+                        Traversals->Trainer: Return requested traversals
+                        Trainer->Clients: Report that traversals have been loaded
+                        Trainer->Models: Request available model types\n according to config
+                        Models->Trainer: Return available model types
+                        Trainer->Models: Initialize models for each pointer
+                        Models->Trainer: Report successful initialization
+                        Trainer->Clients: Report successful model initalization
+                        loop num_epochs
+                            group train
+                                loop while True
+                                    Trainer->Train_Traversal: Ask if traversal for epoch is finished
+                                    Train_Traversal->Trainer: Respond
+                                    alt Traversal is finished
+                                        break
+                                        end
+                                    else Traversal not finished
+                                        Trainer->Train_Traversal: Move all pointers once
+                                        Train_Traversal->Trainer: Confirm pointer movement
+                                        loop for each model
+                                            
+                                            Trainer->Train_Traversal: Get local data batch for first pointer
+                                            Train_Traversal->Trainer: Return batch
+                                            Trainer->Model: Train model with data batch
+                                            Model->Trainer: Return confirmation + WandB logs
+                                        end
+                                    end
+                                end
+                            end
+                            group validate
+                                loop while True
+                                    Trainer->Test_Traversal: Ask if traversal for epoch is finished
+                                    Test_Traversal->Trainer: Respond
+                                    alt Traversal is finished
+                                        break
+                                        end
+                                    else Traversal not finished
+                                        Trainer->Test_Traversal: Move all pointers once
+                                        Test_Traversal->Trainer: Confirm pointer movement
+                                        loop for each model
+                                            Trainer->Test_Traversal: Get local data batch for first pointer
+                                            Test_Traversal->Trainer: Return batch
+                                            Trainer->Model: Validate model with data batch
+                                            Model->Trainer: Return confirmation + WandB logs
+                                        end
+                                    end
+                                    
+                                end
+                                loop for each model
+                                    alt model accuracy decreased
+                                        Trainer->Model: Reset to last checkpoint
+                                        Model->Trainer: Confirm reset
+                                    else model accuracy increased or stayed the same
+                                        Trainer->Model: Save new checkpoint
+                                        Model->Trainer: Confirm checkpoint saved
+                                    end
+                                end
+                            end
+                        Trainer->User: Report finished epoch
+                        end
+                        User->Trainer: Run testing
+                        group test
+                            loop while True
+                                Trainer->Test_Traversal: Ask if traversal for epoch is finished
+                                Test_Traversal->Trainer: Respond
+                                alt Traversal is finished
+                                    break
+                                    end
+                                else Traversal not finished
+                                    Trainer->Test_Traversal: Move all pointers once
+                                    Test_Traversal->Trainer: Confirm pointer movement
+                                    loop for each model
+                                        Trainer->Test_Traversal: Get local data batch for first pointer
+                                        Test_Traversal->Trainer: Return batch
+                                        Trainer->Model: Test model with data batch
+                                        Model->Trainer: Return confirmation + WandB logs
+                                    end
+                                end
+                            end
+                        end
+                        Trainer->Trainer: Save WandB metrics for sweep optimization
+                    end
+                    Trainer->Clients: Return WandB logs and saved models
+                end
+            end
+        end
+    end
+    Server->Clients: Send shutdown signal to client
+    Clients->Server: Confirm shutdown request
+    Clients->Clients: Shutdown all clients
+    Server->User: Report sweeps finished
+    Server->User: Report metrics if available
+    Server->Server: Shutdown server
+end
+
+
+@enduml

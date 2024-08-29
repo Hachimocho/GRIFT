@@ -38,6 +38,34 @@ import yaml
 import json
 import socket
 
+# Set up config
+meta_config = {
+    "data_config": {
+        "datasets": {
+            "CDFDataset": {
+                "nodes": ["AttributeNode"],
+                "node_selection_method": "exact",
+                "args": {
+                    "frames_per_video": 15
+                }
+            }
+        },
+        "dataloader": {
+            "DeepfakeDataLoader": {
+                "edges": ["AttributeEdge"],
+                "edge_selection_method": "exact"
+            }
+        }
+    },
+    "max_time": 86400, # 24 hours
+    "optimizations_per_sweep": 10,
+    "sweeps_between_meta_optimizations": 10,
+    "epsilon": 0.99,
+    "epsilon_mult": 0.99,
+    "epsilon_min": 0.05,
+    "time_factor": 0.25
+}
+
 # Set random seed for consistent results (need to test)
 random.seed(785134785632495632479853246798)
 
@@ -51,74 +79,16 @@ PROJECT_ID = 'DeepEARLTesting'
 Quick overview of how sweep autogeneration works:
 Each module has a list of tags which defines what situations the module can be used in.
 Each module also has a list of hyperparameters which can be tuned.
-Because a lot of the hyperparameters are floats, we can't completely brute-force them.
-Instead, we need to use a grid search.
+Not only that, but which modules are used is a hyperparameter as well.
 
-
+To resolve this, we make a call to the Advanced Correlation Engine (ACE) to sort all possible configurations.
+Currently, ACE uses a simple NN to score each possible configuration based on past results in accuracy and time.
+We then serve sweeps either randomly or from the top of the list based on epsilon (e).
+This should continue until acceptable accuracy is achieved or a certain amount of time has passed.
 
 """
-
-# Use tags to autogenerate sweeps
-sweep_config = {
-    "trainer": {
-        "DeepfakeAttributeTrainer": {
-            "epochs": 5,
-            "args": {
-                "key_attributes": "gender"
-            }
-        },
-    },
-    "datasets": {
-        "CDFDataset": {
-            "nodes": ["AttributeNode"],
-            "node_selection_method": "exact",
-            "args": {
-                "frames_per_video": 15
-            }
-        }
-    },
-    "dataloader": {
-        "DeepfakeDataLoader": {
-            "edges": ["AttributeEdge"],
-            "edge_selection_method": "exact"
-        }
-    },
-    "models": {
-        "num_models": 2,
-        "model_selection_method": "exact",
-        "model_list": {
-            "CNNModel": {
-                "hops_to_analyze": 0,
-                "learning_rate": 0.001,
-                "args": {
-                    "model_name": "resnestdf"
-                }
-            }
-        },
-    },
-    "traversals": {
-        "train": {
-            "AttributeWarpTraversal": {
-                "args": {
-                    "warp_threshold": 0.01,
-                    "steps_per_epoch": 100,
-                    "timesteps_before_return_allowed": 3,
-                },
-            },
-        },
-        "test": {
-            "AttributeBoringTraversal": {
-                "args": {
-                    "warp_threshold": 0.01,
-                    "steps_per_epoch": 100,
-                    "timesteps_before_return_allowed": 3,
-                },
-            },
-        },
-    }
-}
-
-
+# Get the most recent module tags
+update_tag_list()
 
 
 class MyTCPHandler(socketserver.BaseRequestHandler):

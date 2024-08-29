@@ -1,0 +1,14 @@
+@startuml acev1
+Server->Server: Initialize Advanced Correlation Engine v1
+Server->Server: Load tags list
+Server->Server: Load meta-config
+Server->Server: Create neural network with input neurons = (# of modules * 2) and 2 output neurons
+Server->Server: Generate list of all valid module combinations and create queue
+loop While # of total sweeps < max
+    Server->Server: Run X sweeps (specified in meta-config): e% chosen randomly and (1-e)% picked from top of queue
+    Server->Server: Save each sweep as a result with each module's acc and time info
+    Server->Server: Train neural network do predict acc and time from active modules
+    Server->Server: Reorder queue with scores (score = (1-TF) * |acc| + TF * |(time * mem usage) + g * waste|)
+    Server->Server: Update: (e = e * e_mult if e > e_min)
+end
+@enduml
