@@ -33,4 +33,8 @@ class Traversal():
     """
     Defines a method through which a pointer located on some node can move to other nodes in the graph.
     """
-    tags = ["all"]
+    tags = ["deepfakes"]
+    hyperparameters = {
+        "num_hops": [1, 2, 3],
+        "distribution": ["uniform", "normal"]
+    }

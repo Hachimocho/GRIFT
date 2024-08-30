@@ -1,8 +1,8 @@
 # docs/tags.md
 
-`all`: Node, Edge, Data, Traversal
+`all`: Node, Edge, Data
 `attributes`: AttributeNode
-`file, image`: ImageData, ImageFileData
-`deepfakes`: DeepfakeDataset, DeepfakeDataset, CNNModel
-`none`: DataLoader, DataLoader, Model, DeepfakeModel, HyperGraph, GraphManager
+`file, image`: ImageFileData, ImageData
+`deepfakes`: Traversal, DeepfakeDataset, CNNModel
+`none`: Model, HyperGraph, GraphManager, DataLoader, DeepfakeModel
 `cnn`: CNNModel

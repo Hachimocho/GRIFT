@@ -26,3 +26,8 @@ def get_classes_from_module(module_name):
     module = __import__(module_name)
     return [name for name, obj in module.__dict__.items() 
             if inspect.isclass(obj) and obj.__module__.startswith(module_name)]
+    
+def get_tagged_classes_from_module(module_name, tags):
+    module = __import__(module_name)
+    return [name for name, obj in module.__dict__.items() 
+            if inspect.isclass(obj) and obj.__module__.startswith(module_name) and tags in obj.tags]

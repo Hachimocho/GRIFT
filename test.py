@@ -1,3 +1,5 @@
-from utils.tag_list_updater import update_tag_list
+from utils.import_utils import get_tagged_classes_from_module
 
-update_tag_list()
+
+print(get_tagged_classes_from_module("datasets", "deepfakes"))
+#update_tag_list()

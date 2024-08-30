@@ -56,10 +56,9 @@ def update_tag_list():
             for tag in globals()[type_name].tags:
                 if isinstance(tag, list):
                     tag = frozenset(tag)
-                if tag in tags.keys():
-                    tags[tag].append(type_name)
-                else:
-                    tags[tag] = [type_name]
+                if tag not in tags.keys():
+                    tags[tag] = set()
+                tags[tag].add(type_name)
 
     # Write the tags and classes to a file in markdown format
     with open('docs/tags.md', 'w') as f:
@@ -68,3 +67,4 @@ def update_tag_list():
             if isinstance(tag, frozenset):
                 tag = ", ".join(tag)
             f.write(f'`{tag}`: {", ".join(classes)}\n')  # Write each tag and corresponding classes
+
