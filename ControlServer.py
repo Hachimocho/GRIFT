@@ -1,3 +1,4 @@
+
 import torch
 from torch_geometric.data import Data
 import random
@@ -38,7 +39,9 @@ import yaml
 import json
 import socket
 import itertools
-from utils.AceV1 import AceV1
+
+# Use this to specify ACE version
+from utils.AceV1 import ACE
 
 # Set up config
 """
@@ -91,6 +94,7 @@ meta_config = {
     "allowed_model_tags": ["image", "any"], # Only models capable of processing image data can be used
     "sweep_config": {
         "name": "sweepdemo",
+        "program": "training.py",
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
         "parameters": {},
@@ -107,8 +111,15 @@ meta_config = {
 USERNAME = 'wrightlab'
 # Don't use '|' in project id.
 PROJECT_ID = 'DeepEARLTesting'
+# Use random tag for data sorting
+TAG = random.randrange(2**32 - 1)
 
-
+# Handler setup
+served_sweeps = 0
+ace = ACE()
+epsilon = meta_config["epsilon"]
+epsilon_mult = meta_config["epsilon_mult"]
+epsilon_min = meta_config["epsilon_min"]
 
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """
@@ -118,14 +129,6 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
     override the handle() method to implement communication to the
     client.
     """
-    
-    def __init__(self):
-        super().__init__()  
-        self.served_sweeps = 0
-        self.ace = AceV1()
-        self.epsilon = meta_config["epsilon"]
-        self.epsilon_mult = meta_config["epsilon_mult"]
-        self.epsilon_min = meta_config["epsilon_min"]
         
     def handle(self):
         # self.request is the TCP socket connected to the client
@@ -143,15 +146,40 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
             print("All sweeps completed, shutting down.")
             sys.exit()
         served_sweeps += 1
+        if (time.time() - self.server.time) > meta_config["max_time"]:
+            print("Maximum time reached, starting final testing runs.")
+            # TODO: Implement final testing runs
         if served_sweeps % meta_config["sweeps_between_meta_optimizations"] == 0:
-            meta_optimize()
+            print("Beginning meta-optimization.")
+
+            # Initialize the WandB API
+            api = wandb.Api()
+
+            # Fetch the sweeps and their metrics
+            # sweep_runs = api.runs(path=USERNAME + "/" + PROJECT_ID, filters={"state": "finished"})
+            # scores = {run.name: run.summary["score"] for run in sweep_runs}
+
+            # # Extract the scores and module lists from the metrics
+            # scores = [metric['final_score'] for metric in metrics]
+            # module_lists = [metric['modules'] for metric in metrics]
             
-    def meta_optimize(self):
-        print("Beginning meta-optimization.")
-        api = wandb.Api()
-        sweep_runs = api.runs(path=USERNAME + "/" + PROJECT_ID, filters={"state": "finished"})
-        scores = {run.name: run.summary["score"] for run in sweep_runs}
-        self.ace.meta_optimize(scores, self.server.sweeps)
+            # Fetch runs for a specific entity and project
+            runs = api.runs(entity='your-entity', project='your-project')
+
+            # Filter runs by sweep ID
+            sweep_runs = [run for run in runs if run.sweep.id == 'your-sweep-id']
+
+            # Sort sweep runs by creation time in descending order
+            sweep_runs.sort(key=lambda x: x.created_at, reverse=True)
+
+            # Get the last run
+            last_run = sweep_runs[0]
+
+            # Get the logs from the last run
+            logs = last_run.history()
+            self.server.sweeps = ace.meta_optimize(scores, self.server.sweeps)
+            
+    
         
 class MyTCPServer(socketserver.TCPServer):
     sweeps = []
@@ -163,6 +191,7 @@ class MyTCPServer(socketserver.TCPServer):
     
     def setup(self) -> None:
         """
+        
         Setup the server by generating all possible combinations of modules that have the requested tags.
 
         This function does the following:
@@ -218,17 +247,20 @@ class MyTCPServer(socketserver.TCPServer):
         sweep_configuration = meta_config["sweep_config"]
         
         """
+        
         Quick overview of how sweep autogeneration works:
         Each module has a list of tags which defines what situations the module can be used in.
         Each module also has a list of hyperparameters which can be tuned.
         Not only that, but which modules are used is a hyperparameter as well.
 
+        
         To resolve this, we make a call to the Advanced Correlation Engine (ACE) to sort all possible configurations.
         Currently, ACE uses a simple NN to score each possible configuration based on past results in accuracy and time.
         We then serve sweeps either randomly or from the top of the list based on epsilon (e).
         This should continue until acceptable accuracy is achieved or a certain amount of time has passed.
         """
         self.sweeps = []
+        self.time = time.time()
         # Iterate through all possible combinations of modules
         all_module_combinations = list(itertools.product(*[available_data_modules, available_dataloader_modules, available_dataset_modules, available_graph_modules, available_manager_modules, available_model_modules, available_trainer_modules, available_traversal_modules]))
         for combo in tqdm(all_module_combinations, desc="Generating sweep combinations"):
@@ -246,22 +278,26 @@ class MyTCPServer(socketserver.TCPServer):
             sweep_config["parameters"]["name"] = "_".join(combo)
             sweep_config["parameters"]["epochs"] = {"value": int(meta_config["epochs_per_run"])}
 
+        
             # Set module hyperparameters
             for module in combo:
                 sweep_config["parameters"][module] = {"value": module.hyperparameters}
-
             # Add the sweep to the list of sweeps
             self.sweeps.append([wandb.sweep(sweep=sweep_config, project=PROJECT_ID), sweep_config])
+        
+        print(f"Number of sweeps: {len(self.sweeps)}")
+        print(f"Total number of optimizations: {len(self.sweeps) * meta_config['optimizations_per_sweep']}")
             
         # TEMP: Kill after testing
         sys.exit()
-
 if __name__ == "__main__":
     # Find the hostname
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
     HOST = s.getsockname()[0]
     s.close()
+    print(HOST)
+    sys.exit()
     # Set port directly
     PORT = 9998
     # Create the server, binding to the given address on the given port.
@@ -271,6 +307,10 @@ if __name__ == "__main__":
             # interrupt the program with Ctrl-C
             
             print("Starting Server with IP: " + HOST + " and port: " + str(PORT))
-            server.serve_forever()
+            with tqdm.tqdm(desc="Serving sweeps", total=len(self.sweeps)) as pbar:
+                def update_pbar():
+                    pbar.update(1)
+                server.handle_request = lambda request: (server.handle(request), update_pbar())
+                server.serve_forever()
     except KeyboardInterrupt:
         print("Shutting down due to user input.")
