@@ -9,12 +9,11 @@ from trainers import *
 
 
 if __name__ == "__main__":
-    with open("key.txt") as f:
-        api_key = f.readline()
-        wandb.init()
-        wandb.login(key=api_key)
+    # with open("key.txt") as f:
+    #     api_key = f.readline()
+    #     wandb.init()
     with open("serverinfo.txt") as f:
-        HOST = f.readline()
+        HOST = socket.gethostbyname(f.readline())
         PORT = int(f.readline())
     data = "Requesting sweep."
     
