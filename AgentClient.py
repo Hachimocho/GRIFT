@@ -18,6 +18,7 @@ if __name__ == "__main__":
         HOST = server_info["host"]
         PORT = int(server_info["port"])
     data = "Requesting sweep."
+    print("Config:", wandb.config)
     trainer = globals()[next(iter(wandb.config["trainer"]))](wandb.config["trainer"][next(iter(wandb.config["trainer"]))], wandb.config)
     
     while True:
