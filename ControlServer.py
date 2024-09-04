@@ -199,6 +199,7 @@ class MyTCPServer(socketserver.TCPServer):
     
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate = True) -> None:
         super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.setup()
         
     

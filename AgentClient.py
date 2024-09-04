@@ -20,6 +20,7 @@ if __name__ == "__main__":
     while True:
         # Create a socket (SOCK_STREAM means a TCP socket)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             # Connect to server and send data
             sock.connect((HOST, PORT))
             sock.sendall(bytes(data + "\n", "utf-8"))
