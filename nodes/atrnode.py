@@ -30,8 +30,12 @@ from nodes.Node import Node
 
 class AttributeNode(Node):
     # Node tags:
-    tags = ["attributes"]
-    
+    tags = ["attributes", "deepfakes"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     
     def __init__(self, path, attributes, labels, threshold):
         self.x = path

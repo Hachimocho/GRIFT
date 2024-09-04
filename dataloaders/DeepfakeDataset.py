@@ -29,6 +29,11 @@ import copy
 
 class DeepfakeDataset():
     tags = ["deepfakes"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     def __init__(self, dataset_root, attribute_root, splits_root, datasets, auto_threshold=False, string_threshold=30):
         self.datasets = datasets
         self.string_threshold = string_threshold

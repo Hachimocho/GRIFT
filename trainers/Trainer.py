@@ -41,7 +41,12 @@ class Trainer():
     """
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
-    tags = ["all"]
+    tags = ["any"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     def __init__(self, trainer_config, full_config):
         print("Starting trainer.")
         self.config = full_config

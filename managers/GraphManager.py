@@ -34,4 +34,9 @@ class GraphManager(HyperGraph):
     Defines a HyperGraph which changes over time. May use traversals, model performance, or just time to adjust the graph.
     Most commonly used to represent a specific environment or to perform automatic data augmentation.
     """
-    tags = ["none"]
+    tags = ["any"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }

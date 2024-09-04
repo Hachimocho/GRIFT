@@ -35,6 +35,7 @@ class Traversal():
     """
     tags = ["deepfakes"]
     hyperparameters = {
-        "num_hops": [1, 2, 3],
-        "distribution": ["uniform", "normal"]
+        "parameters": {
+            "num_hops": {"values": [1, 2, 3]}
+        }
     }

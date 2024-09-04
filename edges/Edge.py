@@ -35,7 +35,12 @@ class Edge():
     All edges must have a set of tags to denote what data types/sets they can be used with.
     Bad tags could break things, so please don't do that.
     """
-    tags = ["all"]
+    tags = ["any"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     
     def __init__(self, node1, node2, x, traversal_weight=1):
         self.node1 = node1

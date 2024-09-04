@@ -32,6 +32,17 @@ import wandb
 from utils.import_utils import import_classes_from_directory, get_classes_from_module, get_tagged_classes_from_module
 from utils.tag_list_updater import update_tag_list
 from trainers import *
+from data import *
+from models import *
+from graphs import *
+from edges import *
+from nodes import *
+from managers import *
+from dataloaders import *
+from datasets import *
+from trainers import *
+from utils import *
+from traversals import *
 
 import socketserver
 import pkgutil
@@ -83,7 +94,6 @@ meta_config = {
         }
     },
     "max_time": 86400, # 24 hours
-    "optimizations_per_sweep": 10,
     "sweeps_between_meta_optimizations": 10,
     "epochs_per_run": 10,
     "epsilon": 0.99,
@@ -91,9 +101,8 @@ meta_config = {
     "epsilon_min": 0.05,
     "time_factor": 0.25,
     "allowed_data_tags": ["deepfakes", "any"], # Only deepfake data can be used for training
-    "allowed_model_tags": ["image", "any"], # Only models capable of processing image data can be used
+    "allowed_model_tags": ["image", "any", "cnn"], # Only models capable of processing image data can be used
     "sweep_config": {
-        "name": "sweepdemo",
         "program": "training.py",
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
@@ -113,6 +122,10 @@ USERNAME = 'wrightlab'
 PROJECT_ID = 'DeepEARLTesting'
 # Use random tag for data sorting
 TAG = random.randrange(2**32 - 1)
+# Login to wandb
+with open("key.txt") as f:
+    api_key = f.readline()
+    wandb.login(key=api_key)
 
 # Handler setup
 served_sweeps = 0
@@ -221,7 +234,7 @@ class MyTCPServer(socketserver.TCPServer):
         available_dataset_modules = get_tagged_classes_from_module_any('datasets', meta_config['allowed_data_tags'])
         available_graph_modules = get_tagged_classes_from_module_any('graphs', meta_config['allowed_data_tags'])
         available_manager_modules = get_tagged_classes_from_module_any('managers', meta_config['allowed_data_tags'])
-        available_trainer_modules = get_tagged_classes_from_module_any('trainers', meta_config['allowed_model_tags'])
+        available_trainer_modules = get_tagged_classes_from_module_any('trainers', meta_config['allowed_data_tags'])
         available_traversal_modules = get_tagged_classes_from_module_any('traversals', meta_config['allowed_data_tags'])
         available_model_modules = get_tagged_classes_from_module_any('models', meta_config['allowed_model_tags'])
         
@@ -244,7 +257,7 @@ class MyTCPServer(socketserver.TCPServer):
             for module in modules:
                 print(f"    - {module}")
                 
-        sweep_configuration = meta_config["sweep_config"]
+        sweep_config = meta_config["sweep_config"]
         
         """
         
@@ -274,30 +287,34 @@ class MyTCPServer(socketserver.TCPServer):
             #             pass
             
             # Set name and epochs
-            sweep_config["name"] = "_".join(combo)
-            sweep_config["parameters"]["name"] = "_".join(combo)
+            print("_".join(combo))
+            print(type("_".join(combo)))
+            #sweep_config["name"] = "_".join(combo)
+            #sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
             sweep_config["parameters"]["epochs"] = {"value": int(meta_config["epochs_per_run"])}
 
         
             # Set module hyperparameters
             for module in combo:
-                sweep_config["parameters"][module] = {"value": module.hyperparameters}
+                sweep_config["parameters"][module] = globals()[module].hyperparameters
+                
+            # Add estimated GPU usage
+            sweep_config["gpu_usage"] = {"value": 0}
+            
+            print(sweep_config)
+            
             # Add the sweep to the list of sweeps
             self.sweeps.append([wandb.sweep(sweep=sweep_config, project=PROJECT_ID), sweep_config])
         
         print(f"Number of sweeps: {len(self.sweeps)}")
-        print(f"Total number of optimizations: {len(self.sweeps) * meta_config['optimizations_per_sweep']}")
-            
-        # TEMP: Kill after testing
-        sys.exit()
+        print(f"Maximum number of runs: {len(self.sweeps) * meta_config['sweep_config']['early_terminate']['max_iter']}")
+        
 if __name__ == "__main__":
     # Find the hostname
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
     HOST = s.getsockname()[0]
     s.close()
-    print(HOST)
-    sys.exit()
     # Set port directly
     PORT = 9998
     # Create the server, binding to the given address on the given port.
@@ -307,7 +324,7 @@ if __name__ == "__main__":
             # interrupt the program with Ctrl-C
             
             print("Starting Server with IP: " + HOST + " and port: " + str(PORT))
-            with tqdm.tqdm(desc="Serving sweeps", total=len(self.sweeps)) as pbar:
+            with tqdm(desc="Serving sweeps", total=len(server.sweeps)) as pbar:
                 def update_pbar():
                     pbar.update(1)
                 server.handle_request = lambda request: (server.handle(request), update_pbar())

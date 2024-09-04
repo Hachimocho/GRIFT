@@ -35,7 +35,12 @@ class ImageFileData(Data):
     Low RAM overhead, high runtime impact.
     """
     
-    tags = [["image", "file"]]
+    tags = [["image", "file"], "deepfakes"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     supported_extensions = ["jpg", "jpeg", "png"]
     
     def __init__(self, indata):

@@ -32,7 +32,12 @@ class Node():
     Each node class must have a set of tags which matches what data types and/or datasets it can be used with.
     Invalid tags might cause bad things, so don't do that.
     """ 
-    tags = ["all"]
+    tags = ["any"]
+    hyperparameters = {
+        "parameters": {
+            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+        }
+    }
     
     def __init__(self, x):
         self.x = x
