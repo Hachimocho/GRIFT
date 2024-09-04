@@ -13,7 +13,7 @@ if __name__ == "__main__":
     #     api_key = f.readline()
     #     wandb.init()
     with open("serverinfo.txt") as f:
-        HOST = socket.gethostbyname(f.readline())
+        HOST = f.readline()
         PORT = int(f.readline())
     data = "Requesting sweep."
     
