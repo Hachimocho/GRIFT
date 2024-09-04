@@ -11,7 +11,7 @@ class ACE():
         modules_used = []
         for sweep in finished_sweeps + unfinished_sweeps:
             modules_used.append([module.__name__ for module in sweep[1]["parameters"]])
-        # Create a kernel for the gaussian process
+        # Create a kernel for the gaussian process (TODO: tune this or make sure automatic tuning works)
         kernel = C(1.0, (1e-3, 1e3)) * RBF(10, (1e-2, 1e2))
         # Create a gaussian process regressor
         gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=9)
