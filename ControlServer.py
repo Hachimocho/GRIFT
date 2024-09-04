@@ -191,8 +191,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
             # Get the logs from the last run
             logs = last_run.history()
             self.server.sweeps = ace.meta_optimize(scores, self.server.sweeps)
-            
-    
+
         
 class MyTCPServer(socketserver.TCPServer):
     sweeps = []
@@ -326,10 +325,11 @@ if __name__ == "__main__":
             # interrupt the program with Ctrl-C
             
             print("Starting Server with IP: " + HOST + " and port: " + str(PORT))
-            with tqdm(desc="Serving sweeps", total=len(server.sweeps)) as pbar:
-                def update_pbar():
-                    pbar.update(1)
-                server.handle_request = lambda request: (server.handle(request), update_pbar())
-                server.serve_forever()
+            # with tqdm(desc="Serving sweeps", total=len(server.sweeps)) as pbar:
+            #     def update_pbar():
+            #         pbar.update(1)
+            #     server.handle_request = lambda: (server.handle_request(), update_pbar())
+            #     server.serve_forever()
+            server.serve_forever()
     except KeyboardInterrupt:
         print("Shutting down due to user input.")
