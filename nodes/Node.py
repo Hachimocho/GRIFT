@@ -39,8 +39,9 @@ class Node():
         }
     }
     
-    def __init__(self, x):
-        self.x = x
+    def __init__(self, data, edges: list):
+        self.data = data
+        self.edges = edges
         
     def match(self, other):
         if isinstance(other, Node):

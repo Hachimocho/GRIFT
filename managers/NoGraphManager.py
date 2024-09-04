@@ -28,15 +28,15 @@ import copy
 import networkx as nx
 from networkx import Graph
 from graphs.HyperGraph import HyperGraph
+from managers.GraphManager import GraphManager
 
-class GraphManager(HyperGraph):
+class NoGraphManager(GraphManager):
     """
     Defines a HyperGraph which changes over time. May use traversals, model performance, or just time to adjust the graph.
     Most commonly used to represent a specific environment or to perform automatic data augmentation.
     Abstract class, overwrite for actual usage.
     """
-    tags = ["none"]
-    # No hyperparameters, since this class should never be used without subclassing.
+    tags = ["any"]
 
     def __init__(self, graph):
         """

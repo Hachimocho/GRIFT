@@ -31,11 +31,10 @@ from networkx import Graph
 
 class Traversal():
     """
-    Defines a method through which a pointer located on some node can move to other nodes in the graph.
+    Abstract class, defines a method through which pointers located on nodes can move to other nodes in the graph.
     """
-    tags = ["deepfakes"]
-    hyperparameters = {
-        "parameters": {
-            "num_hops": {"values": [1, 2, 3]}
-        }
-    }
+    tags = ["none"]
+    # No hyperparameters, since this class should never be used without subclassing.
+    
+    def traverse(self, graph):
+        raise NotImplementedError("Subclass must implement traverse()")

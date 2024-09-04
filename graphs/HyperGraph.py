@@ -26,7 +26,7 @@ from sklearn import preprocessing
 import json
 import copy
 import networkx as nx
-from networkx import Graph
+# from networkx import Graph
 
 """
 Planning/TODO/brainstorming:
@@ -92,11 +92,11 @@ init: Get
 basic utility functions: add and remove data, get all or specific data
 """
 
-class HyperGraph(Graph):
+class HyperGraph():
     """
-    This is an abstract agent-based multigraph dataset class.
+    This is an agent-based multigraph dataset class.
     It provides several basic functions for management and traversal of data graphs.
-    Remember to  overwrite the indicated functions when subclassing.
+    Normally we would use an abstract class here, but Hypergraphs are so fundamental that we can really only use one.
     """
     tags = ["any"]
     hyperparameters = {
@@ -105,36 +105,32 @@ class HyperGraph(Graph):
         }
     }
     
-    def __init__(self, data: list, edges = None):
-        # for graph in graphs:
-        #     try:
-        #         assert (isinstance(graph, MultiGraph) or isinstance(graph, nx.Graph))
-        #     except Exception as e:
-        #         raise Exception("Only MultiGraph (or subclasses) and NetworkX Graphs (or subclasses) can be used as graphs.")
-        self.graph = Graph()
-        self.data = graphs
-        self.edges = edges
+    def __init__(self, nodes: list):
+        self.nodes = nodes
         
     def __len__(self):
-        return len(self.graphs)
+        return len(self.nodes)
     
-    def get_graph(self, index):
-        if index > (len(self.graphs) + 1):
-            raise Exception("Invalid index for get_graph.")
-        return self.graphs[index]
+    def get_node(self, index):
+        if index > (len(self.nodes) + 1):
+            raise Exception("Invalid index for get_node.")
+        return self.nodes[index]
     
-    def get_graphs(self):
-        return self.graphs
+    def get_nodes(self):
+        return self.nodes
     
-    def set_graph(self, index, graph):
-        if index > (len(self.graphs) + 1):
-            raise Exception("Invalid index for set_graph.")
-        self.graphs[index] = graph
+    def set_node(self, index, node):
+        if index > (len(self.nodes) + 1):
+            raise Exception("Invalid index for set_node.")
+        self.nodes[index] = node
         
-    def remove_graph(self, index):
-        if index > (len(self.graphs) + 1):
-            raise Exception("Invalid index for remove_graph.")
-        self.graphs.pop(index)
+    def remove_node(self, index):
+        if index > (len(self.nodes) + 1):
+            raise Exception("Invalid index for remove_node.")
+        self.nodes.pop(index)
         
-    def add_graph(self, graph):
-        self.graphs.append(graph)
+    def add_node(self, node):
+        self.nodes.append(node)
+        
+    def get_random_node(self):
+        return random.choice(self.nodes)
