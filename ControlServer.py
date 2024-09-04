@@ -299,7 +299,7 @@ class MyTCPServer(socketserver.TCPServer):
                 sweep_config["parameters"][module] = globals()[module].hyperparameters
                 
             # Add estimated GPU usage
-            sweep_config["gpu_usage"] = {"value": 0}
+            sweep_config["parameters"]["gpu_usage"] = {"value": 0}
             
             print(sweep_config)
             
@@ -311,10 +311,11 @@ class MyTCPServer(socketserver.TCPServer):
         
 if __name__ == "__main__":
     # Find the hostname
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    HOST = s.getsockname()[0]
-    s.close()
+    # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # s.connect(("8.8.8.8", 80))
+    # HOST = s.getsockname()[0]
+    # s.close()
+    HOST = "129.21.175.42"
     # Set port directly
     PORT = 9998
     # Create the server, binding to the given address on the given port.

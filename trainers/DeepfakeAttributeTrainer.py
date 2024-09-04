@@ -338,6 +338,12 @@ class DeepfakeAttributeTrainer(Trainer):
         self.traverse_graph(mode="test")
         #print("Testing finished.")
         
+    def run():
+        print("Running trainer.")
+        for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
+            self.train()
+            self.validate()
+        
 # import torch
 # from torch_geometric.data import Data
 # import random

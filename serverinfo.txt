@@ -1,2 +1,2 @@
-nsf-gpu.main.ad.rit.edu
+129.21.175.42
 9998
