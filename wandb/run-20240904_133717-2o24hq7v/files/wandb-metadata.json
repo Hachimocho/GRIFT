@@ -1,0 +1,88 @@
+{
+    "os": "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+    "python": "3.12.3",
+    "heartbeatAt": "2024-09-04T17:37:17.880253",
+    "startedAt": "2024-09-04T17:37:17.558289",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/brg2890/Workspace/HyperGraph/AgentClient.py",
+    "codePathLocal": "AgentClient.py",
+    "codePath": "AgentClient.py",
+    "git": {
+        "remote": "https://github.com/Hachimocho/HyperGraph",
+        "commit": "872d8f23110ba60845acf8419dd0c4a7b111981d"
+    },
+    "email": "brgernon@gmail.com",
+    "root": "/home/brg2890/Workspace/HyperGraph",
+    "host": "gol3775-r2",
+    "username": "brg2890",
+    "executable": "/home/brg2890/miniforge3/envs/DeepEARL/bin/python",
+    "cpu_count": 4,
+    "cpu_count_logical": 8,
+    "cpu_freq": {
+        "current": 3499.4251249999998,
+        "min": 800.0,
+        "max": 4000.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3814.411,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3899.058,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3794.824,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3823.386,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3820.843,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3844.734,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 800.0,
+            "min": 800.0,
+            "max": 4000.0
+        },
+        {
+            "current": 3899.041,
+            "min": 800.0,
+            "max": 4000.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 456.8854446411133,
+            "used": 137.14967346191406
+        }
+    },
+    "gpu": "NVIDIA GeForce RTX 2070 SUPER",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce RTX 2070 SUPER",
+            "memory_total": 8589934592
+        }
+    ],
+    "memory": {
+        "total": 31.247417449951172
+    }
+}

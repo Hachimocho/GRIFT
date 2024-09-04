@@ -1,0 +1,2 @@
+nsf-gpu.main.ad.rit.edu
+9998

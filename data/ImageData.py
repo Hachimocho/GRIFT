@@ -27,7 +27,7 @@ import json
 import copy
 import networkx as nx
 from networkx import Graph
-from data import *
+from data.Data import Data
 
 class ImageData(Data):
     """
