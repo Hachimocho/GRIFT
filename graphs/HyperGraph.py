@@ -12,7 +12,6 @@ from itertools import combinations
 import csv
 from math import comb
 from torch_geometric.utils.convert import to_networkx
-import networkx as nx
 import matplotlib.pyplot as plt
 import cv2
 from tqdm import tqdm
@@ -25,8 +24,6 @@ from collections import Counter
 from sklearn import preprocessing
 import json
 import copy
-import networkx as nx
-# from networkx import Graph
 
 """
 Planning/TODO/brainstorming:
@@ -106,31 +103,179 @@ class HyperGraph():
     }
     
     def __init__(self, nodes: list):
+        """
+        Initialize a HyperGraph object.
+
+        Args:
+            nodes (list): The nodes that make up the graph.
+        """
         self.nodes = nodes
         
     def __len__(self):
+        """
+        Get the number of nodes in the hypergraph.
+
+        Returns:
+            int: The number of nodes in the hypergraph.
+        """
         return len(self.nodes)
     
     def get_node(self, index):
+        """
+        Get a node from the hypergraph.
+
+        Args:
+            index (int): The index of the node to retrieve.
+
+        Returns:
+            Node: The node at the given index.
+
+        Raises:
+            Exception: If the index is out of range.
+        """
         if index > (len(self.nodes) + 1):
             raise Exception("Invalid index for get_node.")
         return self.nodes[index]
     
     def get_nodes(self):
+        """
+        Get all nodes in the hypergraph.
+
+        Returns:
+            list: A list of all nodes in the hypergraph.
+        """
         return self.nodes
     
     def set_node(self, index, node):
+        """
+        Set a node in the hypergraph.
+
+        Args:
+            index (int): The index of the node to set.
+            node (Node): The node to set at the given index.
+
+        Raises:
+            Exception: If the index is out of range.
+        """
         if index > (len(self.nodes) + 1):
             raise Exception("Invalid index for set_node.")
         self.nodes[index] = node
         
     def remove_node(self, index):
+        """
+        Remove a node from the hypergraph.
+
+        Args:
+            index (int): The index of the node to remove.
+
+        Raises:
+            Exception: If the index is out of range.
+        """
         if index > (len(self.nodes) + 1):
             raise Exception("Invalid index for remove_node.")
         self.nodes.pop(index)
         
     def add_node(self, node):
+        """
+        Add a node to the hypergraph.
+
+        Args:
+            node (Node): The node to add to the hypergraph.
+        """
         self.nodes.append(node)
         
     def get_random_node(self):
+        """
+        Get a random node from the hypergraph.
+
+        Returns:
+            Node: A random node from the hypergraph.
+        """
         return random.choice(self.nodes)
+    
+    def k_hop_subgraph(self, node, k, duplicates=False):
+        """
+        Get the k-hop subgraph of a node in the hypergraph.
+
+        Args:
+            node (Node): The node to get the k-hop subgraph of.
+            k (int): The number of hops to go.
+            duplicates (bool, optional): Whether to include duplicate nodes. Defaults to False.
+
+        Returns:
+            HyperGraph: The k-hop subgraph of the node.
+        """
+        k_hop_nodes = set()
+        current_hop = [node]
+        for i in range(k):
+            next_hop = set()
+            for n in current_hop:
+                for neighbor in n.get_neighbors():
+                    if neighbor not in k_hop_nodes:
+                        next_hop.add(neighbor)
+            k_hop_nodes.update(next_hop)
+            current_hop = next_hop
+        if not duplicates:
+            k_hop_nodes.remove(node)
+        return HyperGraph(list(k_hop_nodes))
+        
+    def k_hop_list(self, node, k, duplicates=False):
+        """
+        Get the k-hop ordered list of a node in the hypergraph, where the first entry is the node itself, 
+        the second entry is the node's neighbors, and so on.
+
+        Args:
+            node (Node): The node to get the k-hop list of.
+            k (int): The number of hops to go.
+            duplicates (bool, optional): Whether to include duplicate nodes. Defaults to False.
+
+        Returns:
+            list: The k-hop list of the node.
+        """
+        k_hop_list = [node]
+        current_hop = [node]
+        for i in range(k):
+            next_hop = set()
+            for n in current_hop:
+                for neighbor in n.get_neighbors():
+                    if neighbor not in next_hop and (duplicates or neighbor not in k_hop_list):
+                        next_hop.add(neighbor)
+            k_hop_list.extend(list(next_hop))
+            current_hop = list(next_hop)
+        return k_hop_list
+
+    def save_display(self, path):
+        """
+        Save and display the hypergraph.
+
+        Args:
+            path (str): The path to save the hypergraph to.
+        """
+        pos = {}
+        colors = {}
+        node_type_set = set()
+        for node in self.nodes:
+            node_type_set.add(node.__class__)
+        color_index = 0
+        for node_type in node_type_set:
+            colors[node_type] = plt.cm.tab20(color_index)
+            color_index += 1
+        for node in self.nodes:
+            if node not in pos:
+                pos[node] = (random.random() * 2 - 1, random.random() * 2 - 1)
+            for neighbor in node.get_neighbors():
+                if neighbor not in pos:
+                    pos[neighbor] = (pos[node][0] + (random.random() - 0.5) / 10, pos[node][1] + (random.random() - 0.5) / 10)
+        fig, ax = plt.subplots()
+        for node in self.nodes:
+            ax.scatter(*pos[node], c=[colors[node.__class__]], s=100)
+        for node in self.nodes:
+            for neighbor in node.get_neighbors():
+                ax.plot([pos[node][0], pos[neighbor][0]], [pos[node][1], pos[neighbor][1]], c='black', alpha=0.1)
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(-1, 1)
+        ax.axis('off')
+        fig.savefig(path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+    

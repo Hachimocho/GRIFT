@@ -297,7 +297,8 @@ class MyTCPServer(socketserver.TCPServer):
             # Set module hyperparameters
             for module in combo:
                 try:
-                    sweep_config["parameters"][module] = globals()[module].hyperparameters
+                    if globals()[module].hyperparameters is not None:
+                        sweep_config["parameters"][module] = globals()[module].hyperparameters
                 except AttributeError:
                     pass
             # Add estimated GPU usage
@@ -312,8 +313,6 @@ class MyTCPServer(socketserver.TCPServer):
         print(f"Maximum number of runs: {len(self.sweeps) * meta_config['sweep_config']['early_terminate']['max_iter']}")
         
 if __name__ == "__main__":
-    print(NoGraphManager.hyperparameters)
-    sys.exit()
     # Find the hostname
     # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # s.connect(("8.8.8.8", 80))

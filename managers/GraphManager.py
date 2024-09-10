@@ -37,7 +37,7 @@ class GraphManager(HyperGraph):
     """
     tags = ["none"]
     # No hyperparameters, since this class should never be used without subclassing.
-
+    hyperparameters = None
     def __init__(self, graph):
         """
         Initialize a GraphManager object.

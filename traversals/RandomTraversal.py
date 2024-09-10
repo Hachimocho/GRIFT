@@ -35,9 +35,12 @@ class RandomTraversal(Traversal):
     Abstract class, defines a method through which pointers located on nodes can move to other nodes in the graph.
     """
     tags = ["any"]
+    
+    
     hyperparameters = {
         "parameters": {
-            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+            "steps": {"distribution": "uniform", "min": 100, "max": 500},
+            "data_range": {"distribution": "uniform", "min": 0, "max": 3},
         }
     }
 

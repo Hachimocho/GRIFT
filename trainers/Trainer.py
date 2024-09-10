@@ -125,7 +125,6 @@ class Trainer():
             val_nodes_indexes = [i for i, val in enumerate(self.dataloader.val_mask) if val]
             videos = [video for i, video in enumerate(self.dataloader.videos) if i in val_nodes_indexes]
            
-            
         elif mode == "test":
             traversal_method = self.val_test_traversal_method
             num_steps = -1
