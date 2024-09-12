@@ -85,7 +85,7 @@ meta_config = {
         "program": "training.py",
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
-        "parameters": {"test_config": {
+        "parameters": {"test_config": {"value": {
                 "datasets": {
                     "CDFDataset": {
                         "nodes": ["AttributeNode"],
@@ -106,7 +106,7 @@ meta_config = {
                     }
                 }
             },
-        },
+        }},
         "early_terminate": {
             "type": "hyperband", 
             "s": 2, 
@@ -287,8 +287,8 @@ class MyTCPServer(socketserver.TCPServer):
             #             pass
             
             # Set name and epochs
-            print("_".join(combo))
-            print(type("_".join(combo)))
+            # print("_".join(combo))
+            # print(type("_".join(combo)))
             #sweep_config["name"] = "_".join(combo)
             #sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
             sweep_config["parameters"]["epochs"] = {"value": int(meta_config["epochs_per_run"])}
