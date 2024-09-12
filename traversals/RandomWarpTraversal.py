@@ -27,7 +27,7 @@ import networkx as nx
 from networkx import Graph
 from traversals.Traversal import Traversal
 
-class RandomTraversal(Traversal):
+class RandomWarpTraversal(Traversal):
     """
     Traverses the graph using randomly moving pointers.
     """
@@ -36,11 +36,12 @@ class RandomTraversal(Traversal):
     
     hyperparameters = {
         "parameters": {
-            "steps": {"distribution": "int_uniform", "min": 100, "max": 500}
+            "steps": {"distribution": "int_uniform", "min": 100, "max": 500},
+            "warp_chance": {"distribution": "uniform", "min": 0.0, "max": 0.999}
         }
     }
 
-    def __init__(self, graph, num_pointers, num_steps):
+    def __init__(self, graph, num_pointers, num_steps, warp_chance):
         """
         Initialize a RandomTraversal object.
 
@@ -53,6 +54,7 @@ class RandomTraversal(Traversal):
         self.num_steps = num_steps
         self.graph = graph
         self.t = 0
+        self.warp_chance = warp_chance
         self.reset_pointers()
         
     def get_pointers(self):
@@ -70,11 +72,11 @@ class RandomTraversal(Traversal):
             # Get the indices of the adjacent nodes
             adj_nodes = pointer['current_node'].get_adjacent_nodes()
 
-            # If there are no adjacent nodes,
+            # If there are no adjacent nodes or the warp triggers,
             # move the pointer to a random node
-            if not adj_nodes:
-                pointer['current_node'] = self.graph.get_random_node()
-            else:
+            if adj_nodes and (random.random() > self.warp_chance):
                 # Randomly select an adjacent node
                 pointer['current_node'] = random.choice(adj_nodes)
+            else:
+                pointer['current_node'] = self.graph.get_random_node()
 

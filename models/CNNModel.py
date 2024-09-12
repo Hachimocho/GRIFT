@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.data import Data
 import random
-from torch_geometric.utils import k_hop_subgraph, to_undirected
 from skimage import io
 from skimage.metrics import structural_similarity
 from skimage.color import rgb2gray
@@ -13,7 +11,6 @@ import tqdm
 from itertools import combinations
 import csv
 from math import comb
-from torch_geometric.utils.convert import to_networkx
 import networkx as nx
 import matplotlib.pyplot as plt
 import cv2

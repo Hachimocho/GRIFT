@@ -27,20 +27,14 @@ import networkx as nx
 from networkx import Graph
 from traversals.Traversal import Traversal
 
-class RandomTraversal(Traversal):
+class ComprehensiveTraversal(Traversal):
     """
-    Traverses the graph using randomly moving pointers.
+    Traverses the graph randomly using a single pointer, visiting each node once..
     """
     tags = ["any"]
-    
-    
-    hyperparameters = {
-        "parameters": {
-            "steps": {"distribution": "int_uniform", "min": 100, "max": 500}
-        }
-    }
+    hyperparameters = None
 
-    def __init__(self, graph, num_pointers, num_steps):
+    def __init__(self, graph):
         """
         Initialize a RandomTraversal object.
 
@@ -49,32 +43,23 @@ class RandomTraversal(Traversal):
             num_pointers (int): The number of pointers to move around the graph.
             num_steps (int): The number of steps to take each pointer. If negative, will move pointers indefinitely.
         """
-        self.num_pointers = num_pointers
-        self.num_steps = num_steps
+        self.num_pointers = 1
         self.graph = graph
-        self.t = 0
         self.reset_pointers()
         
     def get_pointers(self):
         return self.pointers
     
     def reset_pointers(self):
-        self.pointers = [{'current_node': self.graph.get_random_node()} for _ in range(self.num_pointers)]
+        self.pointers = [{'current_node': self.graph.get_random_node(), 'visited': set()} for _ in range(self.num_pointers)]
     
     def traverse(self):
-        if self.t > self.num_steps:
-            raise RuntimeError("Maximum number of steps exceeded.")
-        
-        self.t += 1
         for i, pointer in enumerate(self.pointers):
-            # Get the indices of the adjacent nodes
-            adj_nodes = pointer['current_node'].get_adjacent_nodes()
-
-            # If there are no adjacent nodes,
-            # move the pointer to a random node
-            if not adj_nodes:
-                pointer['current_node'] = self.graph.get_random_node()
+            unvisited = [node for node in self.graph.nodes if node not in pointer['visited']]
+            if unvisited:
+                pointer['current_node'] = random.choice(unvisited)
+                pointer['visited'].add(pointer['current_node'])
             else:
-                # Randomly select an adjacent node
-                pointer['current_node'] = random.choice(adj_nodes)
+                raise RuntimeError("All nodes have been visited, cannot continue traversal.")
+            pointer['current_node'] = random.choice(adj_nodes)
 
