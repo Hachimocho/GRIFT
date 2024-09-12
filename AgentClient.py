@@ -6,7 +6,6 @@ import pkgutil
 import importlib
 import subprocess
 from trainers import *
-from sshtunnel import SSHTunnelForwarder
 
 if __name__ == "__main__":
     # with open("key.txt") as f:

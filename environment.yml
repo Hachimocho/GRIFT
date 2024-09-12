@@ -344,7 +344,6 @@ dependencies:
   - pytorch-cuda=12.4=hc786d27_6
   - pytorch
   - torchvision
-  - torchaudio 
   - pytz=2024.1=pyhd8ed1ab_0
   - pywavelets=1.4.1=py312hc7c0aa3_1
   - pyyaml=6.0.1=py312h98912ed_1
