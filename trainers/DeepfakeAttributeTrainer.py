@@ -104,215 +104,14 @@ class DeepfakeAttributeTrainer(Trainer):
         t = 0
         done = False
         
-        
-        # Move pointers to adjacent nodes not visited in the last X steps
-        if traversal_method == 'random_delay_repeat':
-            # Startup pointers
-            pointers = [{'current_node': random.randint(0, num_nodes), 'last_visited': [-self.X for _ in range(num_nodes)], 'ever_visited': [0 for _ in range(num_nodes)]} for _ in range(self.num_pointers)]
-            # Move the pointers and process the node data
-            while(t < num_steps if num_steps > 0 else True):
-                t += 1
-                for i, pointer in enumerate(pointers):
-                    current_node = pointer['current_node']
-                    last_visited = pointer['last_visited']
-
-                    # Get the indices of the adjacent nodes
-                    adj_nodes = data.edge_index[1][data.edge_index[0] == current_node].tolist()
-
-                    # Filter out the nodes that were visited in the last X timesteps
-                    adj_nodes = [node for node in adj_nodes if t - last_visited[node] > self.X]
-
-                    # If there are no adjacent nodes or the RNG call is below the threshold,
-                    # move the pointer to a random not recently visited node
-                    if not adj_nodes or random.random() < self.rng_threshold:
-                        not_recently_visited_nodes = [node for node in range(num_nodes) if t - last_visited[node] > self.X]
-                        if not_recently_visited_nodes:
-                            current_node = random.choice(not_recently_visited_nodes)
-                        else:
-                            continue
-                    else:
-                        # Randomly select an adjacent node
-                        current_node = random.choice(adj_nodes)
-
-                    # Get the nodes X hops away from the current node
-                    nodes_X_hops_away, _, _, _ = k_hop_subgraph(current_node, self.K, data.edge_index)
-                    node_list = []
-                    labels = []
-                    # Process the data of the nodes X hops away
-                    for node in nodes_X_hops_away.tolist():
-                        node_list.append(data.x[node])
-                        labels.append(data.y[node])
-                    self.process_node_data(node_list, i, labels, mode)
-
-                    # Update the current node and the last visited time of the pointer
-                    pointer['current_node'] = current_node
-                    pointer['last_visited'][current_node] = t
-        
-        # Move pointers to never-before visited nodes, adjacent if possible. Stop once all nodes have been visited once.
-        elif traversal_method == 'random_never_repeat_comprehensive':
-            # Startup pointers
-            pointers = [{'current_node': random.randint(0, num_nodes), 'last_visited': [-self.X for _ in range(num_nodes)], 'ever_visited': [0 for _ in range(num_nodes)]} for _ in range(self.num_pointers)]
-            # Move the pointers and process the node data
-            while(t < num_steps if num_steps > 0 else True):
-                t += 1
-                for i, pointer in enumerate(pointers):
-                    current_node = pointer['current_node']
-                    ever_visited = pointer['ever_visited']
-
-                    # Get the indices of the adjacent nodes
-                    adj_nodes = data.edge_index[1][data.edge_index[0] == current_node].tolist()
-
-                    # Filter out the nodes that were visited in the last X timesteps
-                    adj_nodes = [node for node in adj_nodes if ever_visited[node] == 0]
-
-                    # If there are no adjacent nodes or the RNG call is below the threshold,
-                    # move the pointer to a random not recently visited node
-                    if not adj_nodes or random.random() < self.rng_threshold:
-                        not_visited_nodes = [node for node in range(num_nodes) if ever_visited[node] == 0]
-                        if not_visited_nodes:
-                            current_node = random.choice(not_visited_nodes)
-                        else:
-                            return
-                    else:
-                        # Randomly select an adjacent node
-                        current_node = random.choice(adj_nodes)
-
-                    # Get the nodes X hops away from the current node
-                    nodes_X_hops_away, _, _, _ = k_hop_subgraph(current_node, self.K, data.edge_index)
-                    node_list = []
-                    labels = []
-                    # Process the data of the nodes X hops away
-                    for node in nodes_X_hops_away.tolist():
-                        node_list.append(data.x[node])
-                        labels.append(data.y[node])
-                    self.process_node_data(node_list, i, labels, mode)
-
-                    # Update the current node and the last visited time of the pointer
-                    pointer['current_node'] = current_node
-                    pointer['ever_visited'][current_node] = 1
-                    
-        elif traversal_method == 'boring_comprehensive':
-            # print(data.num_nodes)
-            # print(num_nodes)
-            # sys.exit()
-            # Overwrite pointers for boring traversal
-            pointers = [{'current_node': 0} for _ in range(self.num_pointers)]
-            # Move the pointers and process the node data
-            while(t < num_steps if num_steps > 0 else not done):
-                t += 1
-                for i, pointer in enumerate(pointers):
-                    current_node = pointer['current_node']
-                    
-                    # Get the nodes X hops away from the current node
-                    # print("Getting adjacent nodes.")
-                    # print(current_node)
-                    nodes_X_hops_away, _, _, _ = k_hop_subgraph(current_node, self.K, data.edge_index)
-                    node_list = []
-                    labels = []
-                    
-                    # Process the data of the nodes X hops away
-                    for node in nodes_X_hops_away.tolist():
-                        node_list.append(data.x[node])
-                        labels.append(data.y[node])
-                    self.process_node_data(node_list, i, labels, mode)
-
-                    # Update the current node and the last visited time of the pointer
-                    if (current_node < (num_nodes - 1)):
-                        pointer['current_node'] = current_node + 1
-                    else:
-                        # Read through all nodes, break.
-                        #print("breaking")
-                        if all(i == (num_nodes - 1) for i in [pointer["current_node"] for pointer in pointers]):
-                            done = True
-                        break
-                if done:
-                    break
-            
-        elif traversal_method == "attribute_delay_repeat":
-            # Startup pointers
-            num_attributes = len(data.x[0][1])
-            attribute_set = [[key_attribute_index, key_attribute_value] for key_attribute_index, key_attribute_value in zip([i for i in self.key_attributes for _ in range(2)], [[0, 2][j % 2] for j in range(len(self.key_attributes) * 2)])]
-            pointers = [{'key_attributes': attribute_set[i], 'current_node': random.choice([num for num in range(num_nodes) if int(data.x[num][1][attribute_set[i][0]]) != int(attribute_set[i][1])]), 'last_visited': [-self.X for _ in range(num_nodes)], 'ever_visited': [0 for _ in range(num_nodes)]} for i in range(self.num_pointers)]
-            # Move the pointers and process the node data
-            while(t < num_steps if num_steps > 0 else True):
-                t += 1
-                for i, pointer in enumerate(pointers):
-                    current_node = pointer['current_node']
-                    last_visited = pointer['last_visited']
-
-                    # Get the indices of the adjacent nodes
-                    adj_nodes = data.edge_index[1][data.edge_index[0] == current_node].tolist()
-
-                    # Filter out the nodes that were visited in the last X timesteps
-                    adj_nodes = [node for node in adj_nodes if t - last_visited[node] > self.X]
-                    
-                    # Filter out the nodes that don't have the correct key attribute
-                    adj_nodes = [node for node in adj_nodes if int(data.x[node][1][pointer["key_attributes"][0]]) != int(pointer["key_attributes"][1])]
-
-                    # If there are no adjacent nodes or the RNG call is below the threshold,
-                    # move the pointer to a random not recently visited node
-                    if not adj_nodes or random.random() < self.rng_threshold:
-                        not_recently_visited_nodes = [node for node in range(num_nodes) if t - last_visited[node] > self.X]
-                        if not_recently_visited_nodes:
-                            current_node = random.choice(not_recently_visited_nodes)
-                        else:
-                            continue
-                    else:
-                        # Randomly select an adjacent node
-                        current_node = random.choice(adj_nodes)
-
-                    # Get the nodes X hops away from the current node
-                    nodes_X_hops_away, _, _, _ = k_hop_subgraph(current_node, self.K, data.edge_index)
-                    node_list = []
-                    labels = []
-                    # Process the data of the nodes X hops away
-                    for node in nodes_X_hops_away.tolist():
-                        node_list.append(data.x[node])
-                        labels.append(data.y[node])
-                    self.process_node_data(node_list, i, labels, mode)
-
-                    # Update the current node and the last visited time of the pointer
-                    pointer['current_node'] = current_node
-                    pointer['last_visited'][current_node] = t
-            
-        elif traversal_method == "attribute_boring_comprehensive":
-            num_attributes = len(data.x[0][1])
-            attribute_set = [[key_attribute_index, key_attribute_value] for key_attribute_index, key_attribute_value in zip([i for i in self.key_attributes for _ in range(2)], [[0, 2][j % 2] for j in range(len(self.key_attributes) * 2)])]
-            pointers = [{'key_attributes': attribute_set[i], 'current_node': 0} for i in range(self.num_pointers)]
-            # Move the pointers and process the node data
-            while(t < num_steps if num_steps > 0 else not done):
-                t += 1
-                for i, pointer in enumerate(pointers):
-                    current_node = pointer['current_node']
-                    
-                    # Get the nodes X hops away from the current node
-                    # print("Getting adjacent nodes.")
-                    # print(current_node)
-                    nodes_X_hops_away, _, _, _ = k_hop_subgraph(current_node, self.K, data.edge_index)
-                    node_list = []
-                    labels = []
-                    
-                    # Process the data of the nodes X hops away which have the correct key attribute
-                    for node in nodes_X_hops_away.tolist():
-                        if int(data.x[node][1][pointer["key_attributes"][0]]) != int(pointer["key_attributes"][1]):
-                            node_list.append(data.x[node])
-                            labels.append(data.y[node])
-                    self.process_node_data(node_list, i, labels, mode)
-
-                    # Update the current node and the last visited time of the pointer
-                    if (current_node < (num_nodes - 1)):
-                        pointer['current_node'] = current_node + 1
-                    else:
-                        # Read through all nodes, break.
-                        #print("breaking")
-                        if all(i == (num_nodes - 1) for i in [pointer["current_node"] for pointer in pointers]):
-                            done = True
-                        break
-                if done:
-                    break
-                
-        else:
-            raise ValueError("Invalid traversal method.")
+        try:
+            traverse
+        except RuntimeError as _:
+            # Traversal throws RuntimeError once finished.
+            pass
+        except Exception as e:
+            # Exceptions other than RuntimeError should be raised.
+            raise e
                 
         
 
@@ -334,6 +133,12 @@ class DeepfakeAttributeTrainer(Trainer):
         #print("Testing started.")
         self.traverse_graph(mode="test")
         #print("Testing finished.")
+        self.model.test()
+        print("Finished.")
+        # Since a model should never be tested more than once to avoid data leakage, we put some safeguards here.
+        wandb.finish()
+        self.model = None
+        self.dataset = None
         
     def run():
         print("Running trainer.")

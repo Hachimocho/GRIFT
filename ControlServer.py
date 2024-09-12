@@ -72,23 +72,6 @@ Test on test data and record results
 """
 
 meta_config = {
-    "data_config": {
-        "datasets": {
-            "CDFDataset": {
-                "nodes": ["AttributeNode"],
-                "node_selection_method": "exact",
-                "args": {
-                    "frames_per_video": 15
-                }
-            }
-        },
-        "dataloader": {
-            "DeepfakeDataLoader": {
-                "edges": ["AttributeEdge"],
-                "edge_selection_method": "exact"
-            }
-        }
-    },
     "max_time": 86400, # 24 hours
     "sweeps_between_meta_optimizations": 10,
     "epochs_per_run": 10,
@@ -102,7 +85,28 @@ meta_config = {
         "program": "training.py",
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
-        "parameters": {},
+        "parameters": {"test_config": {
+                "datasets": {
+                    "CDFDataset": {
+                        "nodes": ["AttributeNode"],
+                        "node_selection_method": "exact",
+                        "args": {
+                            "frames_per_video": 15
+                        }
+                    }
+                },
+                "dataloader": {
+                    "DeepfakeDataLoader": {
+                        "edges": ["AttributeEdge"],
+                        "edge_selection_method": "exact"
+                    }
+                },
+                "test_traversal": {
+                    "ComprehensiveTraversal": {
+                    }
+                }
+            },
+        },
         "early_terminate": {
             "type": "hyperband", 
             "s": 2, 
