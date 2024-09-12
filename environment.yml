@@ -342,6 +342,9 @@ dependencies:
   - python-tzdata=2024.1=pyhd8ed1ab_0
   - python_abi=3.12=4_cp312
   - pytorch-cuda=12.4=hc786d27_6
+  - pytorch
+  - torchvision
+  - torchaudio 
   - pytz=2024.1=pyhd8ed1ab_0
   - pywavelets=1.4.1=py312hc7c0aa3_1
   - pyyaml=6.0.1=py312h98912ed_1
@@ -445,8 +448,5 @@ dependencies:
       - referencing==0.35.1
       - rpds-py==0.20.0
       - sweeps==0.2.0
-      - torch==2.4.1+cu124
-      - torchaudio==2.4.1+cu124
-      - torchvision==0.19.1+cu124
       - triton==3.0.0
 prefix: /home/brg2890/mambaforge/envs/DeepEARL
