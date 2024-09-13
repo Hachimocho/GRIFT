@@ -18,25 +18,23 @@ Object Traversals {
     Moves pointers around a \nHyperGraph
 }
 Object Data {
-    Loads a specific dataset into\n a NetworkX Graph format.
+    Defines and loads a specific data type
 }
 Object DataLoader {
-    Loads a set of Data objects \ninto a single HyperGraph with \nmarked training/validation/testing nodes.
+    Loads a set of Dataset objects \ninto a single HyperGraph with \nmarked training/validation/testing nodes.
 }
 Object Model {
     Takes batched data from nodes\nand trains/validates/tests on it
 }
 Object Dataset {
-    Loads a specific dataset into a NetworkX Graph format.
+    Loads a specific dataset into a graph format.
 }
-Data-left->Nodes: Stored in
-HyperGraph-up->Nodes: Stored in
+Data-down->Dataset: Part of
 Dataset-left->DataLoader: Loaded into
 DataLoader-down->HyperGraph: Generates
-HyperGraph->GraphManager: Can be loaded into
+HyperGraph->GraphManager: Loaded into
 Nodes-down->DataLoader: Used in
 Edges-down->DataLoader: Used in
-HyperGraph-down->Trainer: Used in
 GraphManager-down->Trainer: Used in
 Traversals->Trainer: Used for graph navigation
 Model-left->Trainer: Trained in

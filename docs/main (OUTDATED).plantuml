@@ -1,4 +1,4 @@
-@startuml main
+@startuml main (OUTDATED)
 abstract class Node {
     object data
     str[] tags

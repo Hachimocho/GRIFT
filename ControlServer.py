@@ -86,7 +86,7 @@ meta_config = {
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
         "parameters": {"test_config": {"value": {
-                "datasets": {
+                "dataset": {
                     "CDFDataset": {
                         "nodes": ["AttributeNode"],
                         "node_selection_method": "exact",
@@ -98,10 +98,11 @@ meta_config = {
                 "dataloader": {
                     "DeepfakeDataLoader": {
                         "edges": ["AttributeEdge"],
-                        "edge_selection_method": "exact"
+                        "edge_selection_method": "exact",
+                        "graph_type": "HyperGraph"
                     }
                 },
-                "test_traversal": {
+                "traversal": {
                     "ComprehensiveTraversal": {
                     }
                 }
@@ -290,9 +291,8 @@ class MyTCPServer(socketserver.TCPServer):
             # print("_".join(combo))
             # print(type("_".join(combo)))
             #sweep_config["name"] = "_".join(combo)
-            #sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
+            sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
             sweep_config["parameters"]["epochs"] = {"value": int(meta_config["epochs_per_run"])}
-
         
             # Set module hyperparameters
             for module in combo:

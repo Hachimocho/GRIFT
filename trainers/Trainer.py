@@ -39,15 +39,11 @@ class Trainer():
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
     tags = ["any"]
-    hyperparameters = {
-        "parameters": {
-            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
-        }
-    }
-    def __init__(self, trainer_config, full_config):
+    hyperparameters = None
+    def __init__(self, full_config):
         print("Starting trainer.")
-        self.config = full_config
-        self.num_epochs = trainer_config["epochs"]
+        data, dataloader, dataset, graph, manager, model, trainer, traversal, test_dataset, test_dataloader, test_traversal = self._load_config(full_config)
+        self.num_epochs = sweep_config["parameters"]["epochs"]
         # Dynamically load requested datasets
         datasets = []
         for dataset_name, dataset_args in full_config["datasets"].items():
@@ -85,3 +81,6 @@ class Trainer():
         
     def test(self):
         raise NotImplementedError("Overwrite this!")
+    
+    def _load_config(self, full_config):
+        pass
