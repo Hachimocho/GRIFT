@@ -37,7 +37,6 @@ from managers import *
 from dataloaders import *
 from datasets import *
 from trainers import *
-from utils import *
 from traversals import *
 
 import socketserver
@@ -290,8 +289,8 @@ class MyTCPServer(socketserver.TCPServer):
             # Set name and epochs
             # print("_".join(combo))
             # print(type("_".join(combo)))
-            #sweep_config["name"] = "_".join(combo)
-            sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
+            # #sweep_config["name"] = "_".join(combo)
+            # sweep_config["parameters"]["name"] = {"value": "_".join(combo)},
             sweep_config["parameters"]["epochs"] = {"value": int(meta_config["epochs_per_run"])}
         
             # Set module hyperparameters
