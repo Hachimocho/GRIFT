@@ -424,7 +424,7 @@ dependencies:
   - zlib-ng=2.0.7=h0b41bf4_0
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
-      - --index-url https://download.pytorch.org/whl/cu124
+      - --extra-index-url https://download.pytorch.org/whl/cu124
       - annotated-types==0.7.0
       - bcrypt==4.2.0
       - cffi==1.17.1
