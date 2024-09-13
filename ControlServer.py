@@ -45,6 +45,8 @@ import yaml
 import json
 import socket
 import itertools
+import paramiko
+import getpass
 
 # Use this to specify ACE version
 from utils.AceV1 import ACE
@@ -122,6 +124,9 @@ USERNAME = 'wrightlab'
 PROJECT_ID = 'DeepEARLTesting'
 # Use random tag for data sorting
 TAG = random.randrange(2**32 - 1)
+# SSH username for secure server-client connections
+SSH_USERNAME = 'brg2890'
+
 # Login to wandb
 with open("key.txt") as f:
     api_key = f.readline()
@@ -311,12 +316,37 @@ class MyTCPServer(socketserver.TCPServer):
         print(f"Number of sweeps: {len(self.sweeps)}")
         print(f"Maximum number of runs: {len(self.sweeps) * meta_config['sweep_config']['early_terminate']['max_iter']}")
         
+    def load_whitelisted_ips():
+        with open('whitelisted_ips.txt', 'r') as f:
+            return [line.strip() for line in f.readlines()]
+
+    def create_ssh_tunnel(ip, ssh_password):
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        ssh.connect(ip, username=SSH_USERNAME, password=ssh_password)
+
+        # Create a tunnel that only allows TCP traffic on port 9998
+        tunnel = ssh.get_transport()
+        tunnel.bind(('localhost', 9998))
+        tunnel.listen(1)
+
+        print(f"SSH tunnel created to {ip}")
+        
 if __name__ == "__main__":
     # Find the hostname
     # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # s.connect(("8.8.8.8", 80))
     # HOST = s.getsockname()[0]
     # s.close()
+    
+    whitelisted_ips = load_whitelisted_ips()
+
+    ssh_password = getpass.getpass(prompt="Enter SSH password: ")
+    
+    for ip in whitelisted_ips:
+        create_ssh_tunnel(ip, ssh_password)
+    
     HOST = "129.21.175.42"
     # Set port directly
     PORT = 9998

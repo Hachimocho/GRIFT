@@ -1,0 +1,4 @@
+SSH_USERNAME: brg2890
+PROJECT_NAME: DeepEARLTesting
+WANDB_USERNAME: wrightlab
+API_KEY_LOCATION: ./key.txt
