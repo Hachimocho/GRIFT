@@ -22,7 +22,7 @@ if __name__ == "__main__":
         with SSHTunnelForwarder(
             ('nsf-gpu.main.ad.rit.edu', 22),  # Replace with your SSH server details
             ssh_username='brg2890',
-            ssh_pkey='/etc/ssh/ssh_host_rsa_key',
+            ssh_password=PASSKEY,
             remote_bind_address=('localhost', 9998)  # Replace with the desired remote address and port
         ) as server:
             # Connect to the remote server via the SSH tunnel
