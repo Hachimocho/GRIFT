@@ -1,4 +1,48 @@
-SSH_USERNAME: brg2890
 PROJECT_NAME: DeepEARLTesting
 WANDB_USERNAME: wrightlab
 API_KEY_LOCATION: ./key.txt
+META_CONFIG: {
+    "max_time": 86400, # 24 hours
+    "sweeps_between_meta_optimizations": 10,
+    "epochs_per_run": 10,
+    "epsilon": 0.99,
+    "epsilon_mult": 0.995,
+    "epsilon_min": 0.05,
+    "time_factor": 0.25,
+    "allowed_data_tags": ["deepfakes", "any"], # Only deepfake data can be used for training
+    "allowed_model_tags": ["image", "any", "cnn"], # Only models capable of processing image data can be used
+    "sweep_config": {
+        "program": "training.py",
+        "method": "bayes",
+        "metric": {"goal": "maximize", "name": "val_acc"},
+        "parameters": {"test_config": {"value": {
+                "dataset": {
+                    "CDFDataset": {
+                        "nodes": ["AttributeNode"],
+                        "node_selection_method": "exact",
+                        "args": {
+                            "frames_per_video": 15
+                        }
+                    }
+                },
+                "dataloader": {
+                    "DeepfakeDataLoader": {
+                        "edges": ["AttributeEdge"],
+                        "edge_selection_method": "exact",
+                        "graph_type": "HyperGraph"
+                    }
+                },
+                "traversal": {
+                    "ComprehensiveTraversal": {
+                    }
+                }
+            },
+        }},
+        "early_terminate": {
+            "type": "hyperband", 
+            "s": 2, 
+            "eta": 3, 
+            "max_iter": 27, 
+        }
+    }
+}

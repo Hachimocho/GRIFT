@@ -1,5 +1,5 @@
-from utils.import_utils import get_tagged_classes_from_module
+import wandb
 
-
-print(get_tagged_classes_from_module("datasets", "deepfakes"))
-#update_tag_list()
+wandb.login()
+api = wandb.Api()
+print(api._sweeps)
