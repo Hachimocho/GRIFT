@@ -2,6 +2,7 @@ import wandb
 import time
 import logging
 from wandb.errors import CommError, Error as WandbError
+import yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,5 +87,6 @@ def cleanup_stale_locks(project):
                 release_stale_lock(project, sweep)
 
 if __name__ == "__main__":
-    project = "your_project_name"
+    config = yaml.load(open("config.yml", "r"), Loader=yaml.FullLoader)
+    project = config["project_name"]
     cleanup_main(project)

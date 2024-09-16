@@ -172,3 +172,8 @@ other/attributes/A-DFD.csv
 other/attributes/A-DFDC.csv
 other/attributes/A-FF++.csv
 key.txt
+wandb
+artifacts
+./wandb/latest-runwandb/debug-internal.log
+wandb/debug.log
+wandb/latest-run

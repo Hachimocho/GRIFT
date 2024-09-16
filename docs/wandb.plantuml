@@ -1,0 +1,38 @@
+@startuml wandb
+User->SLURM: Start server-client cluster
+SLURM->Clients: Start clients
+SLURM->Server: Start cleanup subscript
+SLURM->Control: Start new sweep
+Control->Control: Generate module list and sweeps
+Control->WandBCloud: Upload first batch of sweeps
+Control->WandBCloud: Upload batch tag
+loop while batches remain
+    loop while sweeps available
+        Clients->WandBCloud: Find unlocked sweep
+        Clients->WandBCloud: Lock/claim sweep
+        Clients->Clients: Run sweep
+        Clients->Clients: Heartbeat
+        alt Sweep finishes
+            Clients->WandBCloud: Mark sweep as finished
+            Clients->WandBCloud: Report sweep metrics
+            Clients->WandBCloud: Release lock
+        else Heartbeat fails
+            Server->Client: Manual shutdown
+            Server->WandBCloud: Unclaim sweep
+            Server->WandBCloud: Release sweep lock
+            Server->WandBCloud: Log error
+        end
+    end
+    Server->WandBCloud: Identify end of batch
+    Server->WandBCloud: Retrieve sweep scores and metrics
+    alt Found val accuracy above completion threshold
+        Server->WandBCloud: Mark winning sweep
+        Server->Server: Complete logging
+        Server->Clients: Shutdown clients
+        Server->Server: Shutdown server
+    else No val accuracy above completion threshold
+        Server->Server: Reorder queued sweeps \nusing score predictions
+        Server->WandBCloud: Upload next batch of sweeps
+    end
+end
+@enduml
