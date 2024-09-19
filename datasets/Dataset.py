@@ -31,38 +31,18 @@ from utils.import_utils import import_classes_from_directory, get_classes_from_m
 from nodes import *
 from edges import *
 
-class DataLoader():
+class Dataset():
     """
-    Takes a Data object and loads it into a HyperGraph.
+    Takes a data path, node and data classes, and loads the data into node format.
     """
     tags = ["none"]
     
-    def __init__(self, data_root):
+    def __init__(self, data_root, data_class, node_class):
         assert os.path.isdir(data_root)
         self.data_root = data_root
+        self.data_class = data_class
+        self.node_class = node_class
         
-
-
-
-        # Function to get list of classes from a module
-        
-
-        # Get lists of available classes
-        available_node_types = get_classes_from_module('nodes')
-        available_edge_types = get_classes_from_module('edges')
-
-        print("Available node types:", available_node_types)
-        print("Available edge types:", available_edge_types)
-        nodes = []
-        edges = []
-        for node_type in available_node_types:
-            print("Node type detected: " + node_type)
-            nodes.append(globals()[node_type](0))
-        for edge_type in available_edge_types:
-            print("Edge type detected: " + edge_type)
-            edges.append(globals()[edge_type](0))
-        self.data = self.__load__()
-        
-    def __load__(self):
-        pass
+    def load(self):
+        raise NotImplementedError("Overwrite this!")
     

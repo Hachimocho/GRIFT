@@ -14,3 +14,10 @@ def load_tag(run):
     # Download the artifact's contents
     tag = artifact.get("tag_holder").get_column("main")[0]
     return tag    
+
+def load_tag_runless(project):
+    # Query W&B for an artifact without an existing run
+    api = wandb.Api()
+    artifact = api.artifact(project + "/tag:latest")
+    tag = artifact.get("tag_holder").get_column("main")[0]
+    return tag

@@ -1,56 +1,192 @@
-import socket
-import sys
 import wandb
-import os
-import pkgutil
-import importlib
-import subprocess
-from utils.import_utils import load_class_from_globals
-from sshtunnel import SSHTunnelForwarder
+import GPUtil
+import time
+import random
+import logging
+import threading
+from wandb.errors import CommError, Error as WandbError
+from utils.WandbArtifactUtils import load_tag_runless
+from utils.import_utils import import_classes_from_directory, load_class_from_globals, import_and_load
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+HEARTBEAT_INTERVAL = 600  # 10 minutes in seconds
+
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
+def retry_with_backoff(func):
+    def wrapper(*args, **kwargs):
+        for attempt in range(MAX_RETRIES):
+            try:
+                return func(*args, **kwargs)
+            except (CommError, WandbError) as e:
+                if attempt == MAX_RETRIES - 1:
+                    logger.error(f"Max retries reached. Function {func.__name__} failed: {str(e)}")
+                    raise
+                wait = RETRY_DELAY * (2 ** attempt)
+                logger.warning(f"Attempt {attempt + 1} failed. Retrying in {wait} seconds...")
+                time.sleep(wait)
+    return wrapper
+
+@retry_with_backoff
+def find_unclaimed_sweeps(project, batch_tag):
+    api = wandb.Api()
+    sweeps = api.sweeps(f"{project}")
+    
+    unclaimed_sweeps = []
+    for sweep in sweeps:
+        if batch_tag in sweep.tags and 'unclaimed' in sweep.tags:
+            unclaimed_sweeps.append(sweep)
+    
+    return unclaimed_sweeps
+
+def check_gpu_availability(required_vram):
+    gpus = GPUtil.getGPUs()
+    for gpu in gpus:
+        if gpu.memoryFree >= required_vram * 1024:  # Convert GB to MB
+            return True
+    return False
+
+@retry_with_backoff
+def try_claim_sweep(sweep, client_id):
+    api = wandb.Api()
+    lock_name = f"lock_{sweep.id}"
+    
+    try:
+        artifact = wandb.Artifact(lock_name, type="lock")
+        artifact.add_string("owner", client_id)
+        artifact.add_string("timestamp", str(time.time()))
+        api.log_artifact(artifact, project=sweep.project)
+        
+        sweep.tags.remove('unclaimed')
+        sweep.tags.append('claimed')
+        sweep.update()
+        return True
+    except CommError:
+        return False
+
+@retry_with_backoff
+def release_sweep(sweep):
+    api = wandb.Api()
+    lock_name = f"lock_{sweep.id}"
+    
+    try:
+        api.artifact(f"{sweep.project}/{lock_name}:latest").delete()
+    except CommError:
+        logger.warning(f"Failed to delete lock artifact for sweep {sweep.id}")
+    
+    sweep.tags.remove('claimed')
+    sweep.tags.append('unclaimed')
+    sweep.update()
+
+@retry_with_backoff
+def mark_sweep_finished(sweep):
+    api = wandb.Api()
+    sweep.tags.remove('unfinished')
+    sweep.tags.append('finished')
+    sweep.update()
+    
+    lock_name = f"lock_{sweep.id}"
+    try:
+        api.artifact(f"{sweep.project}/{lock_name}:latest").delete()
+    except CommError:
+        logger.warning(f"Failed to delete lock artifact for finished sweep {sweep.id}")
+
+def client_main(project, batch_tag):
+    client_id = f"client_{random.randint(1000, 9999)}"
+    
+    while True:
+        try:
+            unclaimed_sweeps = find_unclaimed_sweeps(project, batch_tag)
+            
+            for sweep in unclaimed_sweeps:
+                required_vram = sweep.config.get('gpu_usage', 0)
+                
+                if check_gpu_availability(required_vram):
+                    if try_claim_sweep(sweep, client_id):
+                        logger.info(f"Successfully claimed sweep {sweep.id}")
+                        run_sweep(sweep, client_id)
+                    else:
+                        logger.info(f"Failed to claim sweep {sweep.id}, it may have been claimed by another client")
+                else:
+                    logger.info(f"Not enough GPU memory for sweep {sweep.id}. Required: {required_vram}GB")
+            
+            time.sleep(60)  # Wait for 1 minute before checking for new sweeps
+        except Exception as e:
+            logger.error(f"Unexpected error in client_main: {str(e)}")
+            time.sleep(60)  # Wait before retrying
+
+def your_training_function():
+    try:
+        data, dataloader, dataset, graph, manager, model, trainer, traversal, test_traversal = _load_config()
+        wandb.agent(
+            sweep_id=sweep_id, project=pid, count=wandb.config["optimizations_per_sweep"], function=trainer.run
+        )
+        print("Finished running sweep!")
+    except RuntimeError as e:
+        if "out of memory" in str(e):
+            sock.sendall(b"GPU out of memory\n")
+            print("GPU out of memory, reporting to server")
+        else:
+            raise e
+
+def _load_config(self):
+    data, node, edge, dataloader, dataset, graph, manager, model, trainer, traversal = wandb.config["parameters"]["modules"]["value"]
+    data = import_and_load("data", data, **wandb.config["parameters"][data])
+    node = import_and_load("nodes", node, **wandb.config["parameters"][node])
+    edge = import_and_load("edges", edge, **wandb.config["parameters"][edge])
+    dataloader = import_and_load("dataloaders", dataloader, **wandb.config["parameters"][dataloader])
+    dataset = import_and_load("datasets", dataset, **wandb.config["parameters"][dataset])
+    graph = import_and_load("graphs", graph, **wandb.config["parameters"][graph])
+    manager = import_and_load("managers", manager, **wandb.config["parameters"][manager])
+    model = import_and_load("models", model, **wandb.config["parameters"][model])
+    trainer = import_and_load("trainers", trainer, **wandb.config["parameters"][trainer])
+    traversal = import_and_load("traversals", traversal, **wandb.config["parameters"][traversal])
+    test_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**wandb.config["parameters"]["test_traversal"]["value"].values())))
+    return trainer
+
+@retry_with_backoff
+def update_lock_timestamp(sweep, client_id):
+    api = wandb.Api()
+    lock_name = f"lock_{sweep.id}"
+    
+    try:
+        artifact = api.artifact(f"{sweep.project}/{lock_name}:latest")
+        artifact.metadata['timestamp'] = str(time.time())
+        artifact.save()
+        logger.info(f"Updated timestamp for sweep {sweep.id}")
+    except CommError:
+        logger.warning(f"Failed to update timestamp for sweep {sweep.id}")
+
+def heartbeat(sweep, client_id, stop_event):
+    while not stop_event.is_set():
+        update_lock_timestamp(sweep, client_id)
+        time.sleep(HEARTBEAT_INTERVAL)
+
+def run_sweep(sweep, client_id):
+    stop_event = threading.Event()
+    heartbeat_thread = threading.Thread(target=heartbeat, args=(sweep, client_id, stop_event))
+    heartbeat_thread.start()
+
+    try:
+        # Your sweep running code here
+        wandb.agent(sweep.id, function=your_training_function)
+        
+        mark_sweep_finished(sweep)
+    except Exception as e:
+        logger.error(f"Error running sweep {sweep.id}: {str(e)}")
+    finally:
+        stop_event.set()
+        heartbeat_thread.join()
+        release_sweep(sweep)
 
 if __name__ == "__main__":
-    # with open("key.txt") as f:
-    #     api_key = f.readline()
-    #     wandb.init()
-    with open("serverinfo.txt") as f:
-        HOST = socket.gethostbyaddr(f.readline().strip())[-1][0]
-        PORT = int(f.readline())
-    data = "Requesting sweep."
-    print(HOST, ":", PORT)
-    while True:
-        # Create a socket (SOCK_STREAM means a TCP socket)
-        with SSHTunnelForwarder(
-            ('nsf-gpu.main.ad.rit.edu', 22),  # Replace with your SSH server details
-            ssh_username='brg2890',
-            ssh_password=PASSKEY,
-            remote_bind_address=('localhost', 9998)  # Replace with the desired remote address and port
-        ) as server:
-            # Connect to the remote server via the SSH tunnel
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.connect(('localhost', server.local_bind_port))
-                sock.sendall(bytes(data + "\n", "utf-8"))
-                data = sock.recv(1024)
-                print('Received:', data.decode())
-                # Receive sweep config from the server
-                received = str(sock.recv(1024), "utf-8")
-                sweep_id, pid, sweep_config = received.split("|")
-                # Print out config for user review
-                print("Config:", wandb.config)
-                print("sweep config", sweep_config)
-                
-                try:   
-                    #data, dataloader, dataset, graph, manager, model, trainer, traversal = sweep_config["parameters"]["name"].split("_")
-                    #test_dataset, test_dataloader, test_traversal = globals()[next(iter(sweep_config["parameters"]["test_config"]["value"]["dataset"].keys()))](), sweep_config["parameters"]["test_config"]["value"]["dataloader"].keys()[0], sweep_config["parameters"]["test_config"]["value"]["traversal"].keys()[0]
-                    trainer = globals()[next(iter(wandb.config["trainer"]))](wandb.config["trainer"][next(iter(wandb.config["trainer"]))], wandb.config)
-                    wandb.agent(
-                        sweep_id=sweep_id, project=pid, count=wandb.config["optimizations_per_sweep"], function=trainer.run
-                    )
-                    print("Finished running sweep!")
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        sock.sendall(b"GPU out of memory\n")
-                        print("GPU out of memory, reporting to server")
-                    else:
-                        raise e
-                
-                
+    # Example usage
+    config = yaml.load(open("config.yml", "r"), Loader=yaml.FullLoader)
+    project = config["project_name"]
+    batch_tag = load_tag_runless(project)
+    client_main(project, batch_tag)

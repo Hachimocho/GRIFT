@@ -1,9 +1,9 @@
 # docs/tags.md
 
-`any`: RandomNoReturnTraversal, RandomTraversal, ComprehensiveTraversal, HyperGraph, RandomWarpTraversal, RandomNoReturnWarpTraversal, NoGraphManager, Node, Edge
+`any`: HyperGraph, Node, RandomWarpTraversal, Edge, RandomNoReturnWarpTraversal, RandomNoReturnTraversal, NoGraphManager, ComprehensiveTraversal, RandomTraversal
 `attributes`: AttributeNode
-`deepfakes`: DeepfakeDataset, ImageFileData, DeepfakeModel, CNNModel, AttributeNode
+`deepfakes`: DeepfakeDataset, ImageFileData, AttributeNode, CNNModel, DeepfakeModel
 `all`: Data
-`image, file`: ImageFileData, ImageData
-`none`: DataLoader, GraphManager, Model, Traversal
+`file, image`: ImageData, ImageFileData
+`none`: Dataloader, Traversal, Model, GraphManager, Dataset
 `cnn`: CNNModel

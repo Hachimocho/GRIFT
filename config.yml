@@ -15,27 +15,8 @@ META_CONFIG: {
         "program": "training.py",
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "val_acc"},
-        "parameters": {"test_config": {"value": {
-                "dataset": {
-                    "CDFDataset": {
-                        "nodes": ["AttributeNode"],
-                        "node_selection_method": "exact",
-                        "args": {
-                            "frames_per_video": 15
-                        }
-                    }
-                },
-                "dataloader": {
-                    "DeepfakeDataLoader": {
-                        "edges": ["AttributeEdge"],
-                        "edge_selection_method": "exact",
-                        "graph_type": "HyperGraph"
-                    }
-                },
-                "traversal": {
-                    "ComprehensiveTraversal": {
-                    }
-                }
+        "parameters": {"test_traversal": {"value": {
+                "ComprehensiveTraversal": None
             },
         }},
         "early_terminate": {

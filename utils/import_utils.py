@@ -1,5 +1,5 @@
 import os
-import importlib
+from importlib import import_module
 import inspect
 import sys
 # from trainers import *
@@ -34,7 +34,7 @@ def import_classes_from_directory(directory):
         if filename.endswith('.py') and filename != '__init__.py':
             module_name = filename[:-3]  # Remove .py extension
             module_path = f"{os.path.basename(directory)}.{module_name}"
-            module = importlib.import_module(module_path)
+            module = import_module(module_path)
             
             for name, obj in inspect.getmembers(module):
                 if inspect.isclass(obj) and obj.__module__ == module.__name__:
@@ -90,3 +90,10 @@ def load_class_from_globals(params):
     if isinstance(args, dict):
         args = {key: value for key, value in args.items()}
     return clas(**args)
+
+def import_and_load(package, module_name, params):
+    module = import_module(package, module_name)
+    if params is not None:
+        return module(**params)
+    else:
+        return module()

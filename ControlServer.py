@@ -187,8 +187,12 @@ def run_completion_code(entity, project, batch_tag, epsilon, epsilon_mult, epsil
             try:
                 if globals()[module].hyperparameters is not None:
                     sweep_config["parameters"][module] = globals()[module].hyperparameters
+                else:
+                    sweep_config["parameters"][module] = {"value": None}
             except AttributeError:
-                pass
+                raise NotImplementedError(f"Module {module} does not have a hyperparameters dictionary.")
+        # Add module list for loading
+        sweep_config["parameters"]["modules"] = {"value": combo}
         # TODO: Add GPU usage estimation based on model and batch size
         sweep_config["parameters"]["gpu_usage"] = {"value": 0}
         
