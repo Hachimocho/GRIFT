@@ -135,18 +135,41 @@ def your_training_function():
             raise e
 
 def _load_config(self):
-    data, node, edge, dataloader, dataset, graph, manager, model, trainer, traversal = wandb.config["parameters"]["modules"]["value"]
-    data = import_and_load("data", data, **wandb.config["parameters"][data])
-    node = import_and_load("nodes", node, **wandb.config["parameters"][node])
-    edge = import_and_load("edges", edge, **wandb.config["parameters"][edge])
-    dataloader = import_and_load("dataloaders", dataloader, **wandb.config["parameters"][dataloader])
-    dataset = import_and_load("datasets", dataset, **wandb.config["parameters"][dataset])
-    graph = import_and_load("graphs", graph, **wandb.config["parameters"][graph])
-    manager = import_and_load("managers", manager, **wandb.config["parameters"][manager])
-    model = import_and_load("models", model, **wandb.config["parameters"][model])
-    trainer = import_and_load("trainers", trainer, **wandb.config["parameters"][trainer])
-    traversal = import_and_load("traversals", traversal, **wandb.config["parameters"][traversal])
-    test_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**wandb.config["parameters"]["test_traversal"]["value"].values())))
+    """
+    Load configuration parameters for the agent training process.
+    
+    Load order: 
+    1. The data, node, and edge classes are gathered
+    2. The datasets are loaded using the data, node, and edge classes
+    3. The dataloader is loaded using the datasets
+    4. The graph is loaded using the dataloader
+    5. The manager is loaded using the graph
+    6. The models are loaded
+    7. The traversals are loaded using the manager
+    8. The trainer is loaded using the manager, traversals, and models
+    
+    Returns:
+        trainer (Trainer): The loaded trainer object.
+    """
+    data, node, edge, dataloader, datasets, graph, manager, model, trainer, traversal = wandb.config["parameters"]["modules"]["value"]
+    data_params = wandb.config["parameters"][data]
+    node_params = wandb.config["parameters"][node]
+    edge_params = wandb.config["parameters"][edge]
+    loaded_datasets = []
+    for dataset in datasets:
+        loaded_dataset = import_and_load("datasets", dataset, **(wandb.config["parameters"][dataset].join({"data": [data, data_params], "node": [node, node_params], "edge": [edge, edge_params]})))
+        loaded_datasets.append(loaded_dataset)
+    dataloader = import_and_load("dataloaders", dataloader, **(wandb.config["parameters"][dataloader].join({"datasets": loaded_datasets})))
+    graph = dataloader.load()
+    manager = import_and_load("managers", manager, **(wandb.config["parameters"][manager].join({"graph": graph})))
+    models = []
+    for _ in range(wandb.config["num_models"]):
+        model = import_and_load("models", model, **wandb.config["parameters"][model])
+        models.append(model)
+    train_traversal = import_and_load("traversals", traversal, **(wandb.config["parameters"][traversal]).join({"graph": manager.graph}))
+    val_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**(wandb.config["parameters"]["test_traversal"]["value"]).join({"graph": manager.graph}))))
+    test_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**(wandb.config["parameters"]["test_traversal"]["value"]).join({"graph": manager.graph}))))
+    trainer = import_and_load("trainers", trainer, **(wandb.config["parameters"][trainer]).join({"manager": manager, "train_traversal": train_traversal, "val_traversal": val_traversal, "test_traversal": test_traversal, "models": models}))
     return trainer
 
 @retry_with_backoff

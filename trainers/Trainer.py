@@ -38,7 +38,7 @@ class Trainer():
     """
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
-    tags = ["any"]
+    tags = ["none"]
     hyperparameters = None
     def __init__(self, graphmanager, model, traversal, test_traversal):
         self.graphmanager = graphmanager
@@ -46,11 +46,40 @@ class Trainer():
         self.traversal = traversal
         self.test_traversal = test_traversal
         
-    def run():
+    def run(self):
         print("Running trainer.")
+        t = time.time()
+        best_acc = 0
         for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
-            self.train()
-            self.test()
+            avg_train_acc, train_loss = self.train()
+            avg_val_acc, val_loss = self.val()
+            self.graphmanager.update_graph()
+            wandb.log({"epoch": epoch, "train_acc": avg_train_acc, "val_acc": avg_val_acc})
+            if avg_val_acc > best_acc:
+                best_acc = avg_val_acc
+                self.model.save_checkpoint()
+            else:
+                self.model.load_checkpoint()
+        wandb.log({"best_acc": best_acc})
+        wandb.log({"time": time.time() - t})
+        
+    def test_run(self):
+        print("Test run!")
+        t = time.time()
+        best_acc = 0
+        for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
+            avg_train_acc, train_loss = self.train()
+            avg_val_acc, val_loss = self.val()
+            self.graphmanager.update_graph()
+            wandb.log({"epoch": epoch, "train_acc": avg_train_acc, "val_acc": avg_val_acc})
+            if avg_val_acc > best_acc:
+                best_acc = avg_val_acc
+                self.model.save_checkpoint()
+            else:
+                self.model.load_checkpoint()
+        avg_test_acc = self.test()
+        wandb.log({"test_acc": avg_test_acc})
+        wandb.log({"time": time.time() - t})
 
     def process_node_data(self):
         raise NotImplementedError("Overwrite this!")
@@ -58,5 +87,8 @@ class Trainer():
     def train(self):
         raise NotImplementedError("Overwrite this!")
         
+    def val(self):
+        raise NotImplementedError("Overwrite this!")
+    
     def test(self):
         raise NotImplementedError("Overwrite this!")

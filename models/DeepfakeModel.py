@@ -27,7 +27,7 @@ class DeepfakeModel(Model):
     """ Main class for deepfake models. Should be subclassed for actual usage.
         Note: Currently, pointers reset every epoch.
     """
-    tags = ["deepfakes"]
+    tags = ["none"]
     hyperparameters = {
         "parameters": {
             "test_param": {"distribution": "uniform", "min": 0, "max": 10}
