@@ -1,0 +1,21 @@
+@startuml graph_generation
+skinparam ParticipantPadding 5
+skinparam BoxPadding 5
+skinParam MaxAsciiMessageLength 15
+
+System->Datasets: Load datasets using node and dataset config
+loop for each dataset
+    Datasets->Datasets: Load node class and hyperparameters using config
+    Datasets->Datasets: Load data into node list
+    Datasets->Datasets: Find and store any extra node attributes required by node class
+    Datasets->Datasets: Create train, val, and test masks
+    Datasets->System: Return node list and masks
+end
+System->Dataloader: Load dataloader using config and list of node lists + masks
+Dataloader->Dataloader: Compile complete list of nodes
+Dataloader->Dataloader: Use node.match() to find all matching nodes
+Dataloader->Dataloader: Create edges using edge config and matching node list
+Dataloader->Dataloader: Create complete train, val, and test masks
+Dataloader->Dataloader: Load nodes, edges, and masks into HyperGraph
+Dataloader->System: Return HyperGraph
+@enduml

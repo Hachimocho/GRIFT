@@ -37,6 +37,11 @@ class Dataloader():
     Takes a bunch of datasets and loads them into a HyperGraph.
     """
     tags = ["none"]
+    hyperparameters = None
+    
+    def __init__(self, datasets, edge_class):
+        self.datasets = datasets
+        self.edge_class = edge_class
     
     def load(self, datasets) -> HyperGraph:
         raise NotImplementedError("Overwrite this!")

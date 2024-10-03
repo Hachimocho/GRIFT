@@ -23,8 +23,9 @@ from collections import Counter
 from sklearn import preprocessing
 import json
 import copy
+from nodes.Node import Node
 
-class Node():
+class RandomNode(Node):
     """
     Each node class must have a set of tags which matches what data types and/or datasets it can be used with.
     Invalid tags might cause bad things, so don't do that.
@@ -32,50 +33,19 @@ class Node():
     tags = ["any"]
     hyperparameters = {
         "parameters": {
-            "test_param": {"distribution": "uniform", "min": 0, "max": 10}
+            "match_chance": {"distribution": "uniform", "min": 0, "max": 1}
         }
     }
     
-    def __init__(self, split, data, edges, label):
+    def __init__(self, split, data, edges, label, match_chance):
         self.split = split
         self.data = data
         self.edges = edges
         self.label = label
+        self.match_chance = match_chance
         
     def match(self, other):
         if isinstance(other, Node):
-            return True
-        else:
-            return False
-    
-    def __len__(self):
-        return len(self.x)
-    
-    def get_data(self):
-        return self.x
-    
-    def set_data(self, x):
-        self.x = x
-        
-    def get_adjacent_nodes(self):
-        adjacent_nodes = []
-        for edge in self.edges:
-            for node in edge.get_nodes():
-                if node != self:
-                    adjacent_nodes.append(node)
-        return adjacent_nodes
-        
-    def __eq__(self, other):
-        if isinstance(other, Node):
-            return self.data == other.data
-        else:
-            return False
-        
-    def __hash__(self):
-        return hash(self.data)
-    
-    def get_split(self):
-        return self.split
-    
-    def set_split(self, split):
-        self.split = split
+            if random.random() <= self.match_chance:
+                return True
+        return False

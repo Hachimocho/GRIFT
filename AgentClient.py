@@ -157,9 +157,9 @@ def _load_config(self):
     edge_params = wandb.config["parameters"][edge]
     loaded_datasets = []
     for dataset in datasets:
-        loaded_dataset = import_and_load("datasets", dataset, **(wandb.config["parameters"][dataset].join({"data": [data, data_params], "node": [node, node_params], "edge": [edge, edge_params]})))
+        loaded_dataset = import_and_load("datasets", dataset, **(wandb.config["parameters"][dataset].join({"data": [data, data_params], "node": [node, node_params]})))
         loaded_datasets.append(loaded_dataset)
-    dataloader = import_and_load("dataloaders", dataloader, **(wandb.config["parameters"][dataloader].join({"datasets": loaded_datasets})))
+    dataloader = import_and_load("dataloaders", dataloader, **(wandb.config["parameters"][dataloader].join({"datasets": loaded_datasets, "edge_class": [edge, edge_params]})))
     graph = dataloader.load()
     manager = import_and_load("managers", manager, **(wandb.config["parameters"][manager].join({"graph": graph})))
     models = []
