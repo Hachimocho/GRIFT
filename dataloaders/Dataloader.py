@@ -43,6 +43,6 @@ class Dataloader():
         self.datasets = datasets
         self.edge_class = edge_class
     
-    def load(self, datasets) -> HyperGraph:
+    def load(self) -> HyperGraph:
         raise NotImplementedError("Overwrite this!")
     
