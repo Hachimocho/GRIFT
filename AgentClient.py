@@ -7,6 +7,7 @@ import threading
 from wandb.errors import CommError, Error as WandbError
 from utils.WandbArtifactUtils import load_tag_runless
 from utils.import_utils import import_classes_from_directory, load_class_from_globals, import_and_load
+import yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -167,9 +168,8 @@ def _load_config(self):
         model = import_and_load("models", model, **wandb.config["parameters"][model])
         models.append(model)
     train_traversal = import_and_load("traversals", traversal, **(wandb.config["parameters"][traversal]).join({"graph": manager.graph}))
-    val_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**(wandb.config["parameters"]["test_traversal"]["value"]).join({"graph": manager.graph}))))
     test_traversal = import_and_load("traversals", next(iter(wandb.config["parameters"]["test_traversal"]["value"].keys())), next(iter(**(wandb.config["parameters"]["test_traversal"]["value"]).join({"graph": manager.graph}))))
-    trainer = import_and_load("trainers", trainer, **(wandb.config["parameters"][trainer]).join({"manager": manager, "train_traversal": train_traversal, "val_traversal": val_traversal, "test_traversal": test_traversal, "models": models}))
+    trainer = import_and_load("trainers", trainer, **(wandb.config["parameters"][trainer]).join({"manager": manager, "train_traversal": train_traversal, "test_traversal": test_traversal, "models": models}))
     return trainer
 
 @retry_with_backoff

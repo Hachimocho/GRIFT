@@ -1,35 +1,7 @@
-import torch
-import random
-from skimage import io
-from skimage.metrics import structural_similarity
-from skimage.color import rgb2gray
-import os
-import glob
-import sys
 import tqdm
-from itertools import combinations
-import csv
-from math import comb
-import networkx as nx
-import matplotlib.pyplot as plt
-import cv2
 from tqdm import tqdm
-from PIL import Image
-from concurrent.futures import ThreadPoolExecutor
 import time
-import numpy as np
-import re
-from collections import Counter
-from sklearn import preprocessing
-import json
-import copy
-import networkx as nx
-from networkx import Graph
-from graphs.HyperGraph import HyperGraph
-from models.CNNModel import CNNModel
-from datasets.DeepfakeDataset import DeepfakeDataset
 import wandb
-from utils.import_utils import import_classes_from_directory, get_classes_from_module
 from datasets import *
 from dataloaders import *
 from managers import *
@@ -39,12 +11,13 @@ class Trainer():
     Base class for pointer/agent based traversal and training on Hypergraphs.
     """
     tags = ["none"]
-    hyperparameters = None
-    def __init__(self, graphmanager, model, traversal, test_traversal):
+    hyperparameters: dict | None = None
+    def __init__(self, graphmanager, train_traversal, test_traversal, models):
         self.graphmanager = graphmanager
-        self.model = model
-        self.traversal = traversal
+        self.models = models
+        self.train_traversal = train_traversal
         self.test_traversal = test_traversal
+        self.epochs = 15
         
     def run(self):
         print("Running trainer.")

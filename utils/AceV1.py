@@ -1,6 +1,7 @@
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C    
-    
+import numpy as np
+
 class ACE():
     def __init__(self):
         pass

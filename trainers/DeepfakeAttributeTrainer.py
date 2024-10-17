@@ -105,7 +105,7 @@ class DeepfakeAttributeTrainer(Trainer):
         done = False
         
         try:
-            traverse
+            traverse.something()
         except RuntimeError as _:
             # Traversal throws RuntimeError once finished.
             pass
@@ -140,7 +140,7 @@ class DeepfakeAttributeTrainer(Trainer):
         self.model = None
         self.dataset = None
         
-    def run():
+    def run(self):
         print("Running trainer.")
         for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
             self.train()

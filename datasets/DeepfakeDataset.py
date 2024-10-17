@@ -1,28 +1,15 @@
 import torch
 import random
-from skimage import io
-from skimage.metrics import structural_similarity
-from skimage.color import rgb2gray
 import os
-import glob
 import sys
 import tqdm
 from itertools import combinations
 import csv
-from math import comb
-import networkx as nx
-import matplotlib.pyplot as plt
-import cv2
 from tqdm import tqdm
-from PIL import Image
-from concurrent.futures import ThreadPoolExecutor
 import time
-import numpy as np
-import re
 from collections import Counter
-from sklearn import preprocessing
 import json
-import copy
+from data.Data import Data
 
 class DeepfakeDataset():
     tags = ["deepfakes"]
@@ -703,49 +690,49 @@ class DeepfakeDataset():
         
         return data, data_train, data_val, data_test, videos, train_mask, val_mask, test_mask
 
-if __name__ == "__main__":
-    graph, encoder = DeepfakeDataset().generate_graph(file_root='/home/brg2890/major/preprocessed/FaceForensics++_All/FaceForensics++_Graph', attribute_root='/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/A-FF++.csv', threshold=38)
+# if __name__ == "__main__":
+#     graph, encoder = DeepfakeDataset().generate_graph(file_root='/home/brg2890/major/preprocessed/FaceForensics++_All/FaceForensics++_Graph', attribute_root='/home/brg2890/major/bryce_python_workspace/GraphWork/DeepEARL/A-FF++.csv', threshold=38)
 
-    print(graph.num_nodes)
-
-
-    print(graph.num_edges)
+#     print(graph.num_nodes)
 
 
-    print(graph.num_node_features)
+#     print(graph.num_edges)
 
 
-    print(graph.has_isolated_nodes())
+#     print(graph.num_node_features)
 
 
-    print(graph.has_self_loops())
+#     print(graph.has_isolated_nodes())
 
 
-    print(graph.is_directed())
+#     print(graph.has_self_loops())
 
-    # Call the function with your graph and processing function
-    traverse_graph(graph, process_node_data, X=1, rng_threshold=0.01, num_pointers=3)
+
+#     print(graph.is_directed())
+
+#     # Call the function with your graph and processing function
+#     traverse_graph(graph, process_node_data, X=1, rng_threshold=0.01, num_pointers=3)
     
-    #print('edge_attr' in graph)
+#     #print('edge_attr' in graph)
 
-    print(graph.num_nodes)
-
-
-    print(graph.num_edges)
+#     print(graph.num_nodes)
 
 
-    print(graph.num_node_features)
+#     print(graph.num_edges)
 
 
-    print(graph.has_isolated_nodes())
+#     print(graph.num_node_features)
 
 
-    print(graph.has_self_loops())
+#     print(graph.has_isolated_nodes())
 
 
-    print(graph.is_directed())
+#     print(graph.has_self_loops())
 
-    # Transfer data object to GPU.
-    device = torch.device('cuda')
-    graph = graph.to(device)
-    print("Cuda test finished.")
+
+#     print(graph.is_directed())
+
+#     # Transfer data object to GPU.
+#     device = torch.device('cuda')
+#     graph = graph.to(device)
+#     print("Cuda test finished.")

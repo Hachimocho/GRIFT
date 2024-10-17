@@ -32,7 +32,7 @@ class ComprehensiveTraversal(Traversal):
     Traverses the graph randomly using a single pointer, visiting each node once..
     """
     tags = ["any"]
-    hyperparameters = None
+    hyperparameters: dict | None = None
 
     def __init__(self, graph):
         """
@@ -61,5 +61,3 @@ class ComprehensiveTraversal(Traversal):
                 pointer['visited'].add(pointer['current_node'])
             else:
                 raise RuntimeError("All nodes have been visited, cannot continue traversal.")
-            pointer['current_node'] = random.choice(adj_nodes)
-

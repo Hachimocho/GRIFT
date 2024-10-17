@@ -1,33 +1,13 @@
 
-import torch
 import random
-from skimage import io
-from skimage.metrics import structural_similarity
-from skimage.color import rgb2gray
-import os
-import glob
 import sys
 import tqdm
-from itertools import combinations
-import csv
-from math import comb
-import matplotlib.pyplot as plt
-import cv2
 from tqdm import tqdm
-from PIL import Image
-from concurrent.futures import ThreadPoolExecutor
 import time
-import numpy as np
-import re
-from collections import Counter
-from sklearn import preprocessing
 
-from models.CNNModel import CNNModel
 # from DeepfakeDataset import DeepfakeDataset
 import wandb
-from utils.import_utils import import_classes_from_directory, get_classes_from_module, get_tagged_classes_from_module
 from utils.tag_list_updater import update_tag_list
-from utils.WandbArtifactUtils import save_tag, load_tag
 from trainers import *
 from data import *
 from models import *
@@ -40,14 +20,8 @@ from datasets import *
 from trainers import *
 from traversals import *
 
-import socketserver
-import pkgutil
 import yaml
-import json
-import socket
 import itertools
-import paramiko
-import getpass
 
 # Use this to specify ACE version
 from utils.AceV1 import ACE

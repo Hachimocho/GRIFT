@@ -1,5 +1,9 @@
 {
     "plantuml.exportOutDir": "docs",
     "plantuml.exportSubFolder": false,
-    "plantuml.exportIncludeFolderHeirarchy": false
+    "plantuml.exportIncludeFolderHeirarchy": false,
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
+    },
 }

@@ -23,7 +23,7 @@ from collections import Counter
 from sklearn import preprocessing
 
 from models.CNNModel import CNNModel
-from DeepfakeDataset import DeepfakeDataset
+from datasets.DeepfakeDataset import DeepfakeDataset
 import wandb
 
 # Set random seed for consistent results (need to test)

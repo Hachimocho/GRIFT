@@ -1,9 +1,7 @@
 from skimage import io
 from skimage.metrics import structural_similarity
-from skimage.color import rgb2gray
 import os
 import glob
-import sys
 import tqdm
 from itertools import combinations
 import csv
