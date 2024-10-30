@@ -1,11 +1,11 @@
 import random
 from traversals.Traversal import Traversal
 
-class RandomNoReturnWarpTraversal(Traversal):
+class AttributeTraversal(Traversal):
     """
-    Traverses the graph using randomly moving pointers, without returning to recently visited nodes.
+    Traverses the graph by moving pointers to information-rich nodes.
     """
-    tags = ["any"]
+    tags = ["attributes"]
     
     
     hyperparameters = {

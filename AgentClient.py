@@ -121,7 +121,7 @@ def client_main(project, batch_tag):
             logger.error(f"Unexpected error in client_main: {str(e)}")
             time.sleep(60)  # Wait before retrying
 
-def your_training_function():
+def your_training_function(sweep_id, pid):
     try:
         data, dataloader, dataset, graph, manager, model, trainer, traversal, test_traversal = _load_config()
         wandb.agent(
@@ -130,12 +130,10 @@ def your_training_function():
         print("Finished running sweep!")
     except RuntimeError as e:
         if "out of memory" in str(e):
-            sock.sendall(b"GPU out of memory\n")
-            print("GPU out of memory, reporting to server")
         else:
             raise e
 
-def _load_config(self):
+def _load_config():
     """
     Load configuration parameters for the agent training process.
     
