@@ -9,10 +9,9 @@ class AttributeNode(Node):
         }
     }
     
-    def __init__(self, path, attributes, labels, threshold):
-        self.x = path
-        assert len(attributes) == len(labels)
-        self.attributes = {}
+    def __init__(self, split, data, edges, label, attributes):
+        super().__init__(split, data, edges, label)
+        
         for atr, label in zip(attributes, labels):
             self.attributes[label] = atr
         assert (type(threshold) == int) and (threshold >= 0)

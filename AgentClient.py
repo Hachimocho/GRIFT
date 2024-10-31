@@ -130,6 +130,7 @@ def your_training_function(sweep_id, pid):
         print("Finished running sweep!")
     except RuntimeError as e:
         if "out of memory" in str(e):
+            
         else:
             raise e
 

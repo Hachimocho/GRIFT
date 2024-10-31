@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 class AIFaceDataset(Dataset):
-    tags = ["deepfakes", "image"]
+    tags = ["deepfakes", "image", "attributes"]
     hyperparameters = None
 
     def load(self):
@@ -13,6 +13,10 @@ class AIFaceDataset(Dataset):
         val_csv = os.path.join(data_root, "val.csv")
         test_csv = os.path.join(data_root, "test.csv")
         # If val_csv doesn't exist, randomly assign 
+        if not os.path.exists(train_csv):
+            raise FileNotFoundError(f"Could not find input file: {train_csv}")
+        if not os.path.exists(test_csv):
+            raise FileNotFoundError(f"Could not find input file: {test_csv}")
         if not os.path.exists(val_csv):
             try:
                 df = pd.read_csv(train_csv)
@@ -35,6 +39,6 @@ class AIFaceDataset(Dataset):
         for subset, csv in zip(["train", "val", "test"], [train_csv, val_csv, test_csv]):
             for row in pd.read_csv(csv):
                 image_path = os.path.join(data_root, row["Image Path"])
-                self.nodes.append(subset, self.data_class(image_path, **self.data_args), [], int(row["Target"]), **self.node_args)
+                self.nodes.append(self.node_class(subset, self.data_class(image_path, **self.data_args), [], int(row["Target"]), **self.node_args))
 
         return self.nodes
