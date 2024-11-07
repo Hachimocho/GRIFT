@@ -1,7 +1,11 @@
 import tqdm
 from tqdm import tqdm
 import time
+import torch
+import torch.nn as nn
 import wandb
+from torchvision import transforms
+from torchmetrics import Accuracy, F1Score, AUROC
 from datasets import *
 from dataloaders import *
 from managers import *
@@ -15,25 +19,56 @@ class Trainer():
     def __init__(self, graphmanager, train_traversal, test_traversal, models):
         self.graphmanager = graphmanager
         self.models = models
+        self.optims = [torch.optim.Adam(model.parameters(), lr=0.001) for model in self.models]
+        self.losses = [nn.BCEWithLogitsLoss() for model in self.models]
         self.train_traversal = train_traversal
         self.test_traversal = test_traversal
         self.epochs = 15
+        self.batches = [[] for model in self.models]
+        self.batch_size = 10
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),  # Convert to a PyTorch tensor
+            transforms.Resize((255, 255)) # Resize to 255x255
+
+        ])
+        self.train_acc = Accuracy()
+        self.train_acc_history = [[] for model in self.models]
+        # self.train_f1 = F1Score()
+        self.val_acc = Accuracy()
+        self.val_acc_history = [[] for model in self.models]
+        # self.train_auroc = AUROC()
+        self.test_acc = Accuracy()
+        self.test_acc_history = [[] for model in self.models]
+        # self.test_f1 = F1Score()
+        # self.test_auroc = AUROC()
+        # Pessimistic accuracy initialization allows for high starting I values for unseen nodes
+        # Based on "optimism in the face of uncertainty" from standard RL
+        self.stored_prediction_accuracy = [{node: [0] for node in self.graphmanager.get_graph().get_nodes()} for model in self.models]
         
     def run(self):
         print("Running trainer.")
         t = time.time()
-        best_acc = 0
+        best_accs = [0 for model in self.models]
         for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
-            avg_train_acc, train_loss = self.train()
-            avg_val_acc, val_loss = self.val()
-            self.graphmanager.update_graph()
-            wandb.log({"epoch": epoch, "train_acc": avg_train_acc, "val_acc": avg_val_acc})
-            if avg_val_acc > best_acc:
-                best_acc = avg_val_acc
-                self.model.save_checkpoint()
-            else:
-                self.model.load_checkpoint()
-        wandb.log({"best_acc": best_acc})
+            self.train()
+            for i, model in enumerate(self.models):
+                
+                avg_train_acc = sum(self.train_acc_history[i]) / len(self.train_acc_history[i])
+                
+                avg_val_acc = sum(self.val_acc_history[i]) / len(self.val_acc_history[i])
+                self.graphmanager.update_graph()
+                wandb.log({"epoch": epoch, f"train_acc_model_{i}": avg_train_acc, f"val_acc_model_{i}": avg_val_acc})
+                if avg_val_acc > best_accs[i]:
+                    best_accs[i] = avg_val_acc
+                    self.models[i].save_checkpoint()
+                else:
+                    self.models[i].load_checkpoint()
+
+            self.val()
+            for i, model in enumerate(self.models):
+                
+        for i, acc in enumerate(best_accs):
+            wandb.log({f"best_acc_model_{i}": acc})
         wandb.log({"time": time.time() - t})
         
     def test_run(self):

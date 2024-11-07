@@ -34,7 +34,7 @@ class ComprehensiveTraversal(Traversal):
     tags = ["any"]
     hyperparameters: dict | None = None
 
-    def __init__(self, graph):
+    def __init__(self, graph, num_pointers):
         """
         Initialize a RandomTraversal object.
 
@@ -43,7 +43,7 @@ class ComprehensiveTraversal(Traversal):
             num_pointers (int): The number of pointers to move around the graph.
             num_steps (int): The number of steps to take each pointer. If negative, will move pointers indefinitely.
         """
-        self.num_pointers = 1
+        self.num_pointers = num_pointers
         self.graph = graph
         self.reset_pointers()
         

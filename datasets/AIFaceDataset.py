@@ -39,6 +39,6 @@ class AIFaceDataset(Dataset):
         for subset, csv in zip(["train", "val", "test"], [train_csv, val_csv, test_csv]):
             for row in pd.read_csv(csv):
                 image_path = os.path.join(data_root, row["Image Path"])
-                self.nodes.append(self.node_class(subset, self.data_class(image_path, **self.data_args), [], int(row["Target"]), **self.node_args))
+                self.nodes.append(self.node_class(subset, self.data_class(image_path, **self.data_args), [], int(row["Target"]), {"Gender": row["Ground Truth Gender"], "Race": row["Ground Truth Race"], "Age": row["Ground Truth Age"]} **self.node_args))
 
         return self.nodes

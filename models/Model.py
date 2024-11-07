@@ -31,11 +31,23 @@ class Model():
     """
     tags = ["none"]
     
-    def train(self, batch):
+    def __init__(self, save_path):
+        self.save_path = save_path
+        self.stored_accuracy = []
+        self.stored_loss = []
+        self.best_acc = 0
+    
+    def train(self):
         raise NotImplementedError()
     
-    def validate(self, batch):
+    def validate(self):
         raise NotImplementedError()
     
-    def test(self, batch):
+    def test(self):
+        raise NotImplementedError()
+    
+    def save_checkpoint(self):
+        raise NotImplementedError()
+    
+    def load_checkpoint(self):
         raise NotImplementedError()

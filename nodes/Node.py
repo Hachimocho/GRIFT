@@ -53,3 +53,6 @@ class Node():
     
     def set_split(self, split):
         self.split = split
+        
+    def get_label(self):
+        return self.label

@@ -41,9 +41,8 @@ class DeepfakeAttributeTrainer(Trainer):
             "test_param": {"distribution": "uniform", "min": 0, "max": 10}
         }
     }
-    def __init__(self, dataloader, rng_threshold, num_pointers, num_steps=1000, X=5, traversal_method='random_delay_repeat', K=1, val_test_traversal_method="boring_comprehensive", key_attributes=[]):
+    def __init__(self, dataloader,  num_pointers, num_steps=1000, X=5, traversal_method='random_delay_repeat', K=1, val_test_traversal_method="boring_comprehensive", key_attributes=[]):
         self.dataloader = dataloader
-        self.rng_threshold = rng_threshold
         self.num_pointers = num_pointers
         self.num_steps = num_steps
         self.X = X
@@ -62,7 +61,6 @@ class DeepfakeAttributeTrainer(Trainer):
         Args:
             data (Data): The dataloader. Use Deepfakedataloader.py
             process_node_data (func): The function that takes the node data
-            rng_threshold (float): Probability of moving to a random node instead of an adjacent node, 0 to 1
             num_pointers (int): Number of pointers to place and move on the graph
             num_steps (int, optional): Number of timesteps to do. May be stopped early if using a comprehensive method. Defaults to 1000.
             X (int, optional): How many timesteps a node should be inaccessible after visiting, for supported traversal methods. Defaults to 5.
