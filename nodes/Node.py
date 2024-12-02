@@ -56,3 +56,6 @@ class Node():
         
     def get_label(self):
         return self.label
+
+    def add_edge(self, edge):
+        self.edges.append(edge)

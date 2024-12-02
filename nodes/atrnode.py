@@ -22,8 +22,10 @@ class AttributeNode(Node):
         else:
             threshold = self.threshold
         matching = 0
-        for label, attribute in self.attributes:
-            if (label in other.attributes.keys()) and (other.attributes[label] == attribute):
+        # print(type(self.attributes))
+        # print(self.attributes)
+        for attribute, value in self.attributes.items():
+            if (attribute in other.attributes.keys()) and (other.attributes[attribute] == value):
                 matching += 1
         if matching >= threshold:
             return True

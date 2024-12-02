@@ -19,7 +19,7 @@ class Trainer():
     def __init__(self, graphmanager, train_traversal, test_traversal, models):
         self.graphmanager = graphmanager
         self.models = models
-        self.optims = [torch.optim.Adam(model.parameters(), lr=0.001) for model in self.models]
+        self.optims = [torch.optim.Adam(model.model.parameters(), lr=0.001) for model in self.models]
         self.losses = [nn.BCEWithLogitsLoss() for model in self.models]
         self.train_traversal = train_traversal
         self.test_traversal = test_traversal
@@ -31,13 +31,13 @@ class Trainer():
             transforms.Resize((255, 255)) # Resize to 255x255
 
         ])
-        self.train_acc = Accuracy()
+        self.train_acc = None
         self.train_acc_history = [[] for model in self.models]
         # self.train_f1 = F1Score()
-        self.val_acc = Accuracy()
+        self.val_acc = None
         self.val_acc_history = [[] for model in self.models]
         # self.train_auroc = AUROC()
-        self.test_acc = Accuracy()
+        self.test_acc = None
         self.test_acc_history = [[] for model in self.models]
         # self.test_f1 = F1Score()
         # self.test_auroc = AUROC()
@@ -49,24 +49,19 @@ class Trainer():
         print("Running trainer.")
         t = time.time()
         best_accs = [0 for model in self.models]
-        for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
+        for epoch in tqdm(range(self.epochs), desc="Number of epochs run"):
             self.train()
+            self.val()
+            self.graphmanager.update_graph()
             for i, model in enumerate(self.models):
-                
                 avg_train_acc = sum(self.train_acc_history[i]) / len(self.train_acc_history[i])
-                
-                avg_val_acc = sum(self.val_acc_history[i]) / len(self.val_acc_history[i])
-                self.graphmanager.update_graph()
-                wandb.log({"epoch": epoch, f"train_acc_model_{i}": avg_train_acc, f"val_acc_model_{i}": avg_val_acc})
                 if avg_val_acc > best_accs[i]:
                     best_accs[i] = avg_val_acc
                     self.models[i].save_checkpoint()
                 else:
                     self.models[i].load_checkpoint()
-
-            self.val()
-            for i, model in enumerate(self.models):
-                
+                avg_val_acc = sum(self.val_acc_history[i]) / len(self.val_acc_history[i])
+                wandb.log({"epoch": epoch, f"train_acc_model_{i}": avg_train_acc, f"val_acc_model_{i}": avg_val_acc})
         for i, acc in enumerate(best_accs):
             wandb.log({f"best_acc_model_{i}": acc})
         wandb.log({"time": time.time() - t})
@@ -74,19 +69,10 @@ class Trainer():
     def test_run(self):
         print("Test run!")
         t = time.time()
-        best_acc = 0
-        for epoch in tqdm(range(self.num_epochs), desc="Number of epochs run"):
-            avg_train_acc, train_loss = self.train()
-            avg_val_acc, val_loss = self.val()
-            self.graphmanager.update_graph()
-            wandb.log({"epoch": epoch, "train_acc": avg_train_acc, "val_acc": avg_val_acc})
-            if avg_val_acc > best_acc:
-                best_acc = avg_val_acc
-                self.model.save_checkpoint()
-            else:
-                self.model.load_checkpoint()
-        avg_test_acc = self.test()
-        wandb.log({"test_acc": avg_test_acc})
+        self.test()
+        for i, model in enumerate(self.models):
+            avg_test_acc = sum(self.test_acc_history[i]) / len(self.test_acc_history[i])
+            wandb.log({f"test_acc_model_{i}": avg_test_acc})
         wandb.log({"time": time.time() - t})
 
     def process_node_data(self):
