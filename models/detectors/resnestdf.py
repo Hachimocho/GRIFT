@@ -1,16 +1,25 @@
 import torch.nn as nn
 from torch.hub import load
+import logging
 
 # list('zhanghang1989/ResNeSt', force_reload=True)
 
+# configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ModelOut(nn.Module):
     def __init__(self, pretrained: bool = False, finetune: bool = False, exclude_top: bool = False,
                  output_classes: int = 3, classification_strategy: str = 'categorical', configuration: str = 'default'
                  ):
         super(ModelOut, self).__init__()
-        resnest50_base = load('zhanghang1989/ResNeSt',
-                              'resnest50', pretrained=pretrained)
+        try:
+            resnest50_base = load('zhanghang1989/ResNeSt', 'resnest50', pretrained=pretrained)
+            logger.info("Successfully loaded ResNeSt model")
+        except Exception as e:
+            logger.error(f"Error loading ResNeSt model: {e}")
+            raise
+            
         self.model = resnest50_base
         self.in_features = resnest50_base.fc.in_features
         self.out_features = output_classes if classification_strategy == 'categorical' else 1
@@ -66,6 +75,13 @@ class ModelOut(nn.Module):
                               name="Categorical_Softmax")
 
             self.model.fc = fc
+
+        # freeze the parameters except for the final layers
+        if finetune:
+            # Only freeze the feature extraction layers
+            for name, param in self.model.named_parameters():
+                if 'fc' not in name:  # Don't freeze fc layers
+                    param.requires_grad = False
 
     def forward(self, x):
         # forward pass

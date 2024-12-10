@@ -3,6 +3,11 @@ import torch.nn as nn
 from torch.hub import load
 import torch
 import pickle
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 effnetargs = {
 "pretrained": True,
@@ -18,15 +23,23 @@ class ModelOut(nn.Module):
                     output_classes: int = 3, classification_strategy: str = 'categorical', configuration: str = 'default'
         ):
         super(ModelOut, self).__init__()
-        efficientnet_base = load('NVIDIA/DeepLearningExamples:torchhub', 'nvidia_efficientnet_b4', pretrained=pretrained)
+        try:
+            efficientnet_base = load('NVIDIA/DeepLearningExamples:torchhub', 'nvidia_efficientnet_b4', pretrained=pretrained)
+            logger.info(f"Successfully loaded EfficientNet model")
+        except Exception as e:
+            logger.error(f"Error loading EfficientNet model: {e}")
+            raise
+            
         self.model = efficientnet_base
         self.in_features = efficientnet_base.classifier.fc.in_features
         self.out_features = output_classes if classification_strategy == 'categorical' else 1
         
         # freeze the parameters so that the gradients are not computed 
         if finetune:
-            for param in self.model.parameters():
-                param.requires_grad = False        
+            # Only freeze the feature extraction layers
+            for name, param in self.model.named_parameters():
+                if 'classifier' not in name:  # Don't freeze classifier layers
+                    param.requires_grad = False        
         
         '''
         # view layer names

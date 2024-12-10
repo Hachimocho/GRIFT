@@ -17,7 +17,12 @@ class CNNModel(Model):
     def __init__(self, save_path, model_name, lr, amsgrad):
         super().__init__(save_path)
         ActiveModel = importlib.import_module(f'models.detectors.{model_name}').ModelOut
-        self.model = ActiveModel(output_classes=1, classification_strategy='binary')  
+        self.model = ActiveModel(
+            pretrained=True,  # Use pretrained weights
+            finetune=True,    # Enable proper fine-tuning
+            output_classes=1,
+            classification_strategy='binary'
+        )  
         self.model.model.cuda()
         self.loss = nn.BCEWithLogitsLoss()
         

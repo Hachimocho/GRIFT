@@ -16,6 +16,9 @@ from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from edges.Edge import Edge
 import copy
+import torch
+import time
+import random
 
 @contextmanager
 def capture_output(filename):
@@ -73,6 +76,16 @@ with capture_output(logfile.name) as logpath:
     print(f"Starting test run, logging to: {logfile}")
     
     try:
+        import time
+        
+        # Set random seeds
+        seed = int(time.time())  # Use current time as seed
+        seed = 98324701398701328        
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+        
         attribute_metadata = [
             {
                 'name': 'Gender',
@@ -103,16 +116,20 @@ with capture_output(logfile.name) as logpath:
         
         # Define architectures to test
         cnn_architectures = [
+            "swintransformdf",
             "resnestdf", 
-            "effnetdf",
+            #"effnetdf",
             #"mesonetdf",
-            "squeezenetdf",
+            #"squeezenetdf",
             #"vistransformdf",
-            "swintransformdf"
+            
         ]
+
+        random.seed(13247987501)
         
         # Define traversal types to compare
-        traversal_types = ["i-value", "comprehensive", "random"]
+        #traversal_types = ["comprehensive", "random", "i-value"]
+        traversal_types = ["i-value"]
         
         # Test each architecture with both traversal types
         for arch in cnn_architectures:
@@ -189,9 +206,23 @@ with capture_output(logfile.name) as logpath:
                     
                     try:
                         print(f"Training {arch} with {traversal_type} traversal...")
-                        trainer.run(num_epochs=10)
+                        trainer.run(num_epochs=5)
                         print(f"Testing {arch} with {traversal_type} traversal...")
-                        trainer.test()
+                        test_metrics = trainer.test()
+                        
+                        # Handle both single dict and list of dicts for backwards compatibility
+                        if isinstance(test_metrics, list):
+                            for i, metrics in enumerate(test_metrics):
+                                print(f"\nModel {i+1} Results:")
+                                print(f"Loss: {metrics.get('avg_loss', 0.0):.4f}")
+                                print(f"Accuracy: {metrics.get('accuracy', 0.0):.4f}")
+                                print(f"Bias Loss: {metrics.get('avg_bias_loss', 0.0):.4f}")
+                        else:
+                            print("\nTest Results:")
+                            print(f"Loss: {test_metrics.get('avg_loss', 0.0):.4f}")
+                            print(f"Accuracy: {test_metrics.get('accuracy', 0.0):.4f}")
+                            print(f"Bias Loss: {test_metrics.get('avg_bias_loss', 0.0):.4f}")
+                            
                         print(f"\nCompleted evaluation of {arch} with {traversal_type} traversal")
                     except Exception as e:
                         print(f"\nError while evaluating {arch} with {traversal_type}: {str(e)}")

@@ -388,21 +388,37 @@ class IValueTrainer(Trainer):
         correct = (pred == label).sum().item()
         self.update_prediction_stats(node, correct, model_idx)
         
-        # Calculate I-value using DQN for each node
-        features = self._get_dqn_features(node)
-        q_value = self.dqns[model_idx](features)
-        i_value = 1.0 - q_value.item()
+        # Calculate model uncertainty (prediction confidence)
+        confidence = abs(torch.sigmoid(output).item() - 0.5) * 2  # Scale to [0, 1]
         
+        # Calculate bias contribution
+        curr_bias_loss = self.bias_loss(output, node.attributes).item()
+        
+        # Calculate reward components:
+        # 1. Uncertainty reward: Higher for uncertain predictions (need more training)
+        uncertainty_reward = 1.0 - confidence
+        
+        # 2. Bias reward: Higher for biased predictions (need correction)
+        bias_reward = min(curr_bias_loss, 1.0)  # Cap at 1.0
+        
+        # 3. Error reward: Higher for incorrect predictions (need improvement)
+        error_reward = 1.0 - correct
+        
+        # Combine rewards with weights
+        # reward = (0.4 * uncertainty_reward +  # Prioritize uncertain predictions
+        #          0.4 * bias_reward +          # Prioritize biased predictions
+        #          0.2 * error_reward)          # Consider accuracy
+        
+        reward = bias_reward
+
         # Store experience in replay buffer (state, reward)
-        # For I-value prediction, we use the current i_value as the target
-        self.dqns[model_idx].replay_buffer.append((features, i_value))
+        self.dqns[model_idx].replay_buffer.append((dqn_features, reward))
         
         # Train DQN
         dqn_loss = self.train_dqn(model_idx)
         
         # Calculate losses
         classification_loss = model.loss(output, label)
-        curr_bias_loss = self.bias_loss(output, node.attributes)
         total_loss = classification_loss + self.bias_weight * curr_bias_loss
         
         return total_loss, dqn_loss, curr_bias_loss, correct
@@ -582,7 +598,7 @@ class IValueTrainer(Trainer):
                 'epoch': epoch,
                 'avg_loss': total_loss / batch_count,
                 'accuracy': correct / max(1, total),
-                'avg_bias_loss': 0.0  # We'll compute this separately if needed
+                'avg_bias_loss': 0.0 # TBD
             }
             
             # Log metrics
@@ -701,11 +717,14 @@ class IValueTrainer(Trainer):
         Testing phase using I-value based traversal.
         Similar to validation but using the test traversal.
         """
-        total_loss = 0
-        total_bias_loss = 0
-        correct_predictions = 0
-        total_predictions = 0
-        num_batches = 0
+        metrics_per_model = [{
+            'total_loss': 0,
+            'total_bias_loss': 0,
+            'correct_predictions': 0,
+            'total_predictions': 0,
+            'num_batches': 0
+        } for _ in self.models]
+        
         mini_batch_size = 32
         
         try:
@@ -750,9 +769,10 @@ class IValueTrainer(Trainer):
                         features_batch = torch.cat(features_list, dim=0)
                     labels_batch = torch.tensor(labels_list).cuda()
                     
-                    # Validate each model
+                    # Test each model separately
                     for model_idx, model in enumerate(self.models):
                         model.model.eval()
+                        metrics = metrics_per_model[model_idx]
                         
                         with torch.no_grad():
                             # Forward pass
@@ -762,54 +782,49 @@ class IValueTrainer(Trainer):
                             # Calculate metrics
                             labels_batch = labels_batch.float().unsqueeze(1)
                             correct = (preds == labels_batch).sum().item()
-                            total_predictions += len(labels_batch)
-                            correct_predictions += correct
+                            metrics['total_predictions'] += len(labels_batch)
+                            metrics['correct_predictions'] += correct
                             
                             # Calculate losses
                             loss = model.loss(outputs, labels_batch)
-                            total_loss += loss.item()
+                            metrics['total_loss'] += loss.item()
                             
                             # Calculate bias loss using all nodes in mini-batch
                             try:
                                 batch_attrs = [node.attributes for node in mini_batch if hasattr(node, 'attributes')]
                                 if batch_attrs:
                                     bias_loss = self.bias_loss(outputs, batch_attrs)
-                                    total_bias_loss += bias_loss.item() if isinstance(bias_loss, torch.Tensor) else 0
+                                    metrics['total_bias_loss'] += bias_loss.item() if isinstance(bias_loss, torch.Tensor) else 0
                             except Exception as e:
-                                print(f"Error calculating test bias loss: {e}")
+                                print(f"Error calculating test bias loss for model {model_idx}: {e}")
                             
-                            num_batches += 1
+                            metrics['num_batches'] += 1
                     
-                    # Update progress
+                    # Update progress with average metrics across models
+                    avg_loss = sum(m['total_loss']/max(m['num_batches'],1) for m in metrics_per_model) / len(self.models)
+                    avg_acc = sum(m['correct_predictions']/max(m['total_predictions'],1) for m in metrics_per_model) / len(self.models)
                     progress_bar.update(len(mini_batch))
                     progress_bar.set_description(
-                        f"Testing Progress | Loss: {total_loss/max(num_batches,1):.4f} | Acc: {correct_predictions/max(total_predictions,1):.4f}"
+                        f"Testing Progress | Avg Loss: {avg_loss:.4f} | Avg Acc: {avg_acc:.4f}"
                     )
             
             progress_bar.close()
             
+            # Return separate metrics for each model
+            return [{
+                'avg_loss': metrics['total_loss'] / max(metrics['num_batches'], 1),
+                'avg_bias_loss': metrics['total_bias_loss'] / max(metrics['num_batches'], 1),
+                'accuracy': metrics['correct_predictions'] / max(metrics['total_predictions'], 1)
+            } for metrics in metrics_per_model]
+            
         except Exception as e:
             progress_bar.close()
             print(f"Error in testing: {e}")
-            return {
+            return [{
                 'avg_loss': 0.0,
                 'avg_bias_loss': 0.0,
                 'accuracy': 0.0
-            }
-        
-        # Calculate metrics with safety checks
-        if total_predictions == 0:
-            return {
-                'avg_loss': 0.0,
-                'avg_bias_loss': 0.0,
-                'accuracy': 0.0
-            }
-            
-        return {
-            'avg_loss': total_loss / max(num_batches, 1),
-            'avg_bias_loss': total_bias_loss / max(num_batches, 1),
-            'accuracy': correct_predictions / total_predictions
-        }
+            } for _ in self.models]
 
     def _get_empty_metrics(self, epoch):
         """Return empty metrics structure for when no valid data is processed."""
@@ -884,9 +899,11 @@ class IValueTrainer(Trainer):
                 test_metrics = self._get_empty_metrics(-1)
                 
             print("\nTest Results:")
-            print(f"Loss: {test_metrics.get('avg_loss', 0.0):.4f}")
-            print(f"Accuracy: {test_metrics.get('accuracy', 0.0):.4f}")
-            print(f"Bias Loss: {test_metrics.get('avg_bias_loss', 0.0):.4f}")
+            for i, metrics in enumerate(test_metrics):
+                print(f"Model {i+1}:")
+                print(f"Loss: {metrics.get('avg_loss', 0.0):.4f}")
+                print(f"Accuracy: {metrics.get('accuracy', 0.0):.4f}")
+                print(f"Bias Loss: {metrics.get('avg_bias_loss', 0.0):.4f}")
             
             return test_metrics
             
