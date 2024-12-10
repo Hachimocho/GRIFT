@@ -1,9 +1,9 @@
-import wandb
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
+from trainers.ExperimentTrainer import ExperimentTrainer
 from trainers.IValueTrainer import IValueTrainer
 from dataloaders.UnclusteredDeepfakeDataloader import UnclusteredDeepfakeDataloader
 from datasets.AIFaceDataset import AIFaceDataset
@@ -11,9 +11,11 @@ from data.ImageFileData import ImageFileData
 from nodes.atrnode import AttributeNode
 from managers.NoGraphManager import NoGraphManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
+from traversals.IValueTraversal import IValueTraversal
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from edges.Edge import Edge
+import copy
 
 @contextmanager
 def capture_output(filename):
@@ -71,8 +73,6 @@ with capture_output(logfile.name) as logpath:
     print(f"Starting test run, logging to: {logfile}")
     
     try:
-        num_models = 1
-        
         attribute_metadata = [
             {
                 'name': 'Gender',
@@ -91,19 +91,117 @@ with capture_output(logfile.name) as logpath:
             }
         ]
 
-        dataloader = UnclusteredDeepfakeDataloader(
-            [AIFaceDataset("/home/brg2890/major/datasets/ai-face", ImageFileData, {}, AttributeNode, {"threshold": 2})],
-            Edge
-        )
-        graph = dataloader.load()
-        manager = NoGraphManager(graph)
-        train_traversal = RandomTraversal(manager.graph, num_models, 300)
-        test_traversal = ComprehensiveTraversal(manager.graph, num_models)
-        models = [CNNModel("/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/test_" + str(i) + ".pt", "resnestdf", 0.001, True) for i in range(num_models)]
+        # Load dataset and create graph
+        dataset = AIFaceDataset("/home/brg2890/major/datasets/ai-face", ImageFileData, {}, AttributeNode, {"threshold": 2})
+        dataloader = UnclusteredDeepfakeDataloader([dataset], Edge)
+        train_graph, val_graph, test_graph = dataloader.load()
         
-        trainer = IValueTrainer(manager, train_traversal, test_traversal, models, attribute_metadata)
-        trainer.run()
-        trainer.test_run()
+        # Create graph managers for each split
+        train_manager = NoGraphManager(copy.deepcopy(train_graph))
+        val_manager = NoGraphManager(copy.deepcopy(val_graph))
+        test_manager = NoGraphManager(copy.deepcopy(test_graph))
+        
+        # Define architectures to test
+        cnn_architectures = [
+            "resnestdf", 
+            "effnetdf",
+            #"mesonetdf",
+            "squeezenetdf",
+            #"vistransformdf",
+            "swintransformdf"
+        ]
+        
+        # Define traversal types to compare
+        traversal_types = ["i-value", "comprehensive", "random"]
+        
+        # Test each architecture with both traversal types
+        for arch in cnn_architectures:
+            print(f"\n{'='*80}")
+            print(f"Testing {arch} architecture")
+            print(f"{'='*80}\n")
+            
+            for traversal_type in traversal_types:
+                print(f"\n{'-'*40}")
+                print(f"Using {traversal_type} traversal")
+                print(f"{'-'*40}\n")
+                
+                try:
+                    # Create model with adjusted learning rate
+                    model = CNNModel(
+                        f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
+                        arch,
+                        0.001, 
+                        True
+                    )
+                    
+                    # Create trainer based on traversal type
+                    if traversal_type == "i-value":
+                        trainer = IValueTrainer(
+                            train_manager,  # Use train manager
+                            None,  # Will be set by get_traversal
+                            None,  # Will be set by get_traversal
+                            [model],
+                            attribute_metadata=attribute_metadata
+                        )
+                    else:  # random or comprehensive traversal
+                        trainer = ExperimentTrainer(
+                            train_manager,  # Use train manager
+                            None,  # Will be set by get_traversal
+                            None,  # Will be set by get_traversal
+                            None,  # Will be set by get_traversal
+                            [model],
+                            traversal_type=traversal_type,
+                            attribute_metadata=attribute_metadata
+                        )
+                    
+                    # Create traversals for each split
+                    # Use more pointers and adjust steps based on graph sizes
+                    train_size = len(train_manager.graph.get_nodes())
+                    val_size = len(val_manager.graph.get_nodes())
+                    test_size = len(test_manager.graph.get_nodes())
+                    
+                    print(f"\nGraph sizes:")
+                    print(f"Train: {train_size} nodes")
+                    print(f"Val: {val_size} nodes")
+                    print(f"Test: {test_size} nodes")
+                    
+                    # Calculate appropriate number of steps
+                    train_steps = 2000
+                    val_steps = 1000 
+                    test_steps = None  # Use None to visit all test nodes
+                    
+                    if traversal_type == "comprehensive":
+                        train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    else:
+                        train_traversal = trainer.get_traversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
+                    test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
+                    
+                    print(f"\nTraversal settings:")
+                    print(f"Train: {train_steps} steps with 1 pointers")
+                    print(f"Val: {val_steps} steps with 1 pointers")
+                    print(f"Test: All nodes with 1 pointers")
+                    
+                    # Update trainer with correct traversals
+                    trainer.train_traversal = train_traversal
+                    trainer.val_traversal = val_traversal
+                    trainer.test_traversal = test_traversal
+                    
+                    try:
+                        print(f"Training {arch} with {traversal_type} traversal...")
+                        trainer.run(num_epochs=10)
+                        print(f"Testing {arch} with {traversal_type} traversal...")
+                        trainer.test()
+                        print(f"\nCompleted evaluation of {arch} with {traversal_type} traversal")
+                    except Exception as e:
+                        print(f"\nError while evaluating {arch} with {traversal_type}: {str(e)}")
+                        log_exception(logfile, *sys.exc_info())
+                        continue  # Continue with next configuration
+                        
+                except Exception as e:
+                    print(f"\nError while setting up {arch} with {traversal_type}: {str(e)}")
+                    log_exception(logfile, *sys.exc_info())
+                    continue  # Continue with next configuration
         
     except KeyboardInterrupt:
         print("\nProcess interrupted by user")
@@ -112,4 +210,4 @@ with capture_output(logfile.name) as logpath:
     except Exception:
         print("\nAn error occurred during execution")
         log_exception(logfile, *sys.exc_info())
-        raise  
+        raise

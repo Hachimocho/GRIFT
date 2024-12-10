@@ -12,7 +12,7 @@ class AIFaceDataset(Dataset):
 
     def create_node(self, args):
         subset, path, target, gender, race, age, data_class, data_args, node_class, node_args = args
-        return node_class(
+        node = node_class(
             subset,
             data_class(path, **data_args),
             [],
@@ -20,6 +20,9 @@ class AIFaceDataset(Dataset):
             {"Gender": gender, "Race": race, "Age": age},
             **node_args
         )
+        # Explicitly set the split attribute
+        node.split = subset
+        return node
 
     def load(self):
         print("Load called.")
@@ -28,34 +31,66 @@ class AIFaceDataset(Dataset):
         val_csv = os.path.join(data_root, "val.csv")
         test_csv = os.path.join(data_root, "test.csv")
         
-        if not os.path.exists(train_csv):
-            raise FileNotFoundError(f"Could not find input file: {train_csv}")
-        if not os.path.exists(test_csv):
-            raise FileNotFoundError(f"Could not find input file: {test_csv}")
-        if not os.path.exists(val_csv) or os.stat(val_csv).st_size == 0:
+        # Check if we need to create splits
+        if not os.path.exists(train_csv) or not os.path.exists(val_csv) or not os.path.exists(test_csv):
             try:
-                df = pd.read_csv(train_csv)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Could not find input file: {train_csv}")
-            except pd.errors.EmptyDataError:
-                raise ValueError("The input file is empty")
+                # Load all data
+                all_data = pd.read_csv(os.path.join(data_root, "data.csv"))
                 
-            print("AIFace loaded for first time, generating train/val splits...")
-            mask = np.random.random(len(df)) < .7
-            df1 = df[mask]
-            df2 = df[~mask]
-            df1.to_csv(train_csv, index=False)
-            df2.to_csv(val_csv, index=False)
-            del df, df1, df2
-            gc.collect()
-            
+                # Create splits
+                print("Creating train/val/test splits...")
+                train_ratio, val_ratio = 0.7, 0.15  # This leaves 0.15 for test
+                
+                # Randomly shuffle the data
+                all_data = all_data.sample(frac=1, random_state=42)
+                
+                # Calculate split indices
+                n = len(all_data)
+                train_end = int(train_ratio * n)
+                val_end = int((train_ratio + val_ratio) * n)
+                
+                # Split the data
+                train_data = all_data[:train_end]
+                val_data = all_data[train_end:val_end]
+                test_data = all_data[val_end:]
+                
+                # Save splits
+                train_data.to_csv(train_csv, index=False)
+                val_data.to_csv(val_csv, index=False)
+                test_data.to_csv(test_csv, index=False)
+                
+                print(f"Created splits:")
+                print(f"Train: {len(train_data)} samples")
+                print(f"Val: {len(val_data)} samples")
+                print(f"Test: {len(test_data)} samples")
+                
+                del all_data, train_data, val_data, test_data
+                gc.collect()
+            except Exception as e:
+                raise Exception(f"Error creating splits: {str(e)}")
+        
         # Store nodes for each subset separately
         all_nodes = []
         num_processes = min(4, cpu_count() - 1)
         
-        for subset, csv in tqdm(list(zip(["val", "train", "test"], [val_csv, train_csv, test_csv])), desc="Loading datasets"):
+        # Process train, val, test in order
+        for subset, csv in tqdm(list(zip(["train", "val", "test"], [train_csv, val_csv, test_csv])), desc="Loading datasets"):
             print(f"\nLoading {subset} data for AIFace dataset...")
             
+            if not os.path.exists(csv):
+                print(f"Warning: {csv} not found, skipping {subset} split")
+                continue
+                
+            try:
+                df = pd.read_csv(csv)
+                if len(df) == 0:
+                    print(f"Warning: {csv} is empty, skipping {subset} split")
+                    continue
+            except FileNotFoundError:
+                raise FileNotFoundError(f"Could not find input file: {csv}")
+            except pd.errors.EmptyDataError:
+                raise ValueError("The input file is empty")
+                
             chunk_size = 100000
             subset_nodes = []
             

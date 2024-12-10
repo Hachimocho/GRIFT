@@ -23,13 +23,13 @@ class Node():
             return False
     
     def __len__(self):
-        return len(self.x)
+        return len(self.data)
     
     def get_data(self):
-        return self.x
+        return self.data
     
-    def set_data(self, x):
-        self.x = x
+    def set_data(self, data):
+        self.data = data
         
     def get_adjacent_nodes(self):
         adjacent_nodes = []

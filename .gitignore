@@ -25,6 +25,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+logs/
+saved_models/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -56,7 +58,7 @@ cover/
 *.pot
 
 # Django stuff:
-*.log
+#*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -177,3 +179,7 @@ artifacts
 ./wandb/latest-runwandb/debug-internal.log
 wandb/debug.log
 wandb/latest-run
+.history/
+test_run_20241208_234931.log
+bckup copy.py
+bckup.py

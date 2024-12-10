@@ -17,7 +17,7 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "test_mode": True,  # If True, only loads first 100 nodes for testing
         "lsh_bands": 50,  # Number of bands for LSH
         "lsh_band_size": 2,  # Size of each LSH band
-        "visualize": True,  # Whether to create and save a visualization
+        "visualize": False,  # Whether to create and save a visualization
         "show_viz": False,  # Whether to display the visualization
     }
 
@@ -153,11 +153,46 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         for dataset in self.datasets:
             node_list.extend(dataset.load())
         
-        # Optionally limit to first 100 nodes for testing
-        if self.hyperparameters["test_mode"]:
-            print("Running in test mode - using only first 100 nodes")
-            node_list = node_list[:100]
+        # Split nodes based on their subset attribute first
+        train_nodes = []
+        val_nodes = []
+        test_nodes = []
         
+        for node in node_list:
+            split = node.split  # Get the split directly from the node
+            if split == 'train':
+                train_nodes.append(node)
+            elif split == 'val':
+                val_nodes.append(node)
+            elif split == 'test':
+                test_nodes.append(node)
+            else:
+                print(f"Warning: Node has unknown split: {split}, defaulting to train")
+                train_nodes.append(node)
+        
+        # Optionally limit nodes for testing while preserving split distribution
+        if self.hyperparameters["test_mode"]:
+            print("Running in test mode - sampling 10000 nodes while preserving split distribution")
+            total_nodes = len(train_nodes) + len(val_nodes) + len(test_nodes)
+            train_ratio = len(train_nodes) / total_nodes
+            val_ratio = len(val_nodes) / total_nodes
+            test_ratio = len(test_nodes) / total_nodes
+            
+            target_total = 10000
+            train_size = int(target_total * train_ratio)
+            val_size = int(target_total * val_ratio)
+            test_size = target_total - train_size - val_size  # Ensure we get exactly 10000
+            
+            # Randomly sample from each split
+            if train_nodes:
+                train_nodes = random.sample(train_nodes, min(train_size, len(train_nodes)))
+            if val_nodes:
+                val_nodes = random.sample(val_nodes, min(val_size, len(val_nodes)))
+            if test_nodes:
+                test_nodes = random.sample(test_nodes, min(test_size, len(test_nodes)))
+        
+        # Combine all nodes in the correct order
+        node_list = train_nodes + val_nodes + test_nodes
         n_nodes = len(node_list)
         print(f"# of nodes: {n_nodes}")
         
@@ -225,7 +260,58 @@ class UnclusteredDeepfakeDataloader(Dataloader):
             # Add new edges to NetworkX graph
             nx_graph.add_edges_from(new_nx_edges)
         
-        graph = HyperGraph(node_list)
+        # Create separate graphs for train/val/test based on node subsets
+        train_nodes = []
+        val_nodes = []
+        test_nodes = []
+        
+        # Split nodes based on their subset attribute
+        for node in node_list:
+            split = node.split  # Get the split directly from the node
+            if split == 'train':
+                train_nodes.append(node)
+            elif split == 'val':
+                val_nodes.append(node)
+            elif split == 'test':
+                test_nodes.append(node)
+            else:
+                print(f"Warning: Node has unknown split: {split}, defaulting to train")
+                train_nodes.append(node)
+        
+        print(f"\nNode distribution across splits:")
+        print(f"Train: {len(train_nodes)} nodes")
+        print(f"Val: {len(val_nodes)} nodes")
+        print(f"Test: {len(test_nodes)} nodes")
+        
+        # Create separate graphs
+        train_graph = HyperGraph(train_nodes)
+        val_graph = HyperGraph(val_nodes)
+        test_graph = HyperGraph(test_nodes)
+        
+        # Print graph metrics for each split
+        print("\nGraph Statistics:")
+        print("-" * 50)
+        
+        for split_name, split_graph in [("Train", train_graph), ("Val", val_graph), ("Test", test_graph)]:
+            nodes = split_graph.get_nodes()
+            print(f"\n{split_name} Graph:")
+            print(f"Total Nodes: {len(nodes)}")
+            
+            # Average edges per node
+            total_edges = sum(len(node.edges) for node in nodes)
+            avg_edges = total_edges / len(nodes) if nodes else 0
+            print(f"Average Edges per Node: {avg_edges:.2f}")
+            
+            # Label distribution
+            label_dist = {}
+            for node in nodes:
+                label = node.label
+                label_dist[label] = label_dist.get(label, 0) + 1
+            
+            print("\nLabel Distribution:")
+            for label, count in sorted(label_dist.items()):
+                percentage = (count / len(nodes)) * 100
+                print(f"Label {label}: {count} nodes ({percentage:.1f}%)")
         
         # Create visualization if enabled
         if self.hyperparameters["visualize"]:
@@ -235,30 +321,12 @@ class UnclusteredDeepfakeDataloader(Dataloader):
                 attrs = sorted(node.attributes.keys())
                 attr_labels[i] = f"({', '.join(attrs)})"
             
-            # Create random splits for demonstration (you can modify this)
-            if self.hyperparameters["test_mode"]:
-                splits = {
-                    'train': list(range(0, 70)),
-                    'val': list(range(70, 85)),
-                    'test': list(range(85, len(node_list)))
-                }
-            else:
-                # For full dataset, use percentage-based splits
-                n = len(node_list)
-                splits = {
-                    'train': list(range(0, int(0.7 * n))),
-                    'val': list(range(int(0.7 * n), int(0.85 * n))),
-                    'test': list(range(int(0.85 * n), n))
-                }
-            
             visualize_graph(
-                graph,
+                train_graph,
                 nx_graph=nx_graph,  # Pass the pre-built NetworkX graph
-                splits=splits,
                 attribute_labels=attr_labels,
                 title=f"Graph Visualization ({'Test Mode' if self.hyperparameters['test_mode'] else 'Full Dataset'})",
                 show=self.hyperparameters["show_viz"]
             )
         
-        print(f"Graph building took {time.time() - start:.2f} seconds")
-        return graph
+        return train_graph, val_graph, test_graph
