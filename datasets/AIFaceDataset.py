@@ -10,14 +10,52 @@ class AIFaceDataset(Dataset):
     tags = ["deepfakes", "image", "attributes"]
     hyperparameters = None
 
+    def _load_additional_attributes(self, subset):
+        """Load additional attributes from CSV file for the given split"""
+        csv_path = os.path.join(self.data_root, f"{subset}_attributes.csv")
+        if not os.path.exists(csv_path):
+            print(f"Warning: No additional attributes file found at {csv_path}")
+            return {}
+        
+        try:
+            df = pd.read_csv(csv_path)
+            # Create a mapping of filename to attributes
+            attributes_map = {}
+            for _, row in df.iterrows():
+                filename = row['filename']
+                # Convert row to dict, excluding the filename column
+                attrs = row.drop('filename').to_dict()
+                # Clean up the attributes
+                attrs = {k: v for k, v in attrs.items() if pd.notna(v)}  # Remove NaN values
+                attributes_map[filename] = attrs
+            
+            print(f"Loaded {len(attributes_map)} additional attributes for {subset}")
+            return attributes_map
+        except Exception as e:
+            print(f"Warning: Error loading additional attributes for {subset}: {str(e)}")
+            return {}
+
     def create_node(self, args):
-        subset, path, target, gender, race, age, data_class, data_args, node_class, node_args = args
+        subset, path, target, gender, race, age, data_class, data_args, node_class, node_args, additional_attrs = args
+        # Start with base attributes
+        attributes = {
+            "Gender": gender,
+            "Race": race,
+            "Age": age
+        }
+        
+        # Add additional attributes if available
+        if additional_attrs:
+            filename = os.path.basename(path)
+            if filename in additional_attrs:
+                attributes.update(additional_attrs[filename])
+        
         node = node_class(
             subset,
             data_class(path, **data_args),
             [],
             int(target),
-            {"Gender": gender, "Race": race, "Age": age},
+            attributes,
             **node_args
         )
         # Explicitly set the split attribute
@@ -73,8 +111,18 @@ class AIFaceDataset(Dataset):
         all_nodes = []
         num_processes = min(4, cpu_count() - 1)
         
+        # Load additional attributes for each split
+        print("Loading additional attributes...")
+        train_attrs = self._load_additional_attributes("train")
+        val_attrs = self._load_additional_attributes("val")
+        test_attrs = self._load_additional_attributes("test")
+        
         # Process train, val, test in order
-        for subset, csv in tqdm(list(zip(["train", "val", "test"], [train_csv, val_csv, test_csv])), desc="Loading datasets"):
+        for subset, csv, attrs in tqdm(list(zip(
+            ["train", "val", "test"], 
+            [train_csv, val_csv, test_csv],
+            [train_attrs, val_attrs, test_attrs]
+        )), desc="Loading datasets"):
             print(f"\nLoading {subset} data for AIFace dataset...")
             
             if not os.path.exists(csv):
@@ -97,7 +145,7 @@ class AIFaceDataset(Dataset):
             for chunk in pd.read_csv(csv, chunksize=chunk_size):
                 chunk['image_path'] = chunk['Image Path'].apply(lambda x: os.path.join(data_root, x.lstrip('/')))
                 args_list = [
-                    (subset, path, target, gender, race, age, self.data_class, self.data_args, self.node_class, self.node_args)
+                    (subset, path, target, gender, race, age, self.data_class, self.data_args, self.node_class, self.node_args, attrs)
                     for path, target, gender, race, age in zip(
                         chunk['image_path'],
                         chunk['Target'],

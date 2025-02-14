@@ -9,6 +9,8 @@ from graphs.HyperGraph import HyperGraph
 from collections import defaultdict
 from utils.visualize import visualize_graph
 import networkx as nx
+import pandas as pd
+import os
 
 class UnclusteredDeepfakeDataloader(Dataloader):
     tags = ["deepfakes"]
@@ -21,124 +23,217 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "show_viz": False,  # Whether to display the visualization
     }
 
-    def _create_attribute_matrix(self, nodes):
-        """Convert node attributes to a binary feature matrix for fast comparison"""
-        # Create a mapping of all unique attributes
-        all_attributes = set()
-        for node in nodes:
-            all_attributes.update(node.attributes.keys())
+    def _load_attributes(self, split):
+        """Load attributes from CSV file for the given split"""
+        csv_path = os.path.join(os.path.dirname(self.datasets[0].root_dir), f"{split}_attributes.csv")
+        if not os.path.exists(csv_path):
+            print(f"Warning: No attributes file found at {csv_path}")
+            return {}
         
-        attr_to_idx = {attr: idx for idx, attr in enumerate(all_attributes)}
-        n_features = len(attr_to_idx)
+        df = pd.read_csv(csv_path)
+        # Create a mapping of filename to attributes
+        attributes_map = {}
+        for _, row in df.iterrows():
+            filename = row['filename']
+            # Convert row to dict, excluding the filename column
+            attrs = row.drop('filename').to_dict()
+            # Clean up the attributes
+            attrs = {k: v for k, v in attrs.items() if pd.notna(v)}  # Remove NaN values
+            attributes_map[filename] = attrs
         
-        # Create binary feature matrix
-        feature_matrix = np.zeros((len(nodes), n_features), dtype=np.int8)
-        for i, node in enumerate(nodes):
-            for attr in node.attributes:
-                feature_matrix[i, attr_to_idx[attr]] = 1
-                
-        return feature_matrix, attr_to_idx
+        return attributes_map
 
-    def _compute_lsh_buckets(self, feature_matrix, n_bands=50, band_size=2):
-        """Use LSH to group similar nodes into buckets"""
-        n_nodes, n_features = feature_matrix.shape
-        buckets = defaultdict(list)
+    def _create_attribute_matrix(self, nodes):
+        """Convert node attributes to a binary feature matrix and extract embeddings"""
+        # Create mappings for each attribute type
+        attribute_categories = {
+            'race': set(),
+            'gender': set(),
+            'age': set(),
+            'emotion': set(),
+            'quality_metrics': set()
+        }
         
-        # Generate random permutation matrices for LSH
-        np.random.seed(42)  # For reproducibility
-        for band in range(n_bands):
-            # Generate band signature
-            band_start = band * band_size
-            band_end = (band + 1) * band_size
-            if band_end > n_features:
-                break
-                
-            band_features = feature_matrix[:, band_start:band_end]
-            signatures = np.packbits(band_features, axis=1)
+        # Collect all unique attributes by category
+        for node in nodes:
+            for attr, value in node.attributes.items():
+                if attr.startswith('race_'):
+                    attribute_categories['race'].add(attr)
+                elif attr.startswith('gender_'):
+                    attribute_categories['gender'].add(attr)
+                elif attr.startswith('age_'):
+                    attribute_categories['age'].add(attr)
+                elif attr.startswith('emotion_'):
+                    attribute_categories['emotion'].add(attr)
+                elif attr in ['symmetry', 'blur', 'brightness', 'contrast', 'compression']:
+                    attribute_categories['quality_metrics'].add(attr)
+        
+        # Create index mappings for each category
+        category_indices = {}
+        current_idx = 0
+        for category, attrs in attribute_categories.items():
+            category_indices[category] = (current_idx, current_idx + len(attrs))
+            current_idx += len(attrs)
+        
+        # Create mapping of all attributes to indices
+        attr_to_idx = {}
+        idx = 0
+        for category, attrs in attribute_categories.items():
+            for attr in sorted(attrs):
+                attr_to_idx[attr] = idx
+                idx += 1
+        
+        # Create binary feature matrix and collect embeddings
+        feature_matrix = np.zeros((len(nodes), len(attr_to_idx)), dtype=np.float32)
+        embeddings = np.zeros((len(nodes), 512), dtype=np.float32)  # FaceNet embeddings are 512-dimensional
+        
+        for i, node in enumerate(nodes):
+            # Handle regular attributes
+            for attr, value in node.attributes.items():
+                if attr in attr_to_idx:
+                    # For binary attributes
+                    if isinstance(value, bool):
+                        feature_matrix[i, attr_to_idx[attr]] = float(value)
+                    # For numerical attributes (quality metrics)
+                    elif isinstance(value, (int, float)):
+                        feature_matrix[i, attr_to_idx[attr]] = value
+                    # For categorical attributes (one-hot encoded)
+                    else:
+                        feature_matrix[i, attr_to_idx[attr]] = 1.0
             
-            # Add nodes to buckets based on signatures
-            for i, sig in enumerate(signatures):
-                bucket_key = (band, sig.tobytes())
-                buckets[bucket_key].append(i)
+            # Handle face embedding
+            if 'face_embedding' in node.attributes:
+                embeddings[i] = node.attributes['face_embedding']
+                
+        return feature_matrix, attr_to_idx, category_indices, embeddings
+
+    def _compute_similarity(self, features1, features2, embeddings1, embeddings2, start_idx, end_idx, category):
+        """Compute similarity between feature vectors for a specific attribute range"""
+        # For embeddings comparison
+        if category == 'embeddings':
+            # Compute cosine similarity between embeddings
+            norm1 = np.linalg.norm(embeddings1)
+            norm2 = np.linalg.norm(embeddings2)
+            if norm1 == 0 or norm2 == 0:
+                return 0
+            return np.dot(embeddings1, embeddings2) / (norm1 * norm2)
         
-        return buckets
+        # Extract relevant features for other categories
+        f1 = features1[start_idx:end_idx]
+        f2 = features2[start_idx:end_idx]
+        
+        # For quality metrics (numerical features)
+        if category == 'quality_metrics':
+            # Define acceptable ranges for each metric
+            metric_ranges = {
+                'symmetry': 0.3,     # Allow 0.3 difference in symmetry score
+                'blur': 50,          # Allow difference of 50 in blur score
+                'brightness': 50,     # Allow difference of 50 in brightness
+                'contrast': 50,       # Allow difference of 50 in contrast
+                'compression': 20     # Allow difference of 20 in compression score
+            }
+            
+            # Count how many metrics are within acceptable range
+            matches = 0
+            total = 0
+            for i, (v1, v2) in enumerate(zip(f1, f2)):
+                if v1 != 0 and v2 != 0:  # Only compare if both values are present
+                    total += 1
+                    diff = abs(v1 - v2)
+                    threshold = list(metric_ranges.values())[i]
+                    if diff <= threshold:
+                        matches += 1
+            
+            # Return match ratio for metrics that were present
+            return matches / total if total > 0 else 0
+        
+        # For categorical features (exact matching)
+        else:
+            # Check if features are exactly equal
+            return np.array_equal(f1, f2)
+
+    def _hierarchical_match(self, feature_matrix, embeddings, category_indices, threshold=0.8, embedding_threshold=0.7):
+        """Perform hierarchical matching of nodes based on attributes"""
+        n_nodes = feature_matrix.shape[0]
+        edges = []
+        
+        # Define the attribute matching order
+        matching_order = ['race', 'gender', 'age', 'emotion', 'embeddings', 'quality_metrics']
+        
+        # Initialize with all possible pairs
+        valid_pairs = set((i, j) for i in range(n_nodes) for j in range(i + 1, n_nodes))
+        
+        # Iteratively filter pairs based on each attribute
+        for category in matching_order:
+            if category == 'embeddings':
+                new_valid_pairs = set()
+                for i, j in valid_pairs:
+                    similarity = self._compute_similarity(
+                        None, None,  # No regular features needed for embeddings
+                        embeddings[i], 
+                        embeddings[j],
+                        None, None,  # No indices needed for embeddings
+                        category
+                    )
+                    if similarity >= embedding_threshold:
+                        new_valid_pairs.add((i, j))
+            else:
+                start_idx, end_idx = category_indices[category]
+                new_valid_pairs = set()
+                
+                for i, j in valid_pairs:
+                    similarity = self._compute_similarity(
+                        feature_matrix[i], 
+                        feature_matrix[j],
+                        None, None,  # No embeddings needed for regular features
+                        start_idx,
+                        end_idx,
+                        category
+                    )
+                    
+                    # For categorical features, require exact match
+                    # For quality metrics, use threshold
+                    if category == 'quality_metrics':
+                        if similarity >= threshold:
+                            new_valid_pairs.add((i, j))
+                    else:
+                        if similarity:  # True means exact match
+                            new_valid_pairs.add((i, j))
+            
+            valid_pairs = new_valid_pairs
+            if not valid_pairs:
+                break
+        
+        # Convert remaining valid pairs to edges
+        edges.extend(valid_pairs)
+        return edges
 
     def process_node_batch(self, args):
-        start_idx, end_idx, node_list, feature_matrix, chunk_id = args
+        start_idx, end_idx, node_list, feature_matrix, embeddings, category_indices, chunk_id = args
         edges = []
         matches = set()
         
         # Get nodes for this chunk
         chunk_features = feature_matrix[start_idx:end_idx]
+        chunk_embeddings = embeddings[start_idx:end_idx]
         chunk_size = end_idx - start_idx
         
-        if self.hyperparameters["use_lsh"]:
-            # Use LSH for faster matching
-            buckets = self._compute_lsh_buckets(
-                feature_matrix, 
-                n_bands=self.hyperparameters["lsh_bands"],
-                band_size=self.hyperparameters["lsh_band_size"]
-            )
-            
-            # Process each node in the chunk
-            for i in range(chunk_size):
-                global_idx = start_idx + i
-                if global_idx in matches and len(matches) > chunk_size * 0.8:
-                    continue
-                
-                # Find candidate nodes through LSH buckets
-                node_features = chunk_features[i]
-                candidates = set()
-                
-                # Get candidates from same LSH buckets
-                for band in range(self.hyperparameters["lsh_bands"]):
-                    sig = np.packbits(node_features[:self.hyperparameters["lsh_band_size"]])
-                    bucket_key = (band, sig.tobytes())
-                    candidates.update(buckets.get(bucket_key, []))
-                
-                # Filter candidates to those after current node
-                candidates = [j for j in candidates if j > global_idx]
-                
-                if candidates:
-                    # Compute similarities vectorized
-                    candidate_features = feature_matrix[candidates]
-                    similarities = (node_features @ candidate_features.T) / (np.sum(node_features) + np.sum(candidate_features, axis=1))
-                    
-                    # Find matches above threshold
-                    threshold = node_list[global_idx].threshold
-                    matches_mask = similarities >= threshold/100
-                    
-                    # Add edges for matches
-                    for idx, is_match in enumerate(matches_mask):
-                        if is_match:
-                            j = candidates[idx]
-                            edges.append((global_idx, j))
-                            matches.add(global_idx)
-                            matches.add(j)
-        else:
-            # Fallback to direct comparison with vectorization
-            for i in range(chunk_size):
-                global_idx = start_idx + i
-                if global_idx in matches and len(matches) > chunk_size * 0.8:
-                    continue
-                
-                # Compare with all remaining nodes
-                node_features = chunk_features[i]
-                remaining_features = feature_matrix[global_idx + 1:]
-                if len(remaining_features) > 0:
-                    similarities = (node_features @ remaining_features.T) / (np.sum(node_features) + np.sum(remaining_features, axis=1))
-                    
-                    # Find matches above threshold
-                    threshold = node_list[global_idx].threshold
-                    matches_mask = similarities >= threshold/100
-                    
-                    # Add edges for matches
-                    for idx, is_match in enumerate(matches_mask):
-                        if is_match:
-                            j = global_idx + 1 + idx
-                            edges.append((global_idx, j))
-                            matches.add(global_idx)
-                            matches.add(j)
+        # Perform hierarchical matching
+        chunk_edges = self._hierarchical_match(
+            chunk_features,
+            chunk_embeddings,
+            category_indices,
+            threshold=0.8,
+            embedding_threshold=0.7
+        )
+        
+        # Adjust indices to global space
+        for i, j in chunk_edges:
+            global_i = start_idx + i
+            global_j = start_idx + j
+            edges.append((global_i, global_j))
+            matches.add(global_i)
+            matches.add(global_j)
         
         return edges, matches
 
@@ -149,6 +244,12 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         # Create NetworkX graph alongside main graph
         nx_graph = nx.Graph()
         
+        # Load attribute files for each split
+        print("Loading attributes from CSV files...")
+        train_attributes = self._load_attributes('train')
+        val_attributes = self._load_attributes('val')
+        test_attributes = self._load_attributes('test')
+        
         # Load datasets
         for dataset in self.datasets:
             node_list.extend(dataset.load())
@@ -158,16 +259,29 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         val_nodes = []
         test_nodes = []
         
+        # Add attributes to nodes based on their split
         for node in node_list:
             split = node.split  # Get the split directly from the node
+            # Get the filename from the node's path
+            filename = os.path.basename(node.path)
+            
+            # Add attributes based on split
             if split == 'train':
+                if filename in train_attributes:
+                    node.attributes.update(train_attributes[filename])
                 train_nodes.append(node)
             elif split == 'val':
+                if filename in val_attributes:
+                    node.attributes.update(val_attributes[filename])
                 val_nodes.append(node)
             elif split == 'test':
+                if filename in test_attributes:
+                    node.attributes.update(test_attributes[filename])
                 test_nodes.append(node)
             else:
                 print(f"Warning: Node has unknown split: {split}, defaulting to train")
+                if filename in train_attributes:
+                    node.attributes.update(train_attributes[filename])
                 train_nodes.append(node)
         
         # Optionally limit nodes for testing while preserving split distribution
@@ -201,8 +315,9 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         
         # Create feature matrix for fast comparison
         print("Creating feature matrix...")
-        feature_matrix, attr_to_idx = self._create_attribute_matrix(node_list)
+        feature_matrix, attr_to_idx, category_indices, embeddings = self._create_attribute_matrix(node_list)
         print(f"Feature matrix shape: {feature_matrix.shape}")
+        print(f"Embeddings matrix shape: {embeddings.shape}")
         
         # Automatically disable LSH for low-dimensional data
         if feature_matrix.shape[1] < 10 and self.hyperparameters["use_lsh"]:
@@ -212,7 +327,7 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         # Split work into chunks for parallel processing
         num_processes = min(8, cpu_count())
         chunk_size = max(1000, n_nodes // (num_processes * 4))
-        chunks = [(i, min(i + chunk_size, n_nodes), node_list, feature_matrix, idx) 
+        chunks = [(i, min(i + chunk_size, n_nodes), node_list, feature_matrix, embeddings, category_indices, idx) 
                  for idx, i in enumerate(range(0, n_nodes, chunk_size))]
         
         print(f"\nProcessing {len(chunks)} chunks using {num_processes} processes")

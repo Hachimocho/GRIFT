@@ -183,3 +183,5 @@ wandb/latest-run
 test_run_20241208_234931.log
 bckup copy.py
 bckup.py
+face_landmarker_v2_with_blendshapes.task
+utils/shape_predictor_68_face_landmarks.dat

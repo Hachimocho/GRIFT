@@ -138,6 +138,10 @@ class IValueTrainer(Trainer):
                     
         self.dqns = [DQNModel(input_dim).cuda() for _ in range(len(models))]
         
+        # Connect DQN models to graph manager for performance tracking
+        if hasattr(self.graphmanager, 'set_i_value_predictor'):
+            self.graphmanager.set_i_value_predictor(self.dqns[0])  # Use first DQN model
+            
         # Store attribute metadata
         if attribute_metadata is not None:
             self.attribute_metadata = [
@@ -374,54 +378,73 @@ class IValueTrainer(Trainer):
 
     def process_node_data(self, node, model_idx):
         """Process node data and update DQN replay buffer with comprehensive bias awareness."""
-        # Get features for both models
-        dqn_features = self._get_dqn_features(node)
-        cnn_features = self._get_cnn_features(node)
-        label = torch.tensor([node.get_label()]).cuda()
-        
-        # Forward pass through CNN model
-        model = self.models[model_idx]
-        output = model(cnn_features)
-        pred = (torch.sigmoid(output) > 0.5).float()
-        
-        # Calculate accuracy and update statistics
-        correct = (pred == label).sum().item()
-        self.update_prediction_stats(node, correct, model_idx)
-        
-        # Calculate model uncertainty (prediction confidence)
-        confidence = abs(torch.sigmoid(output).item() - 0.5) * 2  # Scale to [0, 1]
-        
-        # Calculate bias contribution
-        curr_bias_loss = self.bias_loss(output, node.attributes).item()
-        
-        # Calculate reward components:
-        # 1. Uncertainty reward: Higher for uncertain predictions (need more training)
-        uncertainty_reward = 1.0 - confidence
-        
-        # 2. Bias reward: Higher for biased predictions (need correction)
-        bias_reward = min(curr_bias_loss, 1.0)  # Cap at 1.0
-        
-        # 3. Error reward: Higher for incorrect predictions (need improvement)
-        error_reward = 1.0 - correct
-        
-        # Combine rewards with weights
-        # reward = (0.4 * uncertainty_reward +  # Prioritize uncertain predictions
-        #          0.4 * bias_reward +          # Prioritize biased predictions
-        #          0.2 * error_reward)          # Consider accuracy
-        
-        reward = bias_reward
+        try:
+            # Get node features for DQN
+            dqn_features = self._get_dqn_features(node)
+            if dqn_features is None:
+                return None, None, None, False
+                
+            # Get image features for CNN
+            image_features = self._get_cnn_features(node)
+            if image_features is None:
+                return None, None, None, False
+                
+            # Forward pass through model
+            output = self.models[model_idx](image_features)
+            
+            # Get label
+            label = torch.tensor([1.0 if node.is_fake() else 0.0], device='cuda').float()
+            
+            # Check prediction correctness
+            predicted = (torch.sigmoid(output) > 0.5).float()
+            correct = (predicted == label).item()
+            
+            # Update prediction stats for bias tracking
+            self.update_prediction_stats(node, correct, model_idx)
+            
+            # Calculate current bias loss
+            curr_bias_loss = self.bias_loss(output, [node.attributes])
+            
+            # Calculate rewards
+            # 1. Uncertainty reward: Higher for uncertain predictions
+            pred_prob = torch.sigmoid(output).item()
+            uncertainty_reward = 1.0 - abs(pred_prob - 0.5) * 2  # Max at 0.5, min at 0 or 1
+            
+            # 2. Bias reward: Higher for biased predictions (need correction)
+            bias_reward = min(curr_bias_loss, 1.0)  # Cap at 1.0
+            
+            # 3. Error reward: Higher for incorrect predictions (need improvement)
+            error_reward = 1.0 - correct
+            
+            # Combine rewards with weights
+            reward = bias_reward
 
-        # Store experience in replay buffer (state, reward)
-        self.dqns[model_idx].replay_buffer.append((dqn_features, reward))
-        
-        # Train DQN
-        dqn_loss = self.train_dqn(model_idx)
-        
-        # Calculate losses
-        classification_loss = model.loss(output, label)
-        total_loss = classification_loss + self.bias_weight * curr_bias_loss
-        
-        return total_loss, dqn_loss, curr_bias_loss, correct
+            # Store experience in replay buffer (state, reward)
+            self.dqns[model_idx].replay_buffer.append((dqn_features, reward))
+            
+            # Train DQN
+            dqn_loss = self.train_dqn(model_idx)
+            
+            # Calculate losses
+            classification_loss = self.models[model_idx].loss(output, label)
+            total_loss = classification_loss + self.bias_weight * curr_bias_loss
+            
+            # Get I-value for performance tracking
+            i_value = self.get_i_value(node, model_idx)
+            
+            # Update graph manager with performance tracking
+            if hasattr(self.graphmanager, 'track_performance'):
+                self.graphmanager.track_performance(node, i_value)
+            
+            # Update graph structure periodically
+            if hasattr(self.graphmanager, 'update_graph'):
+                self.graphmanager.update_graph()
+            
+            return total_loss, dqn_loss, curr_bias_loss, correct
+            
+        except Exception as e:
+            print(f"Error in process_node_data: {str(e)}")
+            return None, None, None, False
     
     def train_step(self, batch_nodes):
         """Perform a single training step."""

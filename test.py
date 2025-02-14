@@ -10,6 +10,7 @@ from datasets.AIFaceDataset import AIFaceDataset
 from data.ImageFileData import ImageFileData
 from nodes.atrnode import AttributeNode
 from managers.NoGraphManager import NoGraphManager
+from managers.PerformanceGraphManager import PerformanceGraphManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.IValueTraversal import IValueTraversal
 from traversals.RandomTraversal import RandomTraversal
@@ -110,10 +111,16 @@ with capture_output(logfile.name) as logpath:
         train_graph, val_graph, test_graph = dataloader.load()
         
         # Create graph managers for each split
-        train_manager = NoGraphManager(copy.deepcopy(train_graph))
+        train_manager = PerformanceGraphManager(
+            graph=train_graph,
+            rewire_threshold=0.8,
+            edge_removal_threshold=0.2,
+            max_edges_per_node=10,
+            update_interval=200
+        )
         val_manager = NoGraphManager(copy.deepcopy(val_graph))
         test_manager = NoGraphManager(copy.deepcopy(test_graph))
-        
+
         # Define architectures to test
         cnn_architectures = [
             "swintransformdf",
@@ -151,28 +158,7 @@ with capture_output(logfile.name) as logpath:
                         True
                     )
                     
-                    # Create trainer based on traversal type
-                    if traversal_type == "i-value":
-                        trainer = IValueTrainer(
-                            train_manager,  # Use train manager
-                            None,  # Will be set by get_traversal
-                            None,  # Will be set by get_traversal
-                            [model],
-                            attribute_metadata=attribute_metadata
-                        )
-                    else:  # random or comprehensive traversal
-                        trainer = ExperimentTrainer(
-                            train_manager,  # Use train manager
-                            None,  # Will be set by get_traversal
-                            None,  # Will be set by get_traversal
-                            None,  # Will be set by get_traversal
-                            [model],
-                            traversal_type=traversal_type,
-                            attribute_metadata=attribute_metadata
-                        )
-                    
-                    # Create traversals for each split
-                    # Use more pointers and adjust steps based on graph sizes
+                    # Calculate appropriate number of steps
                     train_size = len(train_manager.graph.get_nodes())
                     val_size = len(val_manager.graph.get_nodes())
                     test_size = len(test_manager.graph.get_nodes())
@@ -182,27 +168,36 @@ with capture_output(logfile.name) as logpath:
                     print(f"Val: {val_size} nodes")
                     print(f"Test: {test_size} nodes")
                     
-                    # Calculate appropriate number of steps
-                    train_steps = 2000
-                    val_steps = 1000 
-                    test_steps = None  # Use None to visit all test nodes
+                    # Set steps for each traversal type
+                    train_steps = 2000  # Fixed number for training
+                    val_steps = val_size  # Full validation set
+                    test_steps = test_size  # Full test set
                     
-                    if traversal_type == "comprehensive":
+                    # Create traversals - always use ComprehensiveTraversal for val and test
+                    if traversal_type == 'i-value':
+                        train_traversal = IValueTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    elif traversal_type == 'random':
+                        train_traversal = RandomTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    else:  # comprehensive
                         train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
-                    else:
-                        train_traversal = trainer.get_traversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+
+                    # Always use ComprehensiveTraversal for validation and test
                     val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
                     test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
-                    
+
                     print(f"\nTraversal settings:")
-                    print(f"Train: {train_steps} steps with 1 pointers")
-                    print(f"Val: {val_steps} steps with 1 pointers")
-                    print(f"Test: All nodes with 1 pointers")
+                    print(f"Train: {train_steps} steps with 1 pointer")
+                    print(f"Val: {val_steps} steps with 1 pointer")
+                    print(f"Test: {test_steps} steps with 1 pointer")
                     
-                    # Update trainer with correct traversals
-                    trainer.train_traversal = train_traversal
-                    trainer.val_traversal = val_traversal
-                    trainer.test_traversal = test_traversal
+                    # Create trainer
+                    trainer = IValueTrainer(
+                        graphmanager=train_manager,
+                        train_traversal=train_traversal,
+                        val_traversal=val_traversal,
+                        models=[model],
+                        attribute_metadata=attribute_metadata
+                    )
                     
                     try:
                         print(f"Training {arch} with {traversal_type} traversal...")

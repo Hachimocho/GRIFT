@@ -400,3 +400,142 @@
 - Improved memory management with periodic cleanup and explicit garbage collection
 - Added better error handling and isolation
 - These changes should significantly reduce processing time for large datasets
+
+## 2025-02-14: Hierarchical Node Matching System
+
+Added a new hierarchical node matching system to the `UnclusteredDeepfakeDataloader` class that:
+1. Organizes attributes into categories (race, gender, age, emotion, facial features, quality metrics)
+2. Performs hierarchical matching by filtering node pairs based on attribute similarity in order
+3. Handles both categorical and numerical attributes with appropriate similarity metrics
+4. Replaces the previous LSH-based matching system with a more precise attribute-based approach
+
+Changes made:
+- Updated `_create_attribute_matrix()` to handle categorized attributes and numerical values
+- Added `_compute_similarity()` for attribute-specific similarity calculations
+- Added `_hierarchical_match()` for the new matching algorithm
+- Modified `process_node_batch()` to use the hierarchical matching system
+- Removed LSH-based matching code as it's no longer needed
+
+The new system ensures more accurate matches by:
+1. First matching faces with the same race
+2. Then filtering by gender
+3. Then filtering by age similarity
+4. Then filtering by emotional expression
+5. Then considering facial features
+6. Finally considering quality metrics
+
+This creates a more natural grouping of faces that share fundamental characteristics.
+
+## 2025-02-14: Updated Similarity Computation
+
+Modified the similarity computation in the hierarchical node matching system:
+
+1. Categorical Features (race, gender, age, emotion, facial features):
+- Changed to use exact matching instead of cosine similarity
+- Two nodes match only if they have identical values for the category
+- No partial matches or similarity scores - it's binary match/no-match
+
+2. Numerical Features (quality metrics):
+- Added specific acceptable ranges for each metric:
+  - Symmetry: ±0.3 difference allowed
+  - Blur: ±50 difference allowed
+  - Brightness: ±50 difference allowed
+  - Contrast: ±50 difference allowed
+  - Compression: ±20 difference allowed
+- Computes match ratio based on how many metrics are within acceptable range
+- Only compares metrics that are present in both nodes
+- Removed problematic normalization that didn't handle large or negative values well
+
+These changes make the matching system more precise for categorical features while providing appropriate tolerance ranges for numerical metrics.
+
+## 2025-02-14: Added Face Embeddings Comparison
+
+Updated the node matching system to include face embeddings comparison:
+
+1. Feature Matrix Changes:
+- Removed 'facial_features' category as it's replaced by face embeddings
+- Added separate embeddings matrix to store 512-dimensional FaceNet embeddings
+- Updated attribute collection to handle both regular attributes and embeddings
+
+2. Similarity Computation:
+- Added dedicated embeddings comparison using cosine similarity
+- Embeddings comparison threshold set to 0.7 (adjustable)
+- Kept exact matching for categorical features
+- Maintained specific ranges for quality metrics
+
+3. Hierarchical Matching Order:
+- Updated matching order: race → gender → age → emotion → embeddings → quality metrics
+- Face embeddings comparison happens after basic demographic matching
+- Only pairs that match on demographics and have similar embeddings proceed to quality metrics comparison
+
+This change provides a more accurate way to compare facial features using the deep learning embeddings instead of individual feature matching.
+
+## 2025-02-14: Implemented DQN-based I-Value Predictor
+
+### Changes to DQNIValuePredictor.py
+- Implemented neural network-based predictor for node rewards and Q-values
+- Added experience replay memory with automatic forgetting of old traces
+- Created efficient GPU-accelerated training pipeline
+- Implemented I-value prediction based on normalized Q-values
+- Added separate reward prediction functionality
+- Improved memory management with batch processing
+- Added automatic model initialization based on node attributes
+
+## 2025-02-14: Updated AIFaceDataset with Additional Attributes
+
+Enhanced the AIFaceDataset to load and incorporate additional attributes from CSV files:
+
+1. Added Attribute Loading:
+- Created `_load_additional_attributes()` method to load attributes from CSV files
+- Supports train_attributes.csv, val_attributes.csv, and test_attributes.csv
+- Files are expected in the same directory as the dataset
+- Handles missing files and invalid data gracefully
+
+2. Node Creation Updates:
+- Modified `create_node()` to accept additional attributes
+- Base attributes (Gender, Race, Age) are preserved
+- Additional attributes are merged with base attributes
+- Attributes are matched to nodes using filenames
+
+3. Implementation Details:
+- Efficient CSV reading with pandas
+- Automatic NaN value filtering
+- Memory-efficient processing with chunking
+- Maintains existing multiprocessing capabilities
+- Added informative logging for attribute loading status
+
+This update enables the dataset to incorporate new attributes while maintaining the existing functionality and performance optimizations.
+
+## 2025-02-14: Added Performance-Based Graph Manager
+
+Added a new `PerformanceGraphManager` that dynamically rewires the graph based on model performance:
+
+- Created `managers/PerformanceGraphManager.py` implementing dynamic graph rewiring
+- Uses I-value predictions to identify weak and strong nodes
+- Automatically adds edges to nodes with poor performance
+- Removes edges from nodes with consistently good performance
+- Updated test.py to use the new graph manager
+
+The manager helps focus computational resources on difficult examples while reducing overhead on well-learned examples.
+
+## 2025-02-14: Integrated Performance Tracking with IValueTrainer
+
+Enhanced the integration between `PerformanceGraphManager` and `IValueTrainer`:
+
+- Connected DQN models from IValueTrainer to graph manager for I-value prediction
+- Added performance tracking in IValueTrainer's node processing pipeline
+- Automatic graph updates now occur during training based on node performance
+- Streamlined traversal creation and trainer initialization in test.py
+- Fixed missing graph manager updates in the training loop
+
+These changes ensure that the graph structure is properly rewired based on model performance during training.
+
+## 2025-02-14: Restored and Improved Traversal Step Settings
+
+Enhanced traversal configuration in test.py:
+
+- Restored step settings for all traversals
+- Training uses fixed 2000 steps for consistent training size
+- Validation and test use exact dataset sizes to ensure complete coverage
+- Added informative logging of graph sizes and traversal settings
+- Maintained single pointer configuration for all traversals
