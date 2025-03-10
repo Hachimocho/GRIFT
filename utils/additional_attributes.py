@@ -19,6 +19,8 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from multiprocessing import Pool, cpu_count
 from functools import partial
+import argparse
+import sys
 
 # Global debug flag
 DEBUG_MODE = False
@@ -782,7 +784,7 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
     # Get default attributes based on config
     results = get_default_attributes()
     results['image_path'] = image_path
-    results['image_id'] = image_path.split('/')[-1]
+    results['image_id'] = image_path
     
     try:
         # Validate image first
@@ -877,7 +879,14 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
                     logger.warning(f"Emotion detection failed for {image_path}: {str(e)}")
             
             # DeepFace attributes
-            if ATTRIBUTE_CONFIG['deepface']['enabled']:
+            required_deepface = (
+                ATTRIBUTE_CONFIG['deepface']['enabled'] and (
+                    ATTRIBUTE_CONFIG['deepface']['components']['age'] or
+                    ATTRIBUTE_CONFIG['deepface']['components']['gender'] or
+                    ATTRIBUTE_CONFIG['deepface']['components']['race']
+                )
+            )
+            if required_deepface:
                 try:
                     attributes = DeepFace.analyze(
                         img, 
@@ -992,7 +1001,7 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
             result = batch_results[batch_idx]
             img_path = batch_paths[orig_idx]
             result['image_path'] = img_path
-            result['image_id'] = img_path.split('/')[-1]
+            result['image_id'] = img_path
             
             try:
                 # Quality metrics
@@ -1043,6 +1052,38 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
                     except Exception as e:
                         logger.warning(f"Emotion detection failed for {img_path}: {str(e)}")
                 
+                # DeepFace attributes
+                required_deepface = (
+                    ATTRIBUTE_CONFIG['deepface']['enabled'] and (
+                        ATTRIBUTE_CONFIG['deepface']['components']['age'] or
+                        ATTRIBUTE_CONFIG['deepface']['components']['gender'] or
+                        ATTRIBUTE_CONFIG['deepface']['components']['race']
+                    )
+                )
+                if required_deepface:
+                    try:
+                        attributes = DeepFace.analyze(
+                            img, 
+                            actions=['age', 'gender', 'race'] if all(ATTRIBUTE_CONFIG['deepface']['components'].values())
+                                   else [k for k, v in ATTRIBUTE_CONFIG['deepface']['components'].items() if v],
+                            enforce_detection=False,
+                            detector_backend='opencv'
+                        )
+                        
+                        if isinstance(attributes, list):
+                            attributes = attributes[0]
+                        
+                        if ATTRIBUTE_CONFIG['deepface']['components']['age']:
+                            result['age'] = attributes.get('age', -1)
+                        if ATTRIBUTE_CONFIG['deepface']['components']['gender']:
+                            result['gender'] = attributes.get('gender', 'unknown')
+                        if ATTRIBUTE_CONFIG['deepface']['components']['race']:
+                            result['race'] = attributes.get('dominant_race', 'unknown')
+                            result['race_scores'] = attributes.get('race', result['race_scores'])
+                            
+                    except Exception as e:
+                        logger.warning(f"DeepFace analysis failed for {img_path}: {str(e)}")
+            
             except Exception as e:
                 logger.error(f"Error processing face in {img_path}: {str(e)}")
                 result['error'] = f"Face processing error: {str(e)}"
@@ -1140,49 +1181,42 @@ def create_debug_visualization(image: np.ndarray, attributes: Dict[str, Any], ou
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, vis_img)
 
-def process_dataframe(df: pd.DataFrame, data_root: str, batch_size: int = 32, 
-                     output_path: str = None, debug_vis: bool = False,
-                     debug_vis_dir: str = None, max_debug_images: int = 100) -> pd.DataFrame:
-    """Process all images in a dataframe with batch processing."""
+def process_dataframe(
+    image_paths: List[str],
+    batch_size: int = 32,
+    debug_vis: bool = False,
+    debug_vis_dir: str = None,
+    max_debug_images: int = 20
+) -> pd.DataFrame:
+    """Process all images in a dataframe and return a new dataframe with attributes."""
+    # Process images in batches for better memory usage
+    print(f"Processing batches:")
     
-    logger.info("Collecting image paths...")
-    image_paths = []
-    image_ids = []
-    for _, row in tqdm(df.iterrows(), total=len(df)):
-        image_path = data_root + row['Image Path'] if row['Image Path'].startswith("/") else data_root + "/" + row['Image Path']
-        if os.path.exists(image_path):
-            image_paths.append(image_path)
-            image_ids.append(row['Image Path'].split('/')[-1])
-        else:
-            logger.warning(f"Image not found: {image_path}")
+    batch_size = min(batch_size, 64)  # Cap batch size for stability
     
-    # Setup debug visualization if enabled
+    # Process images
+    all_results = []
     debug_count = 0
-    if debug_vis and debug_vis_dir:
-        os.makedirs(debug_vis_dir, exist_ok=True)
-        logger.info(f"Debug visualizations will be saved to {debug_vis_dir}")
     
-    logger.info(f"Processing {len(image_paths)} images in batches of {batch_size}...")
-    results = []
-    
-    total_batches = (len(image_paths) + batch_size - 1) // batch_size
-    
-    with tqdm(total=total_batches, desc="Processing batches", position=0, leave=True) as pbar:
-        for batch_idx in range(total_batches):
-            batch_paths = image_paths[batch_idx:batch_idx + batch_size]
-            batch_results = process_image_batch(batch_paths)
-            
-            # Create debug visualizations if enabled
-            if debug_vis and debug_vis_dir and debug_count < max_debug_images:
-                for img_path, result in zip(batch_paths, batch_results):
-                    if debug_count >= max_debug_images:
-                        break
-                        
-                    if 'error' not in result or not result['error']:
-                        try:
-                            # Read original image
-                            img = cv2.imread(img_path)
-                            if img is not None and '_debug' in result:
+    # Use tqdm for progress tracking
+    for i in tqdm(range(0, len(image_paths), batch_size)):
+        batch_paths = image_paths[i:i+batch_size]
+        batch_results = process_image_batch(batch_paths, batch_size=batch_size)
+        
+        # Create debug visualizations if enabled
+        if debug_vis and debug_vis_dir and debug_count < max_debug_images:
+            for img_path, result in zip(batch_paths, batch_results):
+                if debug_count >= max_debug_images:
+                    break
+                    
+                if 'error' not in result or not result['error']:
+                    try:
+                        # Read original image
+                        img = cv2.imread(img_path)
+                        if img is not None and '_debug' in result:
+                            # Check if debug data is complete and valid
+                            debug_data = result.get('_debug', {})
+                            if isinstance(debug_data, dict) and 'landmarks' in debug_data and 'nose_bridge' in debug_data:
                                 # Create debug visualization with landmarks
                                 debug_path = os.path.join(
                                     debug_vis_dir, 
@@ -1190,28 +1224,27 @@ def process_dataframe(df: pd.DataFrame, data_root: str, batch_size: int = 32,
                                 )
                                 create_debug_visualization(
                                     img, result, debug_path,
-                                    landmarks=result['_debug']['landmarks'],
-                                    nose_bridge=result['_debug']['nose_bridge']
+                                    landmarks=debug_data['landmarks'],
+                                    nose_bridge=debug_data['nose_bridge']
                                 )
                                 debug_count += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to create debug visualization for {img_path}: {str(e)}")
-            
-            results.extend(batch_results)
-            pbar.update(1)
-    
-    # Convert results to DataFrame
-    results_df = pd.DataFrame(results)
-    results_df.set_index('image_id', inplace=True)
-    
-    # Save results if output path is provided
-    if output_path:
-        logger.info(f"Saving results to {output_path}")
-        results_df.to_csv(output_path)
-    
-    if debug_vis and debug_vis_dir:
-        logger.info(f"Created {debug_count} debug visualizations in {debug_vis_dir}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create debug visualization for {img_path}: {str(e)}")
         
+        all_results.extend(batch_results)
+        
+        # Clear memory periodically
+        if i % (batch_size * 10) == 0:
+            clear_gpu_memory()
+    
+    # Convert to DataFrame
+    print(f"Converting results to DataFrame... ({len(all_results)} items)")
+    results_df = pd.DataFrame(all_results)
+    
+    # Set image_id as index
+    if not results_df.empty and 'image_id' in results_df.columns:
+        results_df.set_index('image_id', inplace=True)
+    
     return results_df
 
 def clear_gpu_memory():
@@ -1220,33 +1253,88 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
         gc.collect()
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate image quality metrics for the AI-Face dataset")
-    parser.add_argument("--data_root", type=str, required=True, help="Root directory containing images")
-    parser.add_argument("--metadata_path", type=str, required=True, help="Path to metadata CSV file")
-    parser.add_argument("--output_path", type=str, required=True, help="Path to save results CSV")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for processing")
-    parser.add_argument("--debug_vis", action="store_true", help="Enable debug visualizations")
-    parser.add_argument("--debug_vis_dir", type=str, default="/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/logs/annotation_debug", 
-                       help="Directory to save debug visualizations")
-    parser.add_argument("--max_debug_images", type=int, default=100,
-                       help="Maximum number of debug images to generate")
+def main():
+    """Main function to run the script with command line arguments."""
+    parser = argparse.ArgumentParser(description='Generate additional attributes for images')
+    parser.add_argument('--data_root', type=str, required=True, help='Root directory of dataset')
+    parser.add_argument('--metadata_path', type=str, required=True, help='Path to dataset metadata CSV')
+    parser.add_argument('--output_path', type=str, required=True, help='Path to save output CSV with attributes')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for processing')
+    parser.add_argument('--debug_vis', action='store_true', help='Generate debug visualizations')
+    parser.add_argument('--debug_vis_dir', type=str, default=None, help='Directory to save debug visualizations')
+    parser.add_argument('--max_debug_images', type=int, default=20, help='Maximum number of debug images to generate')
+    parser.add_argument('--disable_deepface', action='store_true', help='Disable DeepFace analysis for faster processing')
+    parser.add_argument('--disable_emotions', action='store_true', help='Disable emotion detection for faster processing')
     args = parser.parse_args()
     
-    # Read metadata
-    logger.info(f"Reading metadata from {args.metadata_path}")
-    df = pd.read_csv(args.metadata_path)
+    # Update configuration based on CLI arguments
+    if args.disable_deepface:
+        ATTRIBUTE_CONFIG['deepface']['enabled'] = False
+    if args.disable_emotions:
+        ATTRIBUTE_CONFIG['emotions']['enabled'] = False
     
-    # Process images
+    # Make sure the output directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_path)), exist_ok=True)
+    
+    # Create debug visualization directory if needed
+    if args.debug_vis and args.debug_vis_dir:
+        os.makedirs(args.debug_vis_dir, exist_ok=True)
+    
+    # Read metadata
+    print(f"Reading metadata from {args.metadata_path}")
+    metadata_df = pd.read_csv(args.metadata_path)
+    
+    # Check for various possible column names for the image path
+    image_col = None
+    possible_cols = ['filename', 'path', 'Image Path', 'image_path', 'file_path', 'filepath']
+    
+    for col in possible_cols:
+        if col in metadata_df.columns:
+            image_col = col
+            break
+    
+    if image_col is None:
+        print(f"Error: Could not find image path column in metadata. Available columns: {', '.join(metadata_df.columns)}")
+        sys.exit(1)
+        
+    # Get list of image paths
+    image_paths = metadata_df[image_col].tolist()
+    if not image_paths:
+        print("Error: No image paths found in metadata")
+        sys.exit(1)
+    
+    # Make absolute paths - handle paths correctly based on their format
+    processed_paths = []
+    for p in image_paths:
+        if os.path.isabs(p) and os.path.exists(p):
+            # Path is already absolute and exists
+            processed_paths.append(p)
+        elif p.startswith('/') and not os.path.exists(p):
+            # Path starts with / but doesn't exist - treat as relative to data_root
+            full_path = os.path.join(args.data_root, p.lstrip('/'))
+            processed_paths.append(full_path)
+        else:
+            # Regular relative path
+            full_path = os.path.join(args.data_root, p)
+            processed_paths.append(full_path)
+    
+    image_paths = processed_paths
+    
+    print(f"Processing {len(image_paths)} images with batch size {args.batch_size}")
+    
+    # Process images in batches
     results_df = process_dataframe(
-        df=df,
-        data_root=args.data_root,
+        image_paths, 
         batch_size=args.batch_size,
-        output_path=args.output_path,
         debug_vis=args.debug_vis,
         debug_vis_dir=args.debug_vis_dir,
         max_debug_images=args.max_debug_images
     )
     
-    logger.info("Processing complete!")
+    # Save results
+    print(f"Saving results to {args.output_path}")
+    results_df.to_csv(args.output_path)
+    print("Done!")
+
+if __name__ == "__main__":
+    main()

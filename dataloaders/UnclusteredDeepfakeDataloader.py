@@ -23,26 +23,6 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "show_viz": False,  # Whether to display the visualization
     }
 
-    def _load_attributes(self, split):
-        """Load attributes from CSV file for the given split"""
-        csv_path = os.path.join(os.path.dirname(self.datasets[0].root_dir), f"{split}_attributes.csv")
-        if not os.path.exists(csv_path):
-            print(f"Warning: No attributes file found at {csv_path}")
-            return {}
-        
-        df = pd.read_csv(csv_path)
-        # Create a mapping of filename to attributes
-        attributes_map = {}
-        for _, row in df.iterrows():
-            filename = row['filename']
-            # Convert row to dict, excluding the filename column
-            attrs = row.drop('filename').to_dict()
-            # Clean up the attributes
-            attrs = {k: v for k, v in attrs.items() if pd.notna(v)}  # Remove NaN values
-            attributes_map[filename] = attrs
-        
-        return attributes_map
-
     def _create_attribute_matrix(self, nodes):
         """Convert node attributes to a binary feature matrix and extract embeddings"""
         # Create mappings for each attribute type
@@ -51,7 +31,8 @@ class UnclusteredDeepfakeDataloader(Dataloader):
             'gender': set(),
             'age': set(),
             'emotion': set(),
-            'quality_metrics': set()
+            'quality_metrics': set(),
+            'symmetry': set()
         }
         
         # Collect all unique attributes by category
@@ -65,8 +46,10 @@ class UnclusteredDeepfakeDataloader(Dataloader):
                     attribute_categories['age'].add(attr)
                 elif attr.startswith('emotion_'):
                     attribute_categories['emotion'].add(attr)
-                elif attr in ['symmetry', 'blur', 'brightness', 'contrast', 'compression']:
+                elif attr in ['blur', 'brightness', 'contrast', 'compression']:
                     attribute_categories['quality_metrics'].add(attr)
+                elif attr.startswith('symmetry_'):
+                    attribute_categories['symmetry'].add(attr)
         
         # Create index mappings for each category
         category_indices = {}
@@ -126,7 +109,6 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         if category == 'quality_metrics':
             # Define acceptable ranges for each metric
             metric_ranges = {
-                'symmetry': 0.3,     # Allow 0.3 difference in symmetry score
                 'blur': 50,          # Allow difference of 50 in blur score
                 'brightness': 50,     # Allow difference of 50 in brightness
                 'contrast': 50,       # Allow difference of 50 in contrast
@@ -146,6 +128,30 @@ class UnclusteredDeepfakeDataloader(Dataloader):
             
             # Return match ratio for metrics that were present
             return matches / total if total > 0 else 0
+            
+        # For symmetry metrics
+        elif category == 'symmetry':
+            # Define acceptable ranges for each symmetry metric
+            symmetry_ranges = {
+                'symmetry_eye': 0.3,      # Allow 0.3 difference in eye symmetry
+                'symmetry_mouth': 0.3,     # Allow 0.3 difference in mouth symmetry
+                'symmetry_nose': 0.3,      # Allow 0.3 difference in nose symmetry
+                'symmetry_overall': 0.3    # Allow 0.3 difference in overall symmetry
+            }
+            
+            # Count how many symmetry metrics are within acceptable range
+            matches = 0
+            total = 0
+            for i, (v1, v2) in enumerate(zip(f1, f2)):
+                if v1 != 0 and v2 != 0:  # Only compare if both values are present
+                    total += 1
+                    diff = abs(v1 - v2)
+                    threshold = list(symmetry_ranges.values())[i]
+                    if diff <= threshold:
+                        matches += 1
+            
+            # Return match ratio for metrics that were present
+            return matches / total if total > 0 else 0
         
         # For categorical features (exact matching)
         else:
@@ -157,8 +163,8 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         n_nodes = feature_matrix.shape[0]
         edges = []
         
-        # Define the attribute matching order
-        matching_order = ['race', 'gender', 'age', 'emotion', 'embeddings', 'quality_metrics']
+        # Define the attribute matching order - add symmetry as a separate category
+        matching_order = ['race', 'gender', 'age', 'emotion', 'embeddings', 'quality_metrics', 'symmetry']
         
         # Initialize with all possible pairs
         valid_pairs = set((i, j) for i in range(n_nodes) for j in range(i + 1, n_nodes))
@@ -192,8 +198,8 @@ class UnclusteredDeepfakeDataloader(Dataloader):
                     )
                     
                     # For categorical features, require exact match
-                    # For quality metrics, use threshold
-                    if category == 'quality_metrics':
+                    # For quality metrics and symmetry, use threshold
+                    if category in ['quality_metrics', 'symmetry']:
                         if similarity >= threshold:
                             new_valid_pairs.add((i, j))
                     else:
@@ -244,44 +250,31 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         # Create NetworkX graph alongside main graph
         nx_graph = nx.Graph()
         
-        # Load attribute files for each split
-        print("Loading attributes from CSV files...")
-        train_attributes = self._load_attributes('train')
-        val_attributes = self._load_attributes('val')
-        test_attributes = self._load_attributes('test')
-        
         # Load datasets
+        print("Loading nodes from datasets...")
         for dataset in self.datasets:
-            node_list.extend(dataset.load())
+            # Each dataset's load method should handle attribute loading internally
+            dataset_nodes = dataset.load()
+            print(f"Loaded {len(dataset_nodes)} nodes from {dataset.__class__.__name__}")
+            node_list.extend(dataset_nodes)
         
-        # Split nodes based on their subset attribute first
+        # Split nodes based on their subset attribute 
         train_nodes = []
         val_nodes = []
         test_nodes = []
         
-        # Add attributes to nodes based on their split
+        # Organize nodes into their respective splits
         for node in node_list:
             split = node.split  # Get the split directly from the node
-            # Get the filename from the node's path
-            filename = os.path.basename(node.path)
             
-            # Add attributes based on split
             if split == 'train':
-                if filename in train_attributes:
-                    node.attributes.update(train_attributes[filename])
                 train_nodes.append(node)
             elif split == 'val':
-                if filename in val_attributes:
-                    node.attributes.update(val_attributes[filename])
                 val_nodes.append(node)
             elif split == 'test':
-                if filename in test_attributes:
-                    node.attributes.update(test_attributes[filename])
                 test_nodes.append(node)
             else:
                 print(f"Warning: Node has unknown split: {split}, defaulting to train")
-                if filename in train_attributes:
-                    node.attributes.update(train_attributes[filename])
                 train_nodes.append(node)
         
         # Optionally limit nodes for testing while preserving split distribution

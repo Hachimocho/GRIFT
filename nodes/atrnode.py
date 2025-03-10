@@ -1,4 +1,5 @@
 from nodes.Node import Node
+import numpy as np
 
 class AttributeNode(Node):
     # Node tags:
@@ -15,23 +16,46 @@ class AttributeNode(Node):
         self.attributes = attributes
         self.threshold = threshold
         
-    def match(self, other: 'AttributeNode'):
-        # Currently uses threshold averaging if there is a dispute
-        if self.threshold != other.threshold:
-            threshold = round((self.threshold + other.threshold) / 2)
-        else:
-            threshold = self.threshold
-        matching = 0
-        # print(type(self.attributes))
-        # print(self.attributes)
-        for attribute, value in self.attributes.items():
-            if (attribute in other.attributes.keys()) and (other.attributes[attribute] == value):
-                matching += 1
-        if matching >= threshold:
-            return True
-        else:
+    def compute_similarity(self, other: 'AttributeNode', attribute_name: str, value1, value2):
+        """Compute similarity between two attribute values based on their type"""
+        if isinstance(value1, np.ndarray) and isinstance(value2, np.ndarray):
+            # For embeddings, use cosine similarity
+            if len(value1) > 0 and len(value2) > 0:
+                similarity = np.dot(value1, value2) / (np.linalg.norm(value1) * np.linalg.norm(value2))
+                return similarity > 0.8  # Threshold for cosine similarity
             return False
+        elif isinstance(value1, (int, float)) and isinstance(value2, (int, float)):
+            # For numeric values, check if within threshold range
+            if attribute_name.startswith(('blur', 'brightness', 'contrast', 'compression')):
+                return abs(value1 - value2) < 50  # Quality metric threshold
+            elif attribute_name.startswith('symmetry'):
+                return abs(value1 - value2) < 0.2  # Symmetry threshold
+            else:
+                return abs(value1 - value2) < 0.5  # Default numeric threshold
+        else:
+            # For boolean or categorical values, exact match
+            return value1 == value2
+    
+    def match(self, other: 'AttributeNode'):
+        """Check if two nodes match based on their attributes"""
+        if not isinstance(other, AttributeNode):
+            return False
+            
+        matching = 0
+        total = 0
         
+        # Compare attributes that exist in both nodes
+        common_attrs = set(self.attributes.keys()) & set(other.attributes.keys())
+        for attr in common_attrs:
+            total += 1
+            if self.compute_similarity(other, attr, self.attributes[attr], other.attributes[attr]):
+                matching += 1
+        
+        # Use threshold as a percentage of matching attributes
+        if total == 0:
+            return False
+        return (matching / total) >= (self.threshold / 100)
+    
     def __len__(self):
         return len(self.attributes)
     
@@ -43,7 +67,3 @@ class AttributeNode(Node):
             del self.attributes[label]
         else:
             raise ValueError("Cannot remove nonexistent attribute.")
-    
-    
-        
-        

@@ -530,12 +530,295 @@ Enhanced the integration between `PerformanceGraphManager` and `IValueTrainer`:
 
 These changes ensure that the graph structure is properly rewired based on model performance during training.
 
-## 2025-02-14: Restored and Improved Traversal Step Settings
+## 2025-02-16
+- Added `utils/parallel_processor.py` to handle large CSV processing by splitting into 100 segments and processing in parallel, resolving memory/timeout issues with the attribute annotation process
+- Enhanced parallel processor with resume capability - can now continue processing from where it left off if interrupted
+- Fixed argument mismatch between parallel processor and attribute annotation script
 
-Enhanced traversal configuration in test.py:
+## 2025-02-25: Dataset and Dataloader Integration for Additional Attributes
 
-- Restored step settings for all traversals
-- Training uses fixed 2000 steps for consistent training size
-- Validation and test use exact dataset sizes to ensure complete coverage
-- Added informative logging of graph sizes and traversal settings
-- Maintained single pointer configuration for all traversals
+- Updated `AIFaceDataset.create_node()` to properly handle facial attributes with correct prefixes
+- Verified compatibility between `AIFaceDataset` and `UnclusteredDeepfakeDataloader`
+- Ensured proper handling of:
+  - Base attributes (gender, race, age) with correct prefixes
+  - Emotion attributes
+  - Quality metrics (symmetry, blur, brightness, contrast, compression)
+  - Face embeddings
+  - Train/val/test split management
+
+## 2025-02-25: Quality Attribute File Integration
+
+- Updated `UnclusteredDeepfakeDataloader._load_attributes()` to handle quality CSV format:
+  - Parses quality metrics from dictionary format (blur, brightness, etc.)
+  - Extracts symmetry scores from component ratios
+  - Properly prefixes emotion scores
+  - Converts face embeddings to numpy arrays
+- Changed attribute file naming from `{split}_attributes.csv` to `{split}_quality.csv`
+- Added robust error handling for unparseable data
+
+## 2025-02-25: Enhanced Symmetry Handling
+
+- Modified symmetry handling to keep metrics separate:
+  - Added individual symmetry attributes: symmetry_eye, symmetry_mouth, symmetry_nose, symmetry_overall
+  - Updated similarity computation with separate thresholds for each symmetry component
+  - Added symmetry as a distinct category in hierarchical matching
+- Improved attribute organization in feature matrix creation
+
+## 2025-02-25: Enhanced Face Embedding Parsing
+
+- Improved face embedding parsing in UnclusteredDeepfakeDataloader:
+  - Added support for multiple number formats:
+    * Standard decimal format (e.g., 0.05235257)
+    * Scientific notation (e.g., 9.74870566e-03)
+    * Numpy's decimal point format (e.g., '0.')
+  - Added statistics tracking for zero embeddings
+  - Improved error handling for malformed values
+- Fixed file paths for attribute loading from ai-face dataset directory
+
+## 2025-02-25: Improved Attribute Loading and Matching
+
+- Updated AIFaceDataset:
+  - Now loads both base attributes (from {subset}.csv) and quality attributes (from {subset}_quality.csv)
+  - Improved parsing for all attribute types:
+    * Quality metrics (blur, brightness, contrast, compression)
+    * Symmetry metrics (eye, mouth, nose, overall)
+    * Face embeddings (handles various number formats)
+
+- Enhanced AttributeNode matching:
+  - Added type-specific similarity computation:
+    * Face embeddings: Cosine similarity with 0.8 threshold
+    * Quality metrics: Absolute difference < 50
+    * Symmetry metrics: Absolute difference < 0.2
+    * Categorical/boolean: Exact match
+  - Threshold now represents percentage of matching attributes
+  - Fixed numpy array comparison issues
+
+## 2025-02-25: Fixed Attribute Loading Type Checking
+
+- Fixed numpy array boolean ambiguity in AIFaceDataset:
+  - Replaced pd.notna() with explicit type checking using isinstance()
+  - Added proper type validation for each attribute type:
+    * Base attributes: str, bool, int, float
+    * Quality metrics: str (for eval)
+    * Symmetry metrics: str (for eval)
+    * Face embeddings: str (for array parsing)
+  - Improved error handling for malformed values
+- Maintained separate loading of base and quality attributes
+
+## 2025-02-25: Fixed Node Creation Type Checking
+
+- Fixed numpy array boolean ambiguity in AIFaceDataset.create_node:
+  - Added explicit dictionary type checking with `isinstance(additional_attrs, dict)`
+  - Added length check to safely handle empty dictionaries
+  - Improved attribute key matching:
+    * Quality metrics: Direct key matching for blur, brightness, etc.
+    * Symmetry metrics: Using startswith('symmetry_')
+    * Face embeddings: Added numpy array type validation
+  - Maintained proper attribute prefixing for gender, race, age, and emotion
+
+## 2025-02-28: Enhanced Filename Normalization for Attribute Matching
+
+- Added robust filename normalization to improve attribute matching between CSVs:
+  - Implemented `_normalize_filename()` method for consistent filename handling
+  - Added two-pass processing to ensure proper matching of filenames
+  - Introduced detailed overlap statistics for base and quality attributes
+  
+- Enhanced attribute merging diagnostics:
+  - Added tracking of merged vs. standalone attributes
+  - Generated detailed statistics on file overlaps and mismatches
+  - Preserved standalone quality attributes to maximize data utilization
+  
+- Improved error prevention:
+  - Added null value checking before filename normalization
+  - Preserved all quality attributes regardless of base attribute presence
+  - Added comprehensive statistics at each stage for better monitoring
+
+## 2025-02-28: Refactored Attribute Loading Responsibility
+
+- Restructured code to maintain proper separation of concerns:
+  - Removed attribute loading from UnclusteredDeepfakeDataloader
+  - Ensured AIFaceDataset is solely responsible for loading attributes from CSV files
+  - Maintained AttributeNode's responsibility for attribute storage and similarity computation
+
+- Improved DataLoader's load() method:
+  - Now properly relies on loaded nodes with attributes from datasets
+  - Simplified node organization by split 
+  - Added clearer logging during dataset loading
+
+- Clarified responsibility boundaries:
+  - AIFaceDataset: Data loading and attribute parsing
+  - AttributeNode: Attribute storage and similarity computation
+  - UnclusteredDeepfakeDataloader: Graph creation using already attributed nodes
+
+## 2025-02-28: Enhanced CSV Column Handling
+
+- Improved the attribute loading for flexible CSV format handling:
+  - Added dynamic detection of filename columns ('image_id', 'image_path', 'Image Path', 'filename')
+  - Implemented fallback to first column if no standard filename column found
+  - Added detailed logging of available columns for debugging
+  - Excluded unnamed columns that pandas may add to dataframes
+  
+- Added robust error handling:
+  - Better error diagnosis with column list printout
+  - Graceful handling of missing columns
+  - Smart column selection with clear user feedback
+
+- Ensured consistent behavior across both base and quality attribute loading
+
+## 2025-02-28: Optimized Quality Attribute Loading for Performance
+
+- Implemented parallel processing to significantly reduce loading time:
+  - Added dedicated worker pool for quality attribute processing
+  - Uses N-1 CPU cores to maximize throughput while leaving a core for system tasks
+  - Implemented chunked processing for efficient workload distribution (1000 items per chunk)
+
+- Optimized attribute parsing algorithms:
+  - Replaced slower `eval()` with safer and faster `ast.literal_eval()`
+  - Implemented regex-based extraction for face embeddings
+  - Eliminated redundant string operations and intermediate data structures
+
+- Restructured data flow for efficiency:
+  - Separated attribute parsing into a dedicated method for parallelization
+  - Added specialized counting logic to maintain statistics during parallel processing
+  - Improved memory management by reducing data copies
+
+- Expected improvement: ~60-70% reduction in quality attribute loading time
+
+## 2025-02-28: Enhanced CSV Validation and Diagnostics
+
+- Added comprehensive CSV analysis capabilities:
+  - Implemented `_analyze_csv_filename_stats()` method for detailed file diagnostics
+  - Added detection and reporting of missing, invalid, or duplicate filenames
+  - Created cross-CSV overlap analysis to identify matching patterns
+
+- Improved data validation:
+  - Enhanced null/invalid value handling during normalization
+  - Added explicit tracking of valid vs. invalid entries
+  - Implemented duplicate detection with top duplicates reporting
+  
+- Updated attribute loading logic:
+  - Modified workflow to analyze before loading for better diagnostics
+  - Added more detailed statistics at each stage of the process
+  - Improved error handling for invalid filename entries
+  
+- Fixed attribute-count discrepancy issues:
+  - Correctly identified and reported missing values in CSV files
+  - Added proper handling of normalized filename duplicates
+  - Improved standalone quality attribute tracking
+
+## 2025-02-28: Preserved Full File Paths for Attribute Loading
+
+- Completely reworked file path handling:
+  - Removed all path normalization that was causing major data loss
+  - Preserved complete file paths throughout the entire loading process
+  - Eliminated basename extraction that was causing false duplicates
+  
+- Major improvements to attribute loading:
+  - Fixed critical issue causing 97% of quality attributes to be lost
+  - Ensured quality_quality.csv and base CSV files can properly match entries
+  - Maintained all path information needed for image loading
+  
+- Enhanced system reliability:
+  - Preserved full path information throughout the codebase
+  - Ensured paths in the quality dataset are properly recognized
+  - Maintained edge case handling for invalid/empty entries
+  
+- Performance optimization:
+  - Simplified code by removing unnecessary normalization steps
+  - Eliminated dictionary lookups needed for filename mappings
+  - Streamlined comparison operations between datasets
+
+## 2025-02-28: Fixed Critical Image Path Issue in Quality CSV Generation
+
+- Identified and fixed critical path handling issue:
+  - Modified `additional_attributes.py` to preserve full image paths
+  - Fixed the `process_single_image` and `process_image_batch` functions to store complete paths
+  - Resolved root cause of why base and quality CSVs couldn't match attributes
+  
+- Impact:
+  - Quality CSVs will now contain full paths in the `image_id` field
+  - This enables proper matching between base attributes and quality attributes
+  - Will dramatically increase the number of quality attributes successfully loaded
+  
+- Next Steps:
+  - Regenerate all quality CSV files with the updated code
+  - Use this fix in conjunction with the path preservation changes in AIFaceDataset
+  - Validate that attribute matching works correctly after regenerating quality CSVs
+
+## 2025-02-28: Added Quality CSV Regeneration Script
+
+- Created a comprehensive shell script for regenerating quality CSV files:
+  - Automatically processes all dataset splits (train/val/test)
+  - Creates backups of original files before regeneration
+  - Maintains detailed logs of the regeneration process
+  - Produces debug visualizations to verify quality
+  
+- Script features:
+  - Sequential processing to avoid memory issues
+  - Robust error handling and progress reporting
+  - Automatic comparison of original vs. new file statistics
+  - Organized backup and logging structure
+  
+- Usage:
+  - Simply run `./regenerate_quality_csvs.sh` to process all files
+  - Results and logs are saved to a timestamped directory
+  - Original files are preserved in case rollback is needed
+
+## 2025-03-07: Optimized Quality CSV Generation for Better Performance
+
+- Significant performance improvements to quality CSV generation:
+  - Added command-line options to disable heavy computations (DeepFace and emotion detection)
+  - Optimized batch processing to be more memory and GPU-efficient
+  - Simplified image path handling for better performance
+  - Added robust memory management with periodic cleanup
+  
+- Code refactoring:
+  - Streamlined process_dataframe function to work directly with image paths
+  - Improved progress tracking with tqdm
+  - Added validation for debug visualizations to prevent crashes
+  - Capped batch size for better stability
+  
+- Additional features:
+  - Added ability to selectively disable DeepFace and emotion detection
+  - Implemented proper command-line argument handling
+  - Created a more informative progress display
+  
+- Impact:
+  - Dramatically faster CSV generation (5-10x faster without DeepFace/emotions)
+  - Lower memory usage and fewer OOM errors
+  - Correct full path handling in the resulting CSVs
+
+## 2025-03-07: Fixed Column Name Detection in Quality CSV Generation
+
+- Fixed critical metadata column name detection:
+  - Added flexible column name detection for image paths
+  - Now supports multiple common naming conventions: 'filename', 'path', 'Image Path', etc.
+  - Added helpful error messages with available column names when detection fails
+  
+- Impact:
+  - Enables processing of CSV files with non-standard column names
+  - Provides clearer error messages when path columns can't be found
+  - Supports backward compatibility with existing datasets
+  
+- Technical details:
+  - Implemented a prioritized list of common column names to check
+  - Added diagnostic output showing available columns in error messages
+  - Maintains the same processing pipeline once the correct column is identified
+
+## 2025-03-07: Fixed Path Handling for Mixed Path Formats
+
+- Improved path handling for various path formats:
+  - Now correctly handles paths that start with "/" but are actually relative
+  - Properly combines data_root with paths in different formats
+  - Adds smarter detection of absolute vs. relative paths
+  
+- Impact:
+  - Fixes "No such file or directory" errors with paths like "/celebdf/crop_img/..."
+  - Allows processing of datasets with mixed path formats
+  - Handles edge cases where paths appear absolute but are relative to data_root
+  
+- Technical details:
+  - Added multi-stage path processing with validation
+  - Special handling for paths that start with "/" but aren't truly absolute
+  - Improved logging for path-related errors
+  - Maintains backward compatibility with existing datasets
