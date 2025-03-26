@@ -1,1 +1,2 @@
-Whenever you finish your response, add an entry to @updates.md.
+If you have made any code updates during this response, summarize them in updates.md. If no code updates have been made, do not update updates.md.
+If you have learned any significant new information about the code architecture or implementation, save it as a memory.

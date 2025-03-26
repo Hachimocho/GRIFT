@@ -822,3 +822,28 @@ These changes ensure that the graph structure is properly rewired based on model
   - Special handling for paths that start with "/" but aren't truly absolute
   - Improved logging for path-related errors
   - Maintains backward compatibility with existing datasets
+
+## 2025-03-26: Added Parallel Processing for Quality CSV Generation
+
+- Added support for parallel processing of CSV generation:
+  - Created `split_csv.py` to divide large CSV files into smaller chunks
+  - Developed `parallel_regenerate_quality_csvs.sh` for running attribute generation on split datasets
+  - Included automatic merging instructions for recombining results
+  
+- Features:
+  - Configurable number of parts for optimal distribution across machines
+  - Timestamp-based organization of split files and logs
+  - Comprehensive logging for each split part
+  - Maintains all optimizations from previous updates
+  
+- Impact:
+  - Dramatically reduces total processing time for large datasets
+  - Allows distribution of workload across multiple computers
+  - Mitigates slowdowns that occur during long-running processes
+  - Provides an easy way to resume processing if one part fails
+  
+- Usage:
+  - Run `./parallel_regenerate_quality_csvs.sh [train|val|test] [num_parts]`
+  - Copy split files to different machines as needed
+  - Process each part independently
+  - Merge results back together using the provided command

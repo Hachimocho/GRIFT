@@ -9,10 +9,9 @@ DATA_ROOT="/home/brg2890/major/datasets/ai-face"
 # Define the array of base CSV files and their corresponding quality outputs
 declare -A FILE_MAPPINGS=(
     ["train.csv"]="train_quality.csv"
-    ["val.csv"]="val_quality.csv"
-    ["test.csv"]="test_quality.csv"
 )
-
+    # ["val.csv"]="val_quality.csv"
+    # ["test.csv"]="test_quality.csv"
 # Create a logs directory for this run
 LOG_DIR="/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/logs/regenerate_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
