@@ -513,9 +513,9 @@ dependencies:
       - tensorboard==2.18.0
       - tensorboard-data-server==0.7.2
       - tf-keras==2.18.0
-      - torch==2.2.2
-      - torchaudio==2.4.1+cu124
-      - torchvision==0.17.2
+      - torch
+      - torchaudio
+      - torchvision
       - triton==3.0.0
       - types-pytz==2024.2.0.20241003
 prefix: /home/brg2890/mambaforge/envs/DeepEARL

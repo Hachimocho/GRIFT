@@ -8,7 +8,7 @@ DATA_ROOT="/home/brg2890/major/datasets/ai-face"
 
 # Define the array of base CSV files and their corresponding quality outputs
 declare -A FILE_MAPPINGS=(
-    ["train.csv"]="train_quality.csv"
+    ["train_part2.csv"]="train_quality_part2.csv"
 )
     # ["val.csv"]="val_quality.csv"
     # ["test.csv"]="test_quality.csv"
@@ -41,7 +41,7 @@ process_file() {
     echo "Running attribute generation..."
     python /home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/utils/additional_attributes.py \
         --data_root "$DATA_ROOT" \
-        --metadata_path "${DATA_ROOT}/${base_csv}" \
+        --metadata_path "${base_csv}" \
         --output_path "${DATA_ROOT}/${quality_csv}" \
         --batch_size 64 \
         --disable_deepface \

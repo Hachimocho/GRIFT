@@ -80,37 +80,63 @@ logger.addHandler(console_handler)
 #logging.basicConfig(level=logging.INFO)
 #logger = logging.getLogger(__name__)
 
-# Check for CUDA availability and set memory management
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-    # Set to use less GPU memory
-    #torch.cuda.set_per_process_memory_fraction(0.3)  # Use only 30% of GPU memory
-    #logger.info(f"Using device: {DEVICE} with limited memory")
-else:
-    logger.info(f"Using device: {DEVICE}")
+# Module-level variables that will be initialized on demand
+DEVICE = None
+face_detector = None
+landmark_predictor = None
+emotion_detector = None
+mtcnn = None
+resnet = None
 
-# Initialize global models to avoid reloading
-logger.info("Initializing face detector...")
-face_detector = dlib.get_frontal_face_detector()
-try:
-    if torch.cuda.is_available():
-        dlib.DLIB_USE_CUDA = True
-        logger.info("DLIB using CUDA")
-    landmark_predictor = dlib.shape_predictor('./utils/shape_predictor_68_face_landmarks.dat')
-except Exception as e:
-    logger.error(f"Error loading shape predictor: {str(e)}")
-    landmark_predictor = None
+# Function to initialize the device when needed
+def get_device():
+    global DEVICE
+    if DEVICE is None:
+        DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return DEVICE
 
-# Initialize FER (CPU only)
-logger.info("Initializing emotion detector...")
-emotion_detector = FER(mtcnn=True)
+# Function to initialize face detector when needed
+def get_face_detector():
+    global face_detector
+    if face_detector is None:
+        face_detector = dlib.get_frontal_face_detector()
+        try:
+            if torch.cuda.is_available():
+                dlib.DLIB_USE_CUDA = True
+        except Exception:
+            pass
+    return face_detector
 
-# Initialize FaceNet models (keep only resnet on GPU, MTCNN on CPU)
-logger.info("Initializing face recognition models...")
-mtcnn = MTCNN(device='cpu')  # MTCNN on CPU to save GPU memory
-resnet = InceptionResnetV1(pretrained='vggface2').to(DEVICE)
-resnet.eval()
+# Function to initialize landmark predictor when needed
+def get_landmark_predictor():
+    global landmark_predictor
+    if landmark_predictor is None:
+        try:
+            landmark_predictor = dlib.shape_predictor('./utils/shape_predictor_68_face_landmarks.dat')
+        except Exception as e:
+            logger.error(f"Error loading shape predictor: {str(e)}")
+            landmark_predictor = None
+    return landmark_predictor
+
+# Function to initialize emotion detector when needed
+def get_emotion_detector():
+    global emotion_detector
+    if emotion_detector is None:
+        emotion_detector = FER(mtcnn=True)
+    return emotion_detector
+
+# Function to initialize face models when needed
+def get_face_models():
+    global mtcnn, resnet
+    if mtcnn is None:
+        mtcnn = MTCNN(device='cpu')
+    if resnet is None:
+        device = get_device()
+        resnet = InceptionResnetV1(pretrained='vggface2').to(device)
+        resnet.eval()
+    return mtcnn, resnet
 
 # Configuration for attribute calculation
 ATTRIBUTE_CONFIG = {
@@ -424,17 +450,20 @@ def draw_landmarks(image: np.ndarray, landmarks: Dict[str, np.ndarray], nose_bri
 
 def calculate_facial_symmetry(image: np.ndarray) -> Dict[str, float]:
     """Calculate facial symmetry using facial landmarks."""
+    lm_predictor = get_landmark_predictor()
+    if lm_predictor is None:
+        logger.warning("Facial landmarks predictor not available, skipping symmetry calculation")
+        return {}
+    
     try:
-        if landmark_predictor is None:
-            return {
-                'eye_ratio': 0.0,
-                'mouth_ratio': 0.0,
-                'nose_ratio': 0.0,
-                'overall_symmetry': 0.0
-            }
+        # Convert to grayscale for face detection
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
         
-        # Detect faces
-        faces = face_detector(image)
+        # Detect faces using dlib
+        faces = get_face_detector()(gray)
         if len(faces) == 0:
             return {
                 'eye_ratio': 0.0,
@@ -444,7 +473,7 @@ def calculate_facial_symmetry(image: np.ndarray) -> Dict[str, float]:
             }
         
         # Get landmarks
-        landmarks = landmark_predictor(image, faces[0])
+        landmarks = get_landmark_predictor()(image, faces[0])
         points = np.array([[p.x, p.y] for p in landmarks.parts()])
         
         # Define the nose bridge (midline)
@@ -513,7 +542,7 @@ def get_emotions(face_img: np.ndarray) -> Dict[str, float]:
     """Get emotion predictions with GPU-accelerated preprocessing."""
     try:
         # FER doesn't support direct GPU usage, but we can optimize the preprocessing
-        emotions = emotion_detector.detect_emotions(face_img)
+        emotions = get_emotion_detector().detect_emotions(face_img)
         if emotions:
             return emotions[0]['emotions']
         return {}
@@ -555,23 +584,65 @@ def generate_face_embedding(image: np.ndarray) -> np.ndarray:
         img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         
         # Detect and align face
-        face = mtcnn(img)
+        mtcnn_model, _ = get_face_models()
+        face = mtcnn_model(img)
         if face is None:
             return np.zeros(512)
             
         # Generate embedding
         with torch.no_grad():
-            embedding = resnet(face.unsqueeze(0).to(DEVICE))
+            _, resnet_model = get_face_models()
+            embedding = resnet_model(face.unsqueeze(0).to(get_device()))
         
         return embedding.cpu().numpy().flatten()
     except:
         return np.zeros(512)
 
-def compute_embedding_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+def compute_embedding_similarity(embedding1, embedding2) -> float:
     """Compute cosine similarity between two face embeddings."""
-    if np.all(embedding1 == 0) or np.all(embedding2 == 0):
-        return 0.0
-    return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
+    # Convert to numpy arrays
+    emb1 = np.array(embedding1)
+    emb2 = np.array(embedding2)
+    
+    # Compute cosine similarity
+    cosine_sim = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+    return float(cosine_sim)
+
+
+if __name__ == "__main__":
+    # Initialize everything when the script is run directly
+    device = get_device()
+    logger.info(f"Using device: {device}")
+    
+    # Initialize all models
+    logger.info("Initializing face detector...")
+    detector = get_face_detector()
+    
+    logger.info("Initializing landmark predictor...")
+    landmarks = get_landmark_predictor()
+    
+    logger.info("Initializing emotion detector...")
+    emotions = get_emotion_detector()
+    
+    logger.info("Initializing face models...")
+    mtcnn_model, resnet_model = get_face_models()
+    
+    # Test with a sample image if available
+    try:
+        import sys
+        if len(sys.argv) > 1:
+            test_image_path = sys.argv[1]
+            logger.info(f"Testing with image: {test_image_path}")
+            
+            result = process_single_image(test_image_path)
+            logger.info("Results:")
+            for k, v in result.items():
+                if k == 'face_embedding':
+                    logger.info(f"  {k}: [embedding vector with shape {v.shape}]")
+                else:
+                    logger.info(f"  {k}: {v}")
+    except Exception as e:
+        logger.error(f"Error testing with image: {str(e)}")
 
 def check_memory_availability():
     """Check if we have enough GPU memory available."""
@@ -579,7 +650,7 @@ def check_memory_availability():
         try:
             # Try allocating a small tensor
             torch.cuda.empty_cache()
-            test_tensor = torch.zeros((1, 3, 160, 160), device=DEVICE)
+            test_tensor = torch.zeros((1, 3, 160, 160), device=get_device())
             del test_tensor
             torch.cuda.empty_cache()
             return True
@@ -626,7 +697,8 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
     
     # Initialize emotion detector once
     if ATTRIBUTE_CONFIG['emotions']['enabled']:
-        emotion_detector = FER(mtcnn=False)
+        # Using global emotion detector via getter
+        _ = get_emotion_detector()
     
     # Create process pool for CPU tasks
     num_processes = max(1, cpu_count() - 1)  # Leave one CPU for system
@@ -665,7 +737,7 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     
                     # Detect face
-                    faces = face_detector(img)
+                    faces = get_face_detector()(img)
                     if not faces:
                         results.append({**get_default_attributes(), 'image_path': img_path, 'image_id': img_path.split('/')[-1], 'error': "No face detected"})
                         continue
@@ -697,10 +769,11 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
                     face_tensors = torch.stack([
                         torch.from_numpy(cv2.resize(chip, (160, 160))).float().permute(2, 0, 1)
                         for chip in batch_chips
-                    ]).to(DEVICE)
+                    ]).to(get_device())
                     
                     with torch.no_grad():
-                        embeddings = resnet(face_tensors).cpu().numpy()
+                        _, resnet_model = get_face_models()
+                        embeddings = resnet_model(face_tensors).cpu().numpy()
                     
                     for idx, embedding in enumerate(embeddings):
                         batch_results[idx]['face_embedding'] = embedding
@@ -717,7 +790,7 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
             # Process emotions in batch (if enabled)
             if ATTRIBUTE_CONFIG['emotions']['enabled']:
                 try:
-                    emotions_batch = emotion_detector.detect_emotions(batch_images)
+                    emotions_batch = get_emotion_detector().detect_emotions(batch_images)
                     for idx, emotions in enumerate(emotions_batch):
                         if emotions and len(emotions) > 0:
                             batch_results[idx]['emotion_scores'] = emotions[0]['emotions']
@@ -805,7 +878,7 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         # Get face location
-        face_locations = face_detector(img)
+        face_locations = get_face_detector()(img)
         if not face_locations:
             logger.warning(f"No face detected in {image_path}")
             results['error'] = "No face detected"
@@ -823,9 +896,10 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
             if ATTRIBUTE_CONFIG['face_embedding']['enabled']:
                 try:
                     face_tensor = torch.from_numpy(cv2.resize(face_chip, (160, 160))).float()
-                    face_tensor = face_tensor.permute(2, 0, 1).unsqueeze(0).to(DEVICE)
+                    face_tensor = face_tensor.permute(2, 0, 1).unsqueeze(0).to(get_device())
                     with torch.no_grad():
-                        embedding = resnet(face_tensor).cpu().numpy().flatten()
+                        _, resnet_model = get_face_models()
+                        embedding = resnet_model(face_tensor).cpu().numpy().flatten()
                         results['face_embedding'] = embedding
                 except Exception as e:
                     logger.warning(f"Face embedding failed for {image_path}: {str(e)}")
@@ -871,8 +945,8 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
             # Emotions
             if ATTRIBUTE_CONFIG['emotions']['enabled']:
                 try:
-                    emotion_detector = FER(mtcnn=False)
-                    emotions = emotion_detector.detect_emotions(img)
+                    # Using global emotion detector via getter
+                    emotions = get_emotion_detector().detect_emotions(img)
                     if emotions and len(emotions) > 0:
                         results['emotion_scores'] = emotions[0]['emotions']
                 except Exception as e:
@@ -985,10 +1059,11 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
                 face_tensors = torch.stack([
                     torch.from_numpy(cv2.resize(chip, (160, 160))).float().permute(2, 0, 1)
                     for chip in batch_chips
-                ]).to(DEVICE)
+                ]).to(get_device())
                 
                 with torch.no_grad():
-                    embeddings = resnet(face_tensors).cpu().numpy()
+                    _, resnet_model = get_face_models()
+                    embeddings = resnet_model(face_tensors).cpu().numpy()
                 
                 for idx, embedding in enumerate(embeddings):
                     batch_results[idx]['face_embedding'] = embedding
@@ -1045,8 +1120,8 @@ def process_image_batch(image_paths: List[str], batch_size: int = 32) -> List[Di
                 # Emotions
                 if ATTRIBUTE_CONFIG['emotions']['enabled']:
                     try:
-                        emotion_detector = FER(mtcnn=False)
-                        emotions = emotion_detector.detect_emotions(img)
+                        # Using global emotion detector via getter
+                        emotions = get_emotion_detector().detect_emotions(img)
                         if emotions and len(emotions) > 0:
                             result['emotion_scores'] = emotions[0]['emotions']
                     except Exception as e:
