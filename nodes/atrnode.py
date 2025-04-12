@@ -67,3 +67,7 @@ class AttributeNode(Node):
             del self.attributes[label]
         else:
             raise ValueError("Cannot remove nonexistent attribute.")
+
+    def __str__(self):
+        return f"{self.__class__.__name__}({self.attributes})"
+        

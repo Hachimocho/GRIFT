@@ -1,5 +1,18 @@
 # Updates
 
+## 2025-04-11: Fixed Quality Attributes Integration in AIFaceDataset
+
+### Changes to AIFaceDataset.py
+- Fixed bug where quality attributes weren't being added to nodes
+- Enhanced filename matching logic in `create_nodes_threaded` function
+- Implemented multiple matching strategies for quality attributes:
+  - Direct path matching
+  - Basename matching
+  - Normalized path matching with forward slashes
+- Made attribute matching consistent between load and node creation functions
+- Ensured all parsed quality metrics (blur, brightness, contrast, compression, symmetry, emotions, face embeddings) are properly applied to nodes
+
+
 ## 2025-01-24: Enhanced Graph Node Connection Logic
 
 ### Changes to ClusteredDeepfakeDataloader
@@ -876,3 +889,27 @@ These changes ensure that the graph structure is properly rewired based on model
   - Completes the parallel processing workflow
   - Ensures data integrity when combining multiple processed parts
   - Simplifies the final step in distributed CSV generation
+
+## 2025-04-11: Fixed Graph Construction Consistency
+
+- Addressed critical inconsistency between grid search and actual runs:
+  - Identified and fixed discrepancies in quality, symmetry, and embedding filtering
+  - Added comprehensive logging for threshold filtering
+  - Implemented adaptive thresholding for embedding similarity
+  
+- Quality and Symmetry filtering improvements:
+  - Made similarity calculations more lenient with minimum similarity floor (0.5)
+  - Better handling of small/zero values in comparison metrics
+  - More consistent mask creation for determining valid attributes
+  
+- Embedding similarity enhancements:
+  - Added detection of zero/invalid face embeddings
+  - Implemented smart fallback for cases with few valid embeddings
+  - Added adaptive threshold adjustment to maintain minimum connected edges
+  - Detailed logging for embedding similarity distribution
+  
+- Impact:
+  - Graph construction now matches grid search behavior more accurately
+  - Reduced reliance on fallback connections for disconnected nodes
+  - Average node degree more consistent with grid search predictions
+  - Better preservation of hierarchical structure during subgraph creation

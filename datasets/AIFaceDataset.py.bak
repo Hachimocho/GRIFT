@@ -87,12 +87,9 @@ class AIFaceDataset(Dataset):
                 if values:
                     #print("Got values!")
                     embedding = np.array(values)
-                    # We want ALL embeddings, as long as they're not all zeros
-                    if not np.all(np.isclose(embedding, 0)):
+                    # Validate the embedding - make sure it's not all zeros
+                    if not np.all(np.isclose(embedding, 0)) and len(embedding) == 512:
                         attrs['face_embedding'] = embedding
-                        # Add debug info about embeddings of different lengths
-                        if len(embedding) != 512:
-                            print(f"WARNING: Found embedding with non-standard length {len(embedding)} for {filename}")
                         # No need for detailed logging to avoid errors
             except Exception as e:
                 print(f"Error parsing face embedding for {filename}: {str(e)}")
@@ -326,13 +323,6 @@ class AIFaceDataset(Dataset):
                 
                 print(f"Loaded {len(attributes_map)} base attributes for {subset}")
                 print(f"Valid entries: {valid_count}, Invalid entries: {invalid_count}")
-                
-                # Update base attributes with root directory
-                for filename in list(attributes_map.keys()):
-                    full_path = os.path.join(self.data_root, filename.lstrip('/'))
-                    attributes_map[full_path] = attributes_map.pop(filename)
-
-                print(f"Updated base attributes with root directory for {subset}")
             except Exception as e:
                 print(f"Warning: Error loading base attributes for {subset}: {str(e)}")
                 # Print available columns for debugging
@@ -363,27 +353,80 @@ class AIFaceDataset(Dataset):
                     filename_col = df.columns[0]
                     print(f"Using '{filename_col}' as the filename column")
                 
-                # Process quality attributes
-                for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Processing quality attributes for {subset}"):
-                    raw_filename = row[filename_col]
-                    
-                    # Skip invalid filenames
-                    if pd.isna(raw_filename) or not isinstance(raw_filename, str):
-                        continue
-                    
-                    # Use the full path directly - no normalization
-                    filename = raw_filename.strip()
-                    
-                    # Parse quality attributes
-                    _, quality_attrs = self._parse_quality_attributes((filename, row))
-                    
-                    # Merge with existing attributes
-                    if filename in attributes_map:
-                        attributes_map[filename].update(quality_attrs)
-                    else:
-                        attributes_map[filename] = quality_attrs
+                # Use parallel processing for quality attributes
+                quality_attributes = self._load_quality_attributes_parallel(df, filename_col)
                 
-                print(f"Loaded {len(attributes_map)} total attributes for {subset}")
+                # Create a lookup dictionary that maps various path formats to base attribute keys
+                base_attr_lookup = {}
+                for base_key in attributes_map.keys():
+                    # Store the original key
+                    base_attr_lookup[base_key] = base_key
+                    # Also store basename for fallback lookup
+                    base_basename = os.path.basename(base_key)
+                    if base_basename not in base_attr_lookup:  # avoid collisions
+                        base_attr_lookup[base_basename] = base_key
+                    # Store path with forward slashes
+                    forward_slash_path = base_key.replace('\\', '/')
+                    if forward_slash_path != base_key:
+                        base_attr_lookup[forward_slash_path] = base_key
+                
+                print(f"Created lookup with {len(base_attr_lookup)} entries for {len(attributes_map)} base attributes")
+                
+                # Check how many quality attributes can actually be merged using improved matching
+                mergeable_count = 0
+                standalone_count = 0
+                # For each quality attribute, try multiple path formats to find a match
+                for q_filename in quality_attributes.keys():
+                    match_found = False
+                    
+                    # Try direct match
+                    if q_filename in attributes_map:
+                        mergeable_count += 1
+                        match_found = True
+                    else:
+                        # Try matching using basename
+                        q_basename = os.path.basename(q_filename)
+                        if q_basename in base_attr_lookup:
+                            mergeable_count += 1
+                            match_found = True
+                        # Try matching using forward slash conversion
+                        elif q_filename.replace('\\', '/') in base_attr_lookup:
+                            mergeable_count += 1
+                            match_found = True
+                    
+                    if not match_found:
+                        standalone_count += 1
+                
+                print(f"Found {mergeable_count} quality attributes that can be merged with base attributes")
+                print(f"Found {standalone_count} quality attributes without matching base attributes")
+                
+                # Merge with existing attributes using the improved matching
+                merge_count = 0
+                standalone_count = 0
+                for q_filename, q_attrs in quality_attributes.items():
+                    # Try direct match first
+                    if q_filename in attributes_map:
+                        attributes_map[q_filename].update(q_attrs)
+                        merge_count += 1
+                    else:
+                        # Try matching by basename
+                        q_basename = os.path.basename(q_filename)
+                        if q_basename in base_attr_lookup:
+                            base_key = base_attr_lookup[q_basename]
+                            attributes_map[base_key].update(q_attrs)
+                            merge_count += 1
+                        # Try matching using forward slash conversion
+                        elif q_filename.replace('\\', '/') in base_attr_lookup:
+                            base_key = base_attr_lookup[q_filename.replace('\\', '/')]
+                            attributes_map[base_key].update(q_attrs)
+                            merge_count += 1
+                        else:
+                            # Add quality attributes as a standalone entry if no match
+                            attributes_map[q_filename] = q_attrs
+                            standalone_count += 1
+                
+                print(f"Quality attribute merging: {merge_count} merged, {standalone_count} standalone")
+                print(f"Added quality attributes for {subset}: {len(quality_attributes)} files total")
             except Exception as e:
                 print(f"Warning: Error loading quality attributes for {subset}: {str(e)}")
                 # Print available columns for debugging
@@ -392,7 +435,55 @@ class AIFaceDataset(Dataset):
                     print(f"Available columns in {quality_csv}: {columns}")
                 except:
                     pass
+                raise e
         
+        # # Load quality attributes
+        # if os.path.exists(quality_csv):
+        #     try:
+        #         print(f"Loading quality attributes for {subset} from {quality_csv}...")
+                    
+        #         # Read the CSV file once
+        #         df = pd.read_csv(quality_csv)
+                    
+        #         # Determine filename column for quality CSV
+        #         filename_col = 'image_path'
+        #         # for possible_col in ['image_id', 'image_path', 'Image Path', 'filename']:
+        #         #     if possible_col in df.columns:
+        #         #         filename_col = possible_col
+        #         #         break
+        #             if filename in attributes_map:
+        #                 mergeable_count += 1
+        #             else:
+        #                 standalone_count += 1
+                    
+        #         print(f"Found {mergeable_count} quality attributes that can be merged with base attributes")
+        #         print(f"Found {standalone_count} quality attributes without matching base attributes")
+                    
+        #         # Merge with existing attributes
+        #         merge_count = 0
+        #         standalone_count = 0
+        #         for filename, attrs in quality_attributes.items():
+        #             # Don't normalize, use the filename as is                   
+        #             if filename in attributes_map:
+        #                 attributes_map[filename].update(attrs)
+        #                 merge_count += 1
+        #             else:
+        #                 # Add quality attributes even if there's no matching base entry
+        #                 attributes_map[filename] = attrs
+        #                 standalone_count += 1
+                    
+        #         print(f"Quality attribute merging: {merge_count} merged, {standalone_count} standalone")
+        #         print(f"Added quality attributes for {subset}: {len(quality_attributes)} files total")
+        #     except Exception as e:
+        #         print(f"Warning: Error loading quality attributes for {subset}: {str(e)}")
+        #         # Print available columns for debugging
+        #         try:
+        #             columns = pd.read_csv(quality_csv, nrows=0).columns.tolist()
+        #             print(f"Available columns in {quality_csv}: {columns}")
+        #         except:
+        #             pass
+        #         raise e
+            
         print(f"Total attributes loaded for {subset}: {len(attributes_map)} files")
         return attributes_map
 
@@ -445,91 +536,59 @@ class AIFaceDataset(Dataset):
                     # Extract filename and add additional attributes
                     path = paths[i]
                     filename = os.path.basename(path)
-                    orig_path = base_paths[i] if 'base_paths' in locals() else path
                     
-                    # CRITICAL: Find the original CSV path which is needed for attribute lookup
-                    # this is the path as it appears in the CSV file - without the data_root prepended
-                    csv_path = None
-                    # We can't access chunk directly here, but we can reconstruct the path
-                    if hasattr(self, 'data_root') and path.startswith(self.data_root):
-                        # Try to extract the relative path by removing the data_root
-                        rel_path = path[len(self.data_root):].lstrip('/')
-                        if rel_path:
-                            csv_path = '/' + rel_path  # Add leading slash as in original CSV
-                    
-                    # Debug for the first few entries
-                    if i < 3 and csv_path:
-                        print(f"DEBUG Path recovery - path: {path}, filename: {filename}, csv_path: {csv_path}")
-                    
-                    # Try multiple matching strategies including the newly computed csv_path
-                    match_found = False
+                    # Use the improved path matching from create_node function
                     file_attrs = None
-                    matched_key = None
+                    lookup_paths = [
+                        path,                    # Full absolute path as is
+                        filename,                # Basename only
+                        path.replace('\\', '/')  # Handle Windows paths
+                    ]
                     
-                    # Try direct lookup in additional_attrs using the CSV path which should match
-                    # the key format in the quality attributes CSV
-                    if additional_attrs and csv_path and csv_path in additional_attrs:
-                        file_attrs = additional_attrs[csv_path]
-                        match_found = True
-                        matched_key = csv_path
-                    else:
-                        # Fall back to trying all path variations
-                        candidates = [
-                            orig_path,                    # Original path from CSV
-                            orig_path.lstrip('/'),       # Without leading slash
-                            '/' + orig_path.lstrip('/'), # With leading slash
-                            os.path.basename(orig_path), # Just the filename
-                            path,                        # Full path after joining
-                            filename,                    # Just basename of full path
-                        ]
-                        
-                        # Add the csv_path if we have it
-                        if csv_path:
-                            candidates.append(csv_path)
-                        
-                        # Add forward slash variants
-                        slash_candidates = [c.replace('\\', '/') for c in candidates]
-                        candidates.extend(slash_candidates)
-                        
-                        # Try each candidate path
-                        for candidate in candidates:
-                            if additional_attrs and candidate in additional_attrs:
-                                file_attrs = additional_attrs[candidate]
-                                match_found = True
-                                matched_key = candidate
-                                break
+                    # Try each path format until we find a match
+                    for lookup_path in lookup_paths:
+                        if additional_attrs and lookup_path in additional_attrs:
+                            file_attrs = additional_attrs[lookup_path]
+                            break
                     
-                    # Debug all attribute keys for the first few nodes, to help with troubleshooting
-                    if i < 3 and additional_attrs:
-                        print(f"DEBUG Node {i}: Attribute lookup - match_found: {match_found}, matched_key: {matched_key}")
-                        if match_found:
-                            print(f"DEBUG Node {i}: Found attributes: {list(file_attrs.keys())[:5]}...")
-                        else:
-                            sample_keys = list(additional_attrs.keys())[:5]
-                            print(f"DEBUG Node {i}: No match found. Sample attr keys: {sample_keys}")
-                            print(f"DEBUG Node {i}: Candidates tried: {candidates[:5]}...")
-                    
-                    # Apply attributes if a match was found
-                    if match_found and file_attrs:
-                        # Debug first few nodes
-                        if i < 5:
-                            print(f"DEBUG Node {i}: Adding {len(file_attrs)} attributes from key '{matched_key}'")
-                            quality_keys = [k for k in file_attrs.keys() if k.startswith('symmetry_') or k in ('blur', 'brightness', 'contrast', 'compression')]
-                            print(f"DEBUG Node {i}: Quality attributes being added: {quality_keys}")
-                            
-                        # CRITICAL: Make sure to update the attributes dict
-                        for k, v in file_attrs.items():
-                            attributes[k] = v
+                    # If we found attributes, add them to the node
+                    if file_attrs:
+                        attributes.update(file_attrs)
+                        
+                        # Explicitly handle face_embedding
+                        if 'face_embedding' in file_attrs and isinstance(file_attrs['face_embedding'], np.ndarray):
+                            # Make a fresh copy to avoid reference issues
+                            attributes['face_embedding'] = np.array(file_attrs['face_embedding'])
+                    # else:
+                    #     raise ValueError(f"No attributes found for path: {path}")
+
+                    # print(attributes)
                     
                     # Create data and node
                     data = self.data_class(path, **self.data_args)
                     label = int(targets[i]) if targets[i] is not None else 0
-                    threshold = self.node_args.get('threshold', 80)
-                    
-                    # Create the node with all required arguments
-                    node = self.node_class(subset, data, [], label, attributes, threshold)
-                    node.attributes["Target"] = targets[i]
-                    node.attributes["subset"] = subset
+        # Time the actual node creation
+        node_class_start = time.time()
+        label = int(targets[i])
+        
+        # Handle threshold_attr - we want fixed threshold values
+        threshold = 0.75  # Default threshold
+        
+        # Verify face_embedding is in attributes before creating node
+        has_embedding = 'face_embedding' in attributes and isinstance(attributes['face_embedding'], np.ndarray)
+        if has_embedding:
+            # Ensure we have a copy of the embedding that won't be affected by node creation
+            embedding_backup = np.array(attributes['face_embedding'], copy=True)
+        
+        # Create the node
+        node = self.node_class(subset, data, [], label, attributes, threshold)
+        node.attributes["Target"] = targets[i]
+        node.attributes["subset"] = subset
+        
+                    # Double-check face_embedding was preserved in node attributes
+                    if has_embedding and ('face_embedding' not in node.attributes or not isinstance(node.attributes['face_embedding'], np.ndarray)):
+                        # If embedding was lost during node creation, add it again
+                        node.attributes['face_embedding'] = attributes['face_embedding']
                     
                     # Explicitly set the split property needed by dataloader
                     node.split = subset
@@ -614,25 +673,6 @@ class AIFaceDataset(Dataset):
             filename = os.path.basename(path)
             if additional_attrs and filename in additional_attrs:
                 file_attrs = additional_attrs[filename]
-                if file_attrs:
-                    attributes.update(file_attrs)
-                    if 'face_embedding' in file_attrs:
-                        attributes['face_embedding'] = file_attrs['face_embedding']
-            
-            # Create data and node
-            data = data_class(path, **data_args)
-            label = int(target) if target is not None else 0
-            threshold = node_args.get('threshold', 80)
-            
-            # Create the node with all required arguments
-            node = node_class(subset, data, [], label, attributes, threshold)
-            node.attributes["Target"] = target
-            node.attributes["subset"] = subset
-            
-            batch_nodes.append(node)
-        
-        if batch_nodes and not hasattr(self, '_batch_count'):
-            self._batch_count = 0
             print(f"Batch processing: {len(batch_nodes)} nodes in {time.time() - batch_start:.4f}s")
             self._batch_count += 1
             
@@ -670,14 +710,16 @@ class AIFaceDataset(Dataset):
         # Try attribute lookup with multiple path formats to maximize matching
         file_attrs = None
         
-        # First check if additional_attrs even has embeddings
-        if additional_attrs:
-            embedding_count = sum(1 for attrs in additional_attrs.values() 
-                                if 'face_embedding' in attrs and isinstance(attrs['face_embedding'], np.ndarray))
-            print(f"DEBUG in create_node: additional_attrs has {embedding_count} embeddings out of {len(additional_attrs)} entries")
-            # Print a few sample keys
-            sample_keys = list(additional_attrs.keys())[:3]
-            print(f"DEBUG: Sample keys in additional_attrs: {sample_keys}")
+        # Only print the debug message once for performance
+        if not hasattr(self, '_debug_attrs_printed'):
+            self._debug_attrs_printed = True
+            if additional_attrs:
+                embedding_count = sum(1 for attrs in additional_attrs.values() 
+                                    if 'face_embedding' in attrs and isinstance(attrs['face_embedding'], np.ndarray))
+                print(f"DEBUG in create_node: additional_attrs has {embedding_count} embeddings out of {len(additional_attrs)} entries")
+                # Print a few sample keys
+                sample_keys = list(additional_attrs.keys())[:3]
+                print(f"DEBUG: Sample keys in additional_attrs: {sample_keys}")
         
         # Try several formats to maximize our chance of finding attributes
         lookup_paths = [
@@ -725,30 +767,22 @@ class AIFaceDataset(Dataset):
             # Use dictionary update for bulk attribute addition
             attributes.update(file_attrs)
             
-            # Direct attribute access for face embedding if available
+            # Handle face_embedding specially to ensure proper copying
             if 'face_embedding' in file_attrs:
                 emb = file_attrs['face_embedding']
                 if isinstance(emb, np.ndarray) and len(emb) > 0:
-                    # Copy to ensure no reference issues
-                    attributes['face_embedding'] = np.array(emb)
+                    # Create a DEEP COPY to ensure no reference issues
+                    # This is crucial - we need to ensure the embedding is completely independent
+                    attributes['face_embedding'] = np.array(emb, copy=True)
                     
-                    # CRITICAL: Verify the embedding was actually added
-                    if 'face_embedding' in attributes:
-                        added_emb = attributes['face_embedding']
-                        print(f"SUCCESS: Added embedding of shape {added_emb.shape} to node attributes")
-                    else:
-                        print(f"ERROR: Failed to add embedding to node attributes!")
-                    
-                    # Count nodes with face_embedding
+                    # Count nodes with face_embedding (with less frequent logging)
                     if not hasattr(self, '_face_embedding_count'):
                         self._face_embedding_count = 0
                     self._face_embedding_count += 1
                     
-                    # Print summary more frequently for debugging
-                    if self._face_embedding_count % 5 == 0:
+                    # Print summary less frequently to reduce log spam
+                    if self._face_embedding_count % 1000 == 0:
                         print(f"Added face_embedding to {self._face_embedding_count} nodes so far")
-                else:
-                    print(f"WARNING: Found 'face_embedding' key but value is not a valid numpy array: {type(emb)}")
         else:
             # Limited debug output
             if not hasattr(self, '_debug_attr_counter'):
@@ -946,40 +980,10 @@ class AIFaceDataset(Dataset):
                 print(f"Processing {len(paths)} nodes using threaded approach")
                 
                 # Package chunk data for threaded processing
-                # Print first few entries of attrs to verify they have quality attributes
-                if not hasattr(self, '_debug_attrs_printed') or self._debug_attrs_printed < 3:
-                    if not hasattr(self, '_debug_attrs_printed'):
-                        self._debug_attrs_printed = 0
-                    sample_keys = list(attrs.keys())[:5] if attrs else []
-                    if sample_keys:
-                        sample_attr = attrs[sample_keys[0]]
-                        quality_keys = [k for k in sample_attr.keys() if k.startswith('symmetry_') or k in ('blur', 'brightness', 'contrast', 'compression')]
-                        print(f"\nDEBUG: First few attribute keys: {sample_keys}")
-                        print(f"DEBUG: Quality attribute keys in first item: {quality_keys}")
-                        print(f"DEBUG: Total attributes loaded: {len(attrs)}")
-                        
-                        # Count how many entries have quality attributes
-                        quality_count = 0
-                        for _, attr_dict in list(attrs.items())[:100]:  # Check a subset for speed
-                            if any(k.startswith('symmetry_') or k in ('blur', 'brightness', 'contrast', 'compression') for k in attr_dict):
-                                quality_count += 1
-                        print(f"DEBUG: {quality_count}/100 sample entries have quality attributes")
-                    self._debug_attrs_printed += 1
-                    
                 chunk_args = (subset, paths, targets, genders, races, ages, attrs)
                 
                 # Process this chunk with threading
                 nodes = self.create_nodes_threaded(chunk_args)
-                
-                # Debug check: Inspect the first few nodes to verify attribute inclusion
-                if len(nodes) > 0 and (not hasattr(self, '_debug_node_printed') or self._debug_node_printed < 3):
-                    if not hasattr(self, '_debug_node_printed'):
-                        self._debug_node_printed = 0
-                    node = nodes[0]
-                    print(f"\nDEBUG: Node attributes: {sorted(node.attributes.keys())}")
-                    quality_attrs = [k for k in node.attributes.keys() if k.startswith('symmetry_') or k in ('blur', 'brightness', 'contrast', 'compression')]
-                    print(f"DEBUG: Node quality attributes: {quality_attrs}")
-                    self._debug_node_printed += 1
                 
                 # Validate nodes - check for None values
                 if None in nodes:
