@@ -913,3 +913,55 @@ These changes ensure that the graph structure is properly rewired based on model
   - Reduced reliance on fallback connections for disconnected nodes
   - Average node degree more consistent with grid search predictions
   - Better preservation of hierarchical structure during subgraph creation
+
+## 2025-04-13
+- **Fix: Corrected LSH Edge Filtering Logic in `HierarchicalDeepfakeDataloader`**
+  - Modified `_filter_edges_lsh` to accept an input list of edges (`edges_to_filter`).
+  - Implemented logic to find the intersection between `edges_to_filter` and the candidate pairs identified by the LSH (Nearest Neighbors) search.
+  - Updated the call site in `_filter_edges` to pass the current edge list to `_filter_edges_lsh`.
+  - This prevents LSH from discarding previous filtering steps (quality, symmetry, race/gender/age grouping) and generating edges across the entire dataset, resolving the issue of excessively high average node degrees.
+
+## 2025-04-13 (Update)
+
+- **Fix: Removed Adaptive Embedding Threshold in `HierarchicalDeepfakeDataloader`**
+  - Removed the logic in `_calculate_pairwise_similarities` that adjusted the embedding threshold dynamically to ensure a minimum percentage of edges were kept.
+  - The `embedding_threshold` hyperparameter is now strictly adhered to during vectorized filtering.
+  - This aims to further reduce the number of edges by preventing potentially lenient filtering intended for "grid search behavior" from overriding the specified threshold.
+
+## 2025-04-13 (Update)
+- **Fix: Corrected Quality/Symmetry Similarity Calculation**
+  - Removed the artificial `np.maximum(..., 0.5)` floor applied to individual quality and symmetry metric similarities in `_calculate_pairwise_similarities`. Similarity values can now be less than 0.5.
+  - Corrected the logic to use the actual validity masks (`quality_data['mask']`, `symmetry_data['mask']`) to ensure only valid metrics contribute to the average similarity calculation for an edge. Pairs with no shared valid metrics will now have a similarity of 0.
+  - This fixes the issue where quality/symmetry filters removed zero edges when the threshold was <= 0.5.
+
+## 2025-04-13 (Update)
+- **Fix: Prevented Duplicate Edge Creation**
+  - Modified the edge creation loop in `_build_graph_vectorized` to use a set (`added_pairs`) to track processed node pairs.
+  - Ensures only one `Edge` object is created and added per unique pair of nodes, even if the filtered edge list contains duplicates.
+  - Prevents artificial inflation of node degrees due to duplicate edges.
+
+## 2025-04-13
+- **Fix: Strict Fallback Subgroup Constraint**: Modified the fallback connection logic in `_create_graph_from_edges`. If a disconnected node cannot find another disconnected partner in its subgroup, it now attempts to connect to *any* random node within the same subgroup (even connected ones). The previous cross-subgroup fallback connection behavior has been removed.
+
+## 2025-04-13
+- **Corrected Initial Edge Generation**: Modified `_build_graph_standard` to generate the initial `all_edges` list *after* the `node_index_to_subgroup_id` map is fully populated. Initial edges are now created strictly between nodes sharing the same final (most specific) subgroup ID, preventing the creation of edges across subgroups during the initial phase.
+
+## 2025-04-13: Fix Index Error in Vectorized Filtering
+
+- **Issue:** Encountered `list index out of range` error during grid search, traced to the vectorized edge filtering path (`_filter_edges_vectorized` -> `_calculate_pairwise_similarities`).
+- **Fix:** Modified `_calculate_pairwise_similarities` in `HierarchicalDeepfakeDataloader.py` to validate incoming edge indices against the size of the node attribute matrices. Invalid pairs are now logged and skipped, preventing index errors during numpy array access.
+- **Impact:** Should resolve the grid search crash and allow vectorized filtering to function correctly even if invalid edge indices are somehow passed to it.
+
+## 2025-04-13: Fix Index Error in Age Subgroup Creation
+
+- **Issue:** Encountered `list index out of range` error during grid search, originating in `_create_age_subgroups`.
+- **Cause:** The function was called with a subset of the `nodes` list created via list comprehension, but still received the original `group_indices` which were out of bounds for the subset.
+- **Fix:** Modified the call site in `_build_graph_standard` to pass the full `nodes` list to `_create_age_subgroups` along with the `group_indices`.
+- **Impact:** Resolved the `IndexError` during age-based subgrouping.
+
+## 2025-04-13: Fix ValueError in Embedding Normalization
+
+- **Issue:** Encountered `ValueError: operands could not be broadcast together...` during grid search, originating in `_calculate_pairwise_similarities` when calculating embedding similarities.
+- **Cause:** Attempting to divide the embedding matrix (shape N, 512) by the norms vector (shape N,) without proper broadcasting.
+- **Fix:** Reshaped the `norms[mask]` vector to `norms[mask][:, np.newaxis]` (shape N, 1) before the division operation. This allows NumPy to correctly broadcast the division across the embedding dimensions.
+- **Impact:** Resolved the `ValueError`, enabling correct vectorized calculation of cosine similarity for embeddings.

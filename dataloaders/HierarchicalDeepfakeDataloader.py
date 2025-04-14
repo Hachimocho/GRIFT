@@ -25,6 +25,7 @@ from sklearn.neighbors import NearestNeighbors
 import scipy.sparse as sp
 from concurrent.futures import ThreadPoolExecutor
 import logging
+from typing import List, Dict, Tuple, Optional, Set, Any
 
 from dataloaders.Dataloader import Dataloader
 from graphs.HyperGraph import HyperGraph
@@ -69,6 +70,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         "quality_threshold": 0.9,    # Similarity threshold for quality metrics
         "symmetry_threshold": 0.9,  # Similarity threshold for facial symmetry
         "silent_mode": False,  # When True, disables internal progress bars
+        "age_split_threshold": 1000,  # Threshold for age-based subgrouping
     }
 
     def __init__(self, datasets, edge_class, **kwargs):
@@ -304,246 +306,328 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         # Empty list case
         if len(edge_indices) == 0:
             return np.array([], dtype=bool)
-            
-        # Convert to numpy array if not already
-        edge_indices = np.array(edge_indices)
-        i_indices = edge_indices[:, 0]
-        j_indices = edge_indices[:, 1]
         
+        # Convert to numpy array if not already
+        edge_indices_np = np.array(edge_indices) # Use a different name to avoid confusion later
+        num_original_pairs = len(edge_indices_np)
+        
+        if num_original_pairs == 0:
+            return np.array([], dtype=bool)
+        
+        i_indices_orig = edge_indices_np[:, 0]
+        j_indices_orig = edge_indices_np[:, 1]
+        
+        # --- START ADDED VALIDATION ---
+        num_nodes = len(attribute_matrices['embeddings']) # Get num_nodes from a representative matrix
+        max_allowable_index = num_nodes - 1
+
+        # Create masks for valid indices based on the original indices
+        valid_i = (i_indices_orig >= 0) & (i_indices_orig <= max_allowable_index)
+        valid_j = (j_indices_orig >= 0) & (j_indices_orig <= max_allowable_index)
+        valid_pair_mask = valid_i & valid_j
+
+        num_invalid_pairs = num_original_pairs - np.sum(valid_pair_mask)
+
+        # Prepare the final mask, initialized to False
+        final_keep_mask = np.zeros(num_original_pairs, dtype=bool)
+
+        if num_invalid_pairs > 0:
+            logger.warning(f"Found {num_invalid_pairs} edge pairs with out-of-range indices "
+                           f"(max allowed: {max_allowable_index}) in vectorized batch. These pairs will be excluded.")
+            # If all pairs are invalid, return the all-False mask
+            if np.all(~valid_pair_mask):
+                return final_keep_mask
+            
+        # Filter the indices to only include valid pairs for calculation
+        i_indices = i_indices_orig[valid_pair_mask]
+        j_indices = j_indices_orig[valid_pair_mask]
+        # --- END ADDED VALIDATION ---
+        
+        # If no valid pairs remain after filtering, return the all-False mask
+        if len(i_indices) == 0:
+            return final_keep_mask
+
+        # --- Calculate Similarities based on attribute_type --- 
         if attribute_type == 'embedding':
-            # Get embeddings for all node pairs
+            if not np.any(valid_pair_mask):
+                # No valid pairs remain after basic index checks
+                return np.zeros(num_original_pairs, dtype=bool)
+
+            # Get the edge indices for valid pairs only
+            valid_edges = edge_indices_np[valid_pair_mask]
+            i_indices_valid = valid_edges[:, 0]
+            j_indices_valid = valid_edges[:, 1]
+
             embeddings = attribute_matrices['embeddings']
+
+            # 1. Find all unique original indices involved in the VALID pairs
+            unique_indices_in_valid_pairs = np.unique(np.concatenate((i_indices_valid, j_indices_valid)))
+
+            # 2. Extract embeddings for these unique indices
+            # Ensure indices are within bounds (should be guaranteed by valid_pair_mask, but belt-and-suspenders)
+            max_allowable_emb_idx = embeddings.shape[0] - 1
+            unique_indices_in_bounds = unique_indices_in_valid_pairs[unique_indices_in_valid_pairs <= max_allowable_emb_idx]
+            if len(unique_indices_in_bounds) != len(unique_indices_in_valid_pairs):
+                 logger.warning(f"Mismatch finding embeddings for unique indices. This might indicate an issue upstream from _calculate_pairwise_similarities.")
+                 # Fallback: proceed with only the indices found within bounds
+                 unique_indices_in_valid_pairs = unique_indices_in_bounds
+                 if len(unique_indices_in_valid_pairs) == 0:
+                     # If no valid indices left, return all False
+                     final_keep_mask = np.zeros(num_original_pairs, dtype=bool)
+                     final_keep_mask[valid_pair_mask] = False # Explicitly set valid pairs to false
+                     return final_keep_mask
             
-            # CRITICAL FIX: Check if embeddings are all zero
-            embedding_magnitudes = np.linalg.norm(embeddings, axis=1)
-            valid_embeddings = np.sum(embedding_magnitudes > 0)
+            unique_embeddings = embeddings[unique_indices_in_valid_pairs]
+
+            # 3. Calculate norms and identify indices with norms > threshold
+            norms = np.linalg.norm(unique_embeddings, axis=1)
+            valid_norm_mask_for_unique = norms > 1e-8
+
+            # 4. Get the ORIGINAL indices that have valid norms
+            original_indices_with_valid_norms = unique_indices_in_valid_pairs[valid_norm_mask_for_unique]
+            valid_norm_indices_set = set(original_indices_with_valid_norms)
+
+            # 5. Create a mask for the VALID pairs where BOTH nodes have a valid norm
+            cosine_calculable_pair_mask = np.array([
+                (i in valid_norm_indices_set) and (j in valid_norm_indices_set)
+                for i, j in zip(i_indices_valid, j_indices_valid)
+            ], dtype=bool)
+
+            # Initialize similarities for all VALID pairs as below threshold (-1)
+            similarities_for_valid_pairs = np.full(len(i_indices_valid), -1.0, dtype=float)
+
+            # Only proceed if there are pairs where cosine sim can actually be calculated
+            if np.any(cosine_calculable_pair_mask):
+                # Get the pairs where calculation is possible
+                calculable_i = i_indices_valid[cosine_calculable_pair_mask]
+                calculable_j = j_indices_valid[cosine_calculable_pair_mask]
+
+                # Get unique original indices involved ONLY in calculable pairs
+                unique_calculable_indices = np.unique(np.concatenate((calculable_i, calculable_j)))
+
+                # Create a mapping from original index to its position in the normalized vector array
+                original_to_normalized_pos = {original_idx: pos for pos, original_idx in enumerate(unique_calculable_indices)}
+
+                # Extract and normalize embeddings ONLY for these calculable indices
+                calculable_embeddings = embeddings[unique_calculable_indices]
+                # Ensure norms are calculated correctly with keepdims=True for broadcasting
+                calculable_norms = np.linalg.norm(calculable_embeddings, axis=1, keepdims=True)
+                # We know these norms are > 1e-8 because of cosine_calculable_pair_mask
+                normalized_calculable_vectors = calculable_embeddings / calculable_norms # Broadcasting works here
+
+                # Map the 'calculable_i' and 'calculable_j' indices to their positions
+                pos_i = np.array([original_to_normalized_pos[idx] for idx in calculable_i])
+                pos_j = np.array([original_to_normalized_pos[idx] for idx in calculable_j])
+
+                # Get the corresponding normalized vectors
+                norm_vec_i = normalized_calculable_vectors[pos_i]
+                norm_vec_j = normalized_calculable_vectors[pos_j]
+
+                # Calculate cosine similarities (dot product of normalized vectors)
+                cosine_similarities = np.sum(norm_vec_i * norm_vec_j, axis=1)
+
+                # Store these calculated similarities in the correct positions
+                similarities_for_valid_pairs[cosine_calculable_pair_mask] = cosine_similarities
+
+            # Apply the threshold to the calculated similarities (or -1 for failed pairs)
+            threshold_met_mask_for_valid_pairs = similarities_for_valid_pairs >= threshold
+
+            # --- Map results back to the original edge_indices_np shape ---
+            final_keep_mask = np.zeros(num_original_pairs, dtype=bool)
+            final_keep_mask[valid_pair_mask] = threshold_met_mask_for_valid_pairs
             
-            # Debug embedding magnitudes
-            logger.info(f"Embedding magnitudes: min={np.min(embedding_magnitudes):.4f}, max={np.max(embedding_magnitudes):.4f}, "
-                      f"mean={np.mean(embedding_magnitudes):.4f}, valid={valid_embeddings}/{len(embedding_magnitudes)}")
-            
-            # If we have very few valid embeddings, skip the embedding filtering entirely 
-            # to match grid search behavior - just return all edges as valid
-            if valid_embeddings < len(embedding_magnitudes) * 0.5:  # If less than 50% have valid embeddings
-                logger.info(f"Too few valid embeddings detected ({valid_embeddings}/{len(embedding_magnitudes)}), "  
-                          f"skipping embedding filtering to match grid search behavior")
-                return np.ones(len(edge_indices), dtype=bool)  # Accept all edges
-            
-            # Normalize embeddings for cosine similarity - with added safety
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            mask = norms > 0.001  # Avoid division by zero - use slightly higher threshold
-            normalized_embeddings = np.zeros_like(embeddings)
-            normalized_embeddings[mask.flatten()] = embeddings[mask.flatten()] / norms[mask.flatten()]
-            
-            # Calculate dot products for all specified pairs (equivalent to cosine similarity for normalized vectors)
-            raw_similarities = np.sum(normalized_embeddings[i_indices] * normalized_embeddings[j_indices], axis=1)
-            
-            # To match grid search behavior, use a variable threshold based on the similarity distribution
-            # This ensures we keep a minimum percentage of edges
-            target_keep_percentage = 0.20  # Keep at least 20% of edges
-            min_edges_to_keep = max(int(len(raw_similarities) * target_keep_percentage), 1000)
-            
-            # If we'd keep too few edges with the current threshold, adjust it
-            if np.sum(raw_similarities >= threshold) < min_edges_to_keep:
-                # Find a threshold that keeps the desired percentage of edges
-                if len(raw_similarities) > 0:
-                    sorted_sims = np.sort(raw_similarities)[::-1]  # Sort descending
-                    adaptive_threshold = sorted_sims[min(min_edges_to_keep, len(sorted_sims) - 1)]
-                    actual_threshold = min(threshold, adaptive_threshold)  # Use the lower of the two
-                    logger.info(f"Adapting embedding threshold from {threshold:.4f} to {actual_threshold:.4f} "
-                              f"to ensure keeping at least {min_edges_to_keep} edges")
-                else:
-                    actual_threshold = 0.0
-            else:
-                actual_threshold = threshold
-            
-            # Debug log to understand what's happening with similarities
-            keep_mask = raw_similarities >= actual_threshold
-            num_above_threshold = np.sum(keep_mask)
-            # if len(raw_similarities) > 0:
-            #     logger.info(f"Embedding similarity stats: min={np.min(raw_similarities):.4f}, "
-            #               f"max={np.max(raw_similarities):.4f}, mean={np.mean(raw_similarities):.4f}, "
-            #               f"median={np.median(raw_similarities):.4f}")
-            # logger.info(f"Edges above threshold ({actual_threshold:.4f}): {num_above_threshold}/{len(raw_similarities)} "
-            #           f"({num_above_threshold/max(1,len(raw_similarities))*100:.2f}%)")
-            
-            # Return mask of pairs meeting threshold
-            return keep_mask
+            # The final_keep_mask now correctly represents which of the ORIGINAL pairs should be kept
+            return final_keep_mask
             
         elif attribute_type == 'quality':
             # Get quality metrics matrix and mask
             quality_data = attribute_matrices['quality']
             matrix = quality_data['matrix']
-            mask = quality_data['mask']
+            mask = quality_data['mask'] # Mask indicating valid entries
             
-            # To match the grid search behavior, we need to be less strict with quality filtering
-            # For grid search consistency, we'll simulate having a higher average similarity
+            # Select data only for valid indices
+            matrix_i = matrix[i_indices]
+            matrix_j = matrix[j_indices]
+            mask_i = mask[i_indices]
+            mask_j = mask[j_indices]
             
             # Calculate absolute differences for each metric
-            diffs = np.abs(matrix[i_indices] - matrix[j_indices])
+            diffs = np.abs(matrix_i - matrix_j)
             
-            # Calculate max values for each metric pair - add a small epsilon to avoid division by zero
-            maxes = np.maximum(np.abs(matrix[i_indices]), np.abs(matrix[j_indices]))
-            maxes[maxes < 0.1] = 1.0  # Treat very low values as default baseline
+            # Calculate max values for each metric pair
+            maxes = np.maximum(np.abs(matrix_i), np.abs(matrix_j))
+            # Avoid division by zero/very small numbers - use mask for this
+            maxes_gt_zero = maxes > 1e-8
             
-            # Calculate similarity as 1 - normalized difference, with a minimum similarity floor
-            # This ensures small differences don't result in too-low similarities
-            sim_per_metric = np.maximum(1.0 - (diffs / (maxes + 0.001)), 0.5)
+            # Calculate similarity as 1 - normalized difference, handle division by zero
+            sim_per_metric = np.zeros_like(diffs)
+            # Only calculate where maxes are significant
+            sim_per_metric[maxes_gt_zero] = 1.0 - (diffs[maxes_gt_zero] / (maxes[maxes_gt_zero]))
+            sim_per_metric = np.clip(sim_per_metric, 0, 1) # Ensure similarity is [0, 1]
             
-            # Create boolean mask for valid comparisons (both nodes have values)
-            # For consistency with grid search, we'll be more lenient with what's considered 'valid'
-            valid_mask = np.ones_like(mask[i_indices], dtype=bool)
+            # Create boolean mask for valid comparisons (both nodes must have the metric)
+            valid_mask = mask_i & mask_j
             
-            # Calculate mean similarity considering only valid metrics
+            # Calculate mean similarity considering only valid metrics for each pair
             valid_counts = np.sum(valid_mask, axis=1)
-            valid_counts[valid_counts == 0] = 1  # Avoid division by zero
+            mean_sim = np.zeros(len(i_indices), dtype=float)
+            has_valid = valid_counts > 0
             
-            # Multiply by valid mask to zero out invalid comparisons
-            masked_sims = sim_per_metric * valid_mask
+            # Apply valid_mask to sim_per_metric before summing
+            # Sum only where the metric comparison itself is valid
+            sum_sim = np.sum(sim_per_metric * valid_mask, axis=1)
+            mean_sim[has_valid] = sum_sim[has_valid] / valid_counts[has_valid]
             
-            # Calculate average similarity across metrics
-            # For grid search consistency, we'll apply a boosting factor
-            avg_similarities = np.sum(masked_sims, axis=1) / valid_counts
-            
-            # Debug log to understand what's happening with similarities
-            num_above_threshold = np.sum(avg_similarities >= threshold)
-            # logger.info(f"Quality similarity stats: min={np.min(avg_similarities):.4f}, max={np.max(avg_similarities):.4f}, mean={np.mean(avg_similarities):.4f}, median={np.median(avg_similarities):.4f}")
-            # logger.info(f"Edges above threshold ({threshold}): {num_above_threshold}/{len(avg_similarities)} ({num_above_threshold/len(avg_similarities)*100:.2f}%)")
-            
-            # Return mask of pairs meeting threshold
-            return avg_similarities >= threshold
-            
+            valid_results_mask = mean_sim >= threshold
+        
         elif attribute_type == 'symmetry':
-            # Apply the same improved approach we used for quality metrics
+            # Get symmetry metrics matrix and mask
             symmetry_data = attribute_matrices['symmetry']
             matrix = symmetry_data['matrix']
-            mask = symmetry_data['mask']
+            mask = symmetry_data['mask'] # Mask indicating valid entries
+
+            # Select data only for valid indices
+            matrix_i = matrix[i_indices]
+            matrix_j = matrix[j_indices]
+            mask_i = mask[i_indices]
+            mask_j = mask[j_indices]
+
+            # Calculate absolute differences
+            diffs = np.abs(matrix_i - matrix_j)
+
+            # Calculate max values
+            maxes = np.maximum(np.abs(matrix_i), np.abs(matrix_j))
+            maxes_gt_zero = maxes > 1e-8
             
-            # To match the grid search behavior, apply the same less stringent approach
-            
-            # Calculate absolute differences for each metric
-            diffs = np.abs(matrix[i_indices] - matrix[j_indices])
-            
-            # Calculate max values for each metric pair with better handling of small values
-            maxes = np.maximum(np.abs(matrix[i_indices]), np.abs(matrix[j_indices]))
-            maxes[maxes < 0.1] = 1.0  # Treat very low values as default baseline
-            
-            # Calculate similarity as 1 - normalized difference, with a minimum similarity floor
-            sim_per_metric = np.maximum(1.0 - (diffs / (maxes + 0.001)), 0.5)
-            
-            # Create boolean mask for valid comparisons - be more lenient
-            valid_mask = np.ones_like(mask[i_indices], dtype=bool)
-            
-            # Calculate mean similarity considering only valid metrics
+            # Calculate similarity, handle division by zero
+            sim_per_metric = np.zeros_like(diffs)
+            sim_per_metric[maxes_gt_zero] = 1.0 - (diffs[maxes_gt_zero] / (maxes[maxes_gt_zero]))
+            sim_per_metric = np.clip(sim_per_metric, 0, 1)
+
+            # Mask for valid comparisons
+            valid_mask = mask_i & mask_j
+
+            # Calculate mean similarity
             valid_counts = np.sum(valid_mask, axis=1)
-            valid_counts[valid_counts == 0] = 1  # Avoid division by zero
+            mean_sim = np.zeros(len(i_indices), dtype=float)
+            has_valid = valid_counts > 0
+            sum_sim = np.sum(sim_per_metric * valid_mask, axis=1)
+            mean_sim[has_valid] = sum_sim[has_valid] / valid_counts[has_valid]
             
-            # Multiply by valid mask to zero out invalid comparisons
-            masked_sims = sim_per_metric * valid_mask
-            
-            # Calculate average similarity across metrics
-            avg_similarities = np.sum(masked_sims, axis=1) / valid_counts
-            
-            # Debug logging to understand the similarity distribution
-            num_above_threshold = np.sum(avg_similarities >= threshold)
-            # logger.info(f"Symmetry similarity stats: min={np.min(avg_similarities):.4f}, max={np.max(avg_similarities):.4f}, mean={np.mean(avg_similarities):.4f}, median={np.median(avg_similarities):.4f}")
-            # logger.info(f"Edges above threshold ({threshold}): {num_above_threshold}/{len(avg_similarities)} ({num_above_threshold/len(avg_similarities)*100:.2f}%)")
-            
-            # Return mask of pairs meeting threshold
-            return avg_similarities >= threshold
-            
-        elif attribute_type == 'emotion':
-            # Get emotion boolean matrix
-            emotion_matrix = attribute_matrices['emotion']['matrix']
-            
-            # Calculate Jaccard similarity for each pair
-            # Intersection: logical AND, Union: logical OR
-            intersections = np.sum(emotion_matrix[i_indices] & emotion_matrix[j_indices], axis=1)
-            unions = np.sum(emotion_matrix[i_indices] | emotion_matrix[j_indices], axis=1)
-            
-            # Avoid division by zero
-            similarities = np.zeros(len(i_indices))
-            nonzero_mask = unions > 0
-            similarities[nonzero_mask] = intersections[nonzero_mask] / unions[nonzero_mask]
-            
-            # Return mask of pairs meeting threshold
-            return similarities >= threshold
-            
-        # Default case: all False
-        return np.zeros(len(edge_indices), dtype=bool)
+            valid_results_mask = mean_sim >= threshold
+        
+        else:
+             logger.warning(f"Unsupported attribute type '{attribute_type}' in vectorized calculation.")
+             # If attribute type is unknown, assume no pairs pass for safety
+             valid_results_mask = np.zeros(len(i_indices), dtype=bool)
+
+        # Place the results for valid pairs into the final mask
+        final_keep_mask[valid_pair_mask] = valid_results_mask
+        
+        return final_keep_mask
     
-    def _filter_edges_lsh(self, nodes, threshold, max_nodes_per_batch=10000):
+    def _filter_edges_lsh(self, nodes, edges_to_filter, threshold, max_nodes_per_batch=10000):
         """
-        Use Locality-Sensitive Hashing to efficiently find similar node pairs based on embeddings
-        
+        Use Locality-Sensitive Hashing (approximated with NearestNeighbors) to efficiently
+        filter an existing list of edges based on embedding similarity.
+
         Args:
-            nodes: List of all nodes
-            threshold: Similarity threshold for embeddings
-            max_nodes_per_batch: Maximum nodes to process in a batch
-            
+            nodes: List of all nodes.
+            edges_to_filter: List of (i, j) index tuples representing edges to be filtered.
+            threshold: Similarity threshold for embeddings.
+            max_nodes_per_batch: Maximum nodes to process in a batch for NN search.
+
         Returns:
-            List of (i, j) index tuples for node pairs with embedding similarity >= threshold
+            List of (i, j) index tuples from edges_to_filter where nodes have
+            embedding similarity >= threshold.
         """
+        if not edges_to_filter:
+            logger.info("LSH filtering: Input edge list is empty.")
+            return []
+
         total_nodes = len(nodes)
-        logger.info(f"Using LSH to find embeddings with similarity >= {threshold} among {total_nodes} nodes")
-        
-        # Extract embeddings
+        # logger.info(f"Filtering {len(edges_to_filter)} edges using LSH "
+        #             f"with similarity >= {threshold} among {total_nodes} nodes")
+
+        # Extract embeddings and map original indices
         embeddings = []
-        valid_indices = []
-        
+        valid_indices_map = {} # Map original index -> embedding array index
+        original_indices = [] # List of original indices corresponding to embeddings array
+
         for i, node in enumerate(nodes):
             if 'face_embedding' in node.attributes and isinstance(node.attributes['face_embedding'], np.ndarray):
+                embedding_idx = len(embeddings)
                 embeddings.append(node.attributes['face_embedding'])
-                valid_indices.append(i)
-            
+                valid_indices_map[i] = embedding_idx
+                original_indices.append(i)
+
         if not embeddings:
-            logger.warning("No valid embeddings found in nodes")
+            logger.warning("No valid embeddings found in nodes for LSH filtering.")
+            # If no embeddings, we can't filter by them, so return the original edges?
+            # Or return empty? Returning empty seems safer if embedding filter is required.
             return []
-            
+
         embeddings = np.array(embeddings)
-        
-        # Process in batches to manage memory
-        all_pairs = []
-        
-        # Calculate number of batches
         num_embeddings = len(embeddings)
+
+        # --- Find all candidate pairs using NearestNeighbors (existing logic) ---
+        candidate_pairs = set()
         num_batches = (num_embeddings + max_nodes_per_batch - 1) // max_nodes_per_batch
-        
-        for batch_idx in tqdm(range(num_batches), desc="LSH processing batches", disable=self.hyperparameters["silent_mode"]):
+
+        # Consider optimizing k based on expected density and threshold
+        k_neighbors = min(max(50, int(num_embeddings * 0.05)), 200) # Heuristic k
+
+        nn = NearestNeighbors(n_neighbors=k_neighbors, algorithm='auto', metric='cosine', n_jobs=-1)
+        nn.fit(embeddings)
+
+        logger.info(f"_filter_edges_lsh: Starting LSH filtering with threshold {threshold:.2f}")
+        logger.info(f"_filter_edges_lsh: Input edge count: {len(edges_to_filter)}")
+
+        for batch_idx in tqdm(range(num_batches), desc="LSH candidate search", disable=self.hyperparameters["silent_mode"]):
             start_idx = batch_idx * max_nodes_per_batch
             end_idx = min(start_idx + max_nodes_per_batch, num_embeddings)
-            batch_size = end_idx - start_idx
-            
-            # Skip empty batches
-            if batch_size == 0:
-                continue
-                
+            if start_idx >= end_idx: continue
+
             batch_embeddings = embeddings[start_idx:end_idx]
-            
-            # Use scikit-learn's NearestNeighbors for approximate nearest neighbor search
-            # This is more memory-efficient than explicit LSH and works well for medium-sized datasets
-            nn = NearestNeighbors(n_neighbors=min(100, num_embeddings), algorithm='auto', metric='cosine')
-            nn.fit(embeddings)  # Fit on all embeddings
-            
-            # Find neighbors for batch embeddings
-            # Convert cosine distance to similarity (1 - distance)
-            distances, indices = nn.kneighbors(batch_embeddings, n_neighbors=min(100, num_embeddings))
+            distances, indices = nn.kneighbors(batch_embeddings)
             similarities = 1 - distances
-            
-            # Process results for this batch
-            for i in range(batch_size):
-                global_i = valid_indices[start_idx + i]  # Original node index
-                
-                for j, sim in zip(indices[i], similarities[i]):
-                    global_j = valid_indices[j]  # Original node index
-                    
-                    # Avoid self-loops and ensure we only add each pair once (i < j)
-                    if global_i < global_j and sim >= threshold:
-                        all_pairs.append((global_i, global_j))
-        
-        logger.info(f"LSH found {len(all_pairs)} pairs with embedding similarity >= {threshold}")
-        return all_pairs
-    
+
+            for i_batch in range(len(batch_embeddings)):
+                emb_i = start_idx + i_batch # Index within the embeddings array
+                global_i = original_indices[emb_i] # Original node index
+
+                for j_neighbor, sim in zip(indices[i_batch], similarities[i_batch]):
+                    # j_neighbor is index within embeddings array
+                    if emb_i == j_neighbor: # Skip self-comparison
+                        continue
+
+                    global_j = original_indices[j_neighbor] # Original node index
+
+                    if sim >= threshold:
+                        # Add ordered pair to the set
+                        pair = tuple(sorted((global_i, global_j)))
+                        candidate_pairs.add(pair)
+        # --- End of candidate pair finding ---
+
+        # logger.info(f"LSH identified {len(candidate_pairs)} candidate pairs "
+        #             f"with similarity >= {threshold}")
+        logger.info(f"_filter_edges_lsh: Found {len(candidate_pairs)} candidate pairs meeting threshold >= {threshold:.2f} via kneighbors")
+        if not candidate_pairs:
+            return []
+
+        # --- Filter the input edges using the candidate pairs ---
+        # Ensure edges_to_filter are also ordered tuples for correct set comparison
+        input_edges_set = {tuple(sorted(edge)) for edge in edges_to_filter}
+
+        filtered_edges_set = input_edges_set.intersection(candidate_pairs)
+
+        # logger.info(f"LSH filtering kept {len(filtered_edges_set)} edges "
+        #             f"out of {len(edges_to_filter)} original edges.")
+        logger.info(f"_filter_edges_lsh: Final filtered edge count after intersection: {len(filtered_edges_set)}")
+
+        # Return as list of tuples
+        return [edge for edge in filtered_edges_set] # Convert back to list
+
     def _filter_edges_vectorized(self, nodes, edges, attribute_type, threshold, batch_size=100000):
         """
         Filter edges based on attribute similarity using vectorized operations
@@ -558,6 +642,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         Returns:
             Filtered list of edges
         """
+        logger.info(f"_filter_edges_vectorized: Called")
         if not edges:
             return []
             
@@ -596,31 +681,49 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         Returns:
             Filtered list of edges
         """
+        logger.info(f"_filter_edges: Called")
+        # LSH filtering currently deprecated due to filtering issues
+
         # Handle specialized case for embeddings with LSH when appropriate
-        if attribute_type == 'embedding' and len(nodes) > 1000 and threshold > 0.7:
-            # For high thresholds on large node sets, LSH is much more efficient
-            # Instead of filtering existing edges, generate new edges directly
-            logger.info(f"Using LSH for embedding similarity with threshold {threshold}")
-            return self._filter_edges_lsh(nodes, threshold)
-            
+        # Check edges list length as well, maybe LSH isn't worth it for few edges
+        # if attribute_type == 'embedding' and len(nodes) > 1000 and threshold > 1.0 and len(edges) > 1000:
+        #     logger.info(f"Using LSH for filtering {len(edges)} embedding edges with threshold {threshold}")
+        #     # Pass the current 'edges' list to _filter_edges_lsh
+        #     return self._filter_edges_lsh(nodes, edges, threshold) # Pass 'edges'
+
         # For standard cases, use vectorized filtering
-        if len(edges) > 1000:
+        if len(edges) > 1000: # Use vectorized for non-embedding or when LSH conditions not met
             logger.info(f"Using vectorized filtering for {attribute_type} with {len(edges)} edges")
             return self._filter_edges_vectorized(nodes, edges, attribute_type, threshold)
-            
+
         # Fall back to the original method for small edge sets
-        logger.info(f"Using standard filtering for {attribute_type} with {len(edges)} edges")
+        logger.info(f"Using standard (iterative) filtering for {attribute_type} with {len(edges)} edges")
         filtered_edges = []
-        
+
+        # Ensure nodes have the necessary attributes pre-fetched if needed by _calculate_similarity
+        # Consider pre-calculating similarities if _calculate_similarity is slow and called repeatedly
+
         for i, j in tqdm(edges, desc=f"Filtering by {attribute_type}", disable=self.hyperparameters["silent_mode"]):
-            similarity = self._calculate_similarity(nodes[i], nodes[j], attribute_type)
-            
-            # Keep edge if similarity meets threshold or similarity can't be calculated
-            if similarity is None or similarity >= threshold:
-                filtered_edges.append((i, j))
-        
+            try:
+                # Make sure nodes[i] and nodes[j] are valid indices
+                if i >= len(nodes) or j >= len(nodes):
+                     logger.warning(f"Invalid node index in edge list: ({i}, {j}). Skipping edge.")
+                     continue
+
+                similarity = self._calculate_similarity(nodes[i], nodes[j], attribute_type)
+
+                # Keep edge if similarity meets threshold OR if similarity calculation fails (returns None)
+                # Consider if failing similarity should always exclude the edge? Depends on desired behavior.
+                if similarity is None or similarity >= threshold:
+                    filtered_edges.append((i, j))
+            except IndexError:
+                 logger.warning(f"IndexError processing edge ({i}, {j}) during {attribute_type} filtering. Max node index: {len(nodes)-1}")
+            except Exception as e:
+                 logger.exception(f"Error calculating similarity for edge ({i}, {j}), type {attribute_type}: {e}")
+
+
         return filtered_edges
-    
+
     def _create_age_subgroups(self, nodes, group_indices):
         """
         Further subdivide groups based on age similarity
@@ -749,12 +852,32 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         
         # For small datasets, use the standard approach
         if total_nodes <= chunk_size:
+            # Standard approach handles map generation internally
             return self._build_graph_standard(nodes, split_name)
         
         # For large datasets, split into chunks by categorical attributes
         logger.info(f"Dataset too large for standard processing. Using chunked approach.")
+
+        # --- Generate the final subgroup map upfront for fallback consistency --- 
+        logger.info("Generating final subgroup map for fallback connectivity...")
+        final_subgroups = self._group_by_categorical(nodes) # Race/Gender first
+        # Refine by age
+        node_index_to_subgroup_id = {}
+        current_subgroup_id_counter = 0
+        final_subgroup_details = {}
+        for group_key, group_indices in final_subgroups.items():
+            age_subgroups = self._create_age_subgroups(nodes, group_indices)
+            for age_subgroup_indices in age_subgroups:
+                if age_subgroup_indices:
+                    subgroup_id = current_subgroup_id_counter
+                    final_subgroup_details[subgroup_id] = {'nodes': age_subgroup_indices, 'key': group_key + ('age_group',)} # Store details if needed
+                    for node_idx in age_subgroup_indices:
+                        node_index_to_subgroup_id[node_idx] = subgroup_id
+                    current_subgroup_id_counter += 1
+        logger.info(f"Generated {current_subgroup_id_counter} final subgroups for map.")
+        # --- End Map Generation --- 
         
-        # Step 1: Group nodes by race and gender across the entire dataset
+        # Step 1: Use initial broad grouping for chunking (Race/Gender)
         race_gender_groups = self._group_by_categorical(nodes)
         
         # Step 2: Process each race-gender group separately
@@ -798,30 +921,35 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                                 # Generate edges within this chunk
                                 chunk_edges = list(combinations(chunk_indices, 2))
                                 
-                                # Apply filtering to chunk edges
+                                # Apply filtering to chunk edges - PASS THE MAP
                                 chunk_edges = self._apply_attribute_filtering(nodes, chunk_edges, 
-                                                                           f"{race}-{gender} chunk {chunk_idx}")
+                                                                           f"{race}-{gender} chunk {chunk_idx}",
+                                                                           node_index_to_subgroup_id)
                                 all_edges.extend(chunk_edges)
                     else:
                         # Small enough to process directly
                         if subgroup_size > 1:
                             subgroup_edges = list(combinations(subgroup, 2))
+                            # Apply filtering - PASS THE MAP
                             subgroup_edges = self._apply_attribute_filtering(nodes, subgroup_edges, 
-                                                                           f"{race}-{gender} subgroup {subgroup_idx}")
+                                                                           f"{race}-{gender} subgroup {subgroup_idx}",
+                                                                           node_index_to_subgroup_id)
                             all_edges.extend(subgroup_edges)
             else:
                 # Small enough group to process directly
                 if group_size > 1:
                     group_edges = list(combinations(group_indices, 2))
-                    group_edges = self._apply_attribute_filtering(nodes, group_edges, f"{race}-{gender}")
+                    # Apply filtering - PASS THE MAP
+                    group_edges = self._apply_attribute_filtering(nodes, group_edges, f"{race}-{gender}",
+                                                               node_index_to_subgroup_id)
                     all_edges.extend(group_edges)
         
         logger.info(f"Generated {len(all_edges)} edges across all groups")
         
-        # Step 4: Create edge objects (in batches to manage memory)
-        return self._create_graph_from_edges(nodes, all_edges, split_name)
+        # Step 4: Create edge objects - PASS THE MAP
+        return self._create_graph_from_edges(nodes, all_edges, split_name, node_index_to_subgroup_id)
     
-    def _apply_attribute_filtering(self, nodes, edges, group_name):
+    def _apply_attribute_filtering(self, nodes, edges, group_name, node_index_to_subgroup_id):
         """
         Apply attribute filtering to a set of edges
         
@@ -829,56 +957,42 @@ class HierarchicalDeepfakeDataloader(Dataloader):
             nodes: List of all nodes
             edges: List of edges to filter
             group_name: Name of the group for logging
+            node_index_to_subgroup_id: Dictionary mapping node indices to subgroup IDs
             
         Returns:
             Filtered list of edges
         """
         logger.info(f"Filtering {len(edges)} edges for group {group_name}")
-        
-        # Step 1: Filter by quality metrics
-        if self.hyperparameters["quality_threshold"] < 1.0:
-            quality_edges = self._filter_edges(
-                nodes, edges, 
-                'quality', 
-                self.hyperparameters["quality_threshold"]
-            )
-            retention = (len(quality_edges) / len(edges) * 100) if edges else 0
-            logger.info(f"Quality filtering: {len(quality_edges)}/{len(edges)} edges remain ({retention:.1f}%)")
-            edges = quality_edges
-            
-            # Early return if no edges remain
-            if not edges:
-                return []
-        
-        # Step 2: Filter by symmetry metrics
-        if self.hyperparameters["symmetry_threshold"] < 1.0:
-            symmetry_edges = self._filter_edges(
-                nodes, edges, 
-                'symmetry', 
-                self.hyperparameters["symmetry_threshold"]
-            )
-            retention = (len(symmetry_edges) / len(edges) * 100) if edges else 0
-            logger.info(f"Symmetry filtering: {len(symmetry_edges)}/{len(edges)} edges remain ({retention:.1f}%)")
-            edges = symmetry_edges
-            
-            # Early return if no edges remain
-            if not edges:
-                return []
-        
-        # Step 3: Filter by face embedding
-        if self.hyperparameters["embedding_threshold"] < 1.0:
-            embedding_edges = self._filter_edges(
-                nodes, edges, 
-                'embedding', 
-                self.hyperparameters["embedding_threshold"]
-            )
-            retention = (len(embedding_edges) / len(edges) * 100) if edges else 0
-            logger.info(f"Embedding filtering: {len(embedding_edges)}/{len(edges)} edges remain ({retention:.1f}%)")
-            edges = embedding_edges
-        
+
+        # Always apply filtering based on the threshold
+        quality_edges = self._filter_edges(nodes, edges, 'quality', self.hyperparameters["quality_threshold"])
+        logger.info(f"Edges remaining after quality filtering: {len(quality_edges)}")
+        edges = quality_edges
+        if not edges:
+            logger.info("No edges remaining after quality filtering.")
+            return []
+
+        # Always apply filtering based on the threshold
+        symmetry_edges = self._filter_edges(nodes, edges, 'symmetry', self.hyperparameters["symmetry_threshold"])
+        logger.info(f"Edges remaining after symmetry filtering: {len(symmetry_edges)}")
+        edges = symmetry_edges
+        if not edges:
+            logger.info("No edges remaining after symmetry filtering.")
+            return []
+
+        # Always apply filtering based on the threshold
+        embedding_edges = self._filter_edges(nodes, edges, 'embedding', self.hyperparameters["embedding_threshold"])
+        logger.info(f"Edges remaining after embedding filtering: {len(embedding_edges)}")
+        edges = embedding_edges
+        if not edges:
+            logger.info("No edges remaining after embedding filtering.")
+            return []
+
+        # This log should now always reflect the final count after all filters
+        logger.info(f"Edges remaining after filtering: {len(edges)}") 
         return edges
     
-    def _create_graph_from_edges(self, nodes, edges, split_name, batch_size=10000):
+    def _create_graph_from_edges(self, nodes, edges, split_name, node_index_to_subgroup_id):
         """
         Create a graph from a list of edges in batches
         
@@ -886,149 +1000,211 @@ class HierarchicalDeepfakeDataloader(Dataloader):
             nodes: List of nodes
             edges: List of (i, j) tuples for edges
             split_name: Name of the split for logging
-            batch_size: Number of edges to process in each batch
+            node_index_to_subgroup_id: Dictionary mapping node indices to subgroup IDs
             
         Returns:
             HyperGraph object
         """
-        logger.info(f"Creating graph with {len(nodes)} nodes and {len(edges)} edges")
+        logger.info(f"Creating graph with {len(nodes)} nodes and {len(edges)} potential edges")
         
-        # Initialize edge tracking sets
-        edge_objects = []
-        connected_nodes = set()
+        # --- IMPORTANT: Reset edges on existing nodes before adding new ones ---
+        for node in nodes:
+            node.edges = [] # Clear any edges from previous grid search iterations
+        # --- End Reset ---
+
+        # Prepare nodes list for quick lookup
+        all_nodes = list(nodes)
+        edge_objects = [] # List to store the created edge objects
+        connected_nodes = set() # Initialize set to track connected node indices
         
-        # Process edges in batches
-        num_batches = (len(edges) + batch_size - 1) // batch_size
-        
-        for batch_idx in tqdm(range(num_batches), desc=f"Creating {split_name} edges", disable=self.hyperparameters["silent_mode"]):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(edges))
-            edge_batch = edges[start_idx:end_idx]
-            
-            # Create edge objects for this batch
-            batch_edges = []
-            for i, j in edge_batch:
-                edge = self.edge_class(nodes[i], nodes[j], None, 1)
-                nodes[i].add_edge(edge)
-                nodes[j].add_edge(edge)
-                batch_edges.append(edge)
+        # Use a set to track pairs for which an edge has already been created
+        # Store pairs as sorted tuples to handle (i, j) and (j, i) as the same edge
+        added_pairs = set()
+
+        fallback_connections_used = 0
+        for i, j in tqdm(edges, desc=f"Creating {split_name} edges", unit=" edges", disable=self.hyperparameters["silent_mode"]):
+            try:
+                node_i = all_nodes[i]
+                node_j = all_nodes[j]
+                pair = tuple(sorted((i, j))) # Use original indices for pair tracking
                 
-                # Track connected nodes
-                connected_nodes.add(i)
-                connected_nodes.add(j)
-            
-            # Add to overall list
-            edge_objects.extend(batch_edges)
-            
-            # Log progress periodically
-            if (batch_idx + 1) % 10 == 0 or batch_idx == num_batches - 1:
-                logger.info(f"Created {len(edge_objects)}/{len(edges)} edge objects")
-        
+                # Only create edge if this pair hasn't been added yet
+                if pair not in added_pairs:
+                    # Create a single edge object for the pair
+                    edge_label = f"{node_i.get_label()}-{node_j.get_label()}"
+                    edge = self.edge_class(node_i, node_j, edge_label) # node1, node2, x
+                    
+                    # Add the edge to both nodes
+                    node_i.add_edge(edge)
+                    node_j.add_edge(edge)
+                    
+                    # Mark this pair as added
+                    added_pairs.add(pair)
+                    edge_objects.append(edge)
+                    
+                    # Correctly track connected nodes
+                    connected_nodes.add(i)
+                    connected_nodes.add(j)
+                # else: # This case is handled by the added_pairs check
+                    # This indicates a duplicate in filtered_edges, which shouldn't happen ideally
+                    # but this check prevents it from inflating the degree count.
+                    # logger.debug(f"Skipping duplicate edge creation for pair ({i}, {j})")
+                    # pass 
+                    
+            except IndexError:
+                logger.warning(f"Invalid node index encountered in edge list: ({i}, {j}). Skipping edge.")
+            except Exception as e:
+                 logger.error(f"Error processing edge ({i}, {j}): {e}")
+                 
+        logger.info(f"Created {len(edge_objects)} unique edge objects after filtering duplicates.")
+
         # Handle disconnected nodes
         disconnected_nodes = set(range(len(nodes))) - connected_nodes
         if disconnected_nodes:
-            logger.info(f"Found {len(disconnected_nodes)} disconnected nodes, connecting to nearest neighbors")
-            
-            # Connect each disconnected node to a random connected node
-            for i in tqdm(disconnected_nodes, desc="Connecting isolated nodes", disable=self.hyperparameters["silent_mode"]):
-                if not connected_nodes:  # If no connected nodes exist, choose any other node
-                    other_nodes = list(range(len(nodes)))  
-                    other_nodes.remove(i)  # Remove self
-                    if other_nodes:  # If there are other nodes
-                        j = random.choice(other_nodes)
-                        edge = self.edge_class(nodes[i], nodes[j], None, 1)
-                        nodes[i].add_edge(edge)
-                        nodes[j].add_edge(edge)
-                        edge_objects.append(edge)
-                else:  # Connect to an already connected node
-                    j = random.choice(list(connected_nodes))
-                    edge = self.edge_class(nodes[i], nodes[j], None, 1)
-                    nodes[i].add_edge(edge)
-                    nodes[j].add_edge(edge)
-                    edge_objects.append(edge)
-        
-        # Create graph
-        graph = HyperGraph(nodes)
-        
-        # Print graph statistics
-        logger.info(f"\n{split_name.capitalize()} Graph Statistics:")
-        logger.info(f"Total Nodes: {len(nodes)}")
-        logger.info(f"Total Edges: {len(edge_objects)}")
-        
-        # Calculate average edges per node
-        edges_per_node = [len(node.edges) for node in nodes]
-        avg_edges = sum(edges_per_node) / len(nodes) if nodes else 0
-        logger.info(f"Average Edges per Node: {avg_edges:.2f}")
-        
-        # Print degree distribution
-        degree_counts = defaultdict(int)
-        for degree in edges_per_node:
-            degree_counts[degree] += 1
-            
-        # Print most common degrees
-        sorted_degrees = sorted(degree_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        logger.info("Most common node degrees:")
-        for degree, count in sorted_degrees:
-            logger.info(f"  Degree {degree}: {count} nodes ({count/len(nodes)*100:.1f}%)")
-        
-        # Label distribution
-        label_dist = {}
-        for node in nodes:
-            label = node.label
-            label_dist[label] = label_dist.get(label, 0) + 1
-        
-        logger.info("\nLabel Distribution:")
-        for label, count in sorted(label_dist.items()):
-            percentage = (count / len(nodes)) * 100
-            logger.info(f"Label {label}: {count} nodes ({percentage:.1f}%)")
-        
-        # Create CSV files for Cosmograph visualization
-        if self.hyperparameters["visualize"]:
-            # print(node)
-            # print(node.attributes)
-            # sys.exit()
-            # Prepare edge list for CSV using node indices as IDs
-            # print(edges)
-            # print(edges[0])
-            edge_list = [(i, j) for i, j in edges]
-            # print(edge_list[0])
-            # sys.exit()
-            edge_df = pd.DataFrame(edge_list, columns=['source', 'target'])
+            logger.info(f"Found {len(disconnected_nodes)} disconnected nodes, attempting to connect them within subgroups...")
+            fallback_violations = 0
+            fallback_warnings_logged = 0
+            max_fallback_warnings = 5
 
-            # Save edge list to CSV
-            edge_df.to_csv(f'{split_name}_graph_edges.csv', sep=';', index=False)
-            #race_map = {0: 'Light', 1: 'Medium', 2: 'Dark'}
-            gender_map = {0: 'Female', 1: 'Male'}
-            label_map = {0: 'Real', 1: 'Deepfake'}
+            # Create a map from subgroup_id to list of node indices in that subgroup for efficient lookup
+            subgroup_to_nodes = defaultdict(list)
+            if node_index_to_subgroup_id: # Ensure map exists
+                for idx, sub_id in node_index_to_subgroup_id.items():
+                    subgroup_to_nodes[sub_id].append(idx)
+            else:
+                logger.warning("node_index_to_subgroup_id map is missing or empty during fallback connection!")
 
-            # Prepare metadata for CSV using node indices as IDs
-            metadata_list = []
-            for index, node in enumerate(nodes):
-                # Extract attributes for each node
-                attributes = {
-                    'id': index,  # Use index as ID
-                    'Label': label_map.get(int(node.label), 'Unknown'),
-                    'Race': node.attributes.get('Ground Truth Race', 'Unknown'),
-                    'Gender': gender_map.get(int(node.attributes.get('Ground Truth Gender', 'Unknown')), 'Unknown'),
-                    'Age': node.attributes.get('Ground Truth Age', 'Unknown'),
-                    'Emotion': ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'][np.argmax([float(node.attributes.get('emotion_angry', 0)), float(node.attributes.get('emotion_disgust', 0)), float(node.attributes.get('emotion_fear', 0)), float(node.attributes.get('emotion_happy', 0)), float(node.attributes.get('emotion_sad', 0)), float(node.attributes.get('emotion_surprise', 0)), float(node.attributes.get('emotion_neutral', 0))])],
-                    'Symmetry_Eye': node.attributes.get('symmetry_eye', 'Unknown'),
-                    'Symmetry_Mouth': node.attributes.get('symmetry_mouth', 'Unknown'),
-                    'Symmetry_Nose': node.attributes.get('symmetry_nose', 'Unknown'),
-                    'Symmetry_Overall': node.attributes.get('symmetry_overall', 'Unknown'),
-                    'Blur': node.attributes.get('blur', 'Unknown'),
-                    'Brightness': node.attributes.get('brightness', 'Unknown'),
-                    'Contrast': node.attributes.get('contrast', 'Unknown'),
-                    'Compression': node.attributes.get('compression', 'Unknown')
-                }
-                # 'Face_Embedding': node.attributes.get('face_embedding', 'Unknown')
-                metadata_list.append(attributes)
+            edge_list_with_fallback = []
+            edge_set = set()
+            node_degrees = {i: 0 for i in range(len(nodes))}
+            for node_idx in tqdm(disconnected_nodes, desc="Connecting isolated nodes", disable=self.hyperparameters["silent_mode"]):
+                node = all_nodes[node_idx]
+                subgroup_id = node_index_to_subgroup_id.get(node_idx) if node_index_to_subgroup_id else None
 
-            metadata_df = pd.DataFrame(metadata_list)
+                potential_partners = []
+                j = -1 # Initialize partner index
+                
+                # --- Try connecting within the same subgroup --- 
+                if subgroup_id is not None and subgroup_to_nodes:
+                    # Find potential partners within the same subgroup, excluding self
+                    same_subgroup_indices = [idx for idx in subgroup_to_nodes.get(subgroup_id, []) if idx != node_idx]
+                    
+                    if same_subgroup_indices:
+                        # Prefer connecting to already connected nodes within the subgroup
+                        connected_in_subgroup = [idx for idx in same_subgroup_indices if idx in connected_nodes]
+                        if connected_in_subgroup:
+                            potential_partners = connected_in_subgroup
+                        else:
+                            # If no connected nodes in subgroup, connect to any other node in the subgroup
+                            potential_partners = same_subgroup_indices
+                
+                # If partners found within subgroup, choose one randomly
+                if potential_partners:
+                    partner_node_idx = random.choice(potential_partners)
+                    logger.debug(f"Fallback: Connecting disconnected node {node_idx} to disconnected node {partner_node_idx} in same subgroup {subgroup_id}")
+                else:
+                    # If no disconnected nodes in the subgroup, connect to ANY node in the same subgroup (excluding self)
+                    nodes_in_same_subgroup = [idx for idx, sg_id in node_index_to_subgroup_id.items() if sg_id == subgroup_id and idx != node_idx]
+                    if nodes_in_same_subgroup: # Check if there are other nodes in the subgroup
+                        partner_node_idx = random.choice(nodes_in_same_subgroup)
+                        logger.debug(f"Fallback: Connecting disconnected node {node_idx} to connected node {partner_node_idx} in same subgroup {subgroup_id}")
+                    else:
+                        # This case should ideally not happen if subgroups have more than one node, but log if it does.
+                        logger.warning(f"Fallback: Node {node_idx} is alone in subgroup {subgroup_id} and cannot be connected within the subgroup.")
+                        fallback_connections_used += 1
+                        continue # Skip creating an edge if no partner is found within the subgroup
 
-            # Save metadata to CSV
-            metadata_df.to_csv(f'{split_name}_graph_metadata.csv', sep=';', index=False)
-        
+                # Add edge and update degrees
+                new_edge = tuple(sorted((node_idx, partner_node_idx)))
+                if new_edge not in edge_set:
+                    edge_list_with_fallback.append(new_edge)
+                    edge_set.add(new_edge)
+                    node_degrees[node_idx] += 1
+                    node_degrees[partner_node_idx] += 1
+                    fallback_connections_used += 1
+                else:
+                    logger.warning(f"Fallback: Tried to add duplicate edge {new_edge} for node {node_idx}")
+
+            if fallback_connections_used > 0:
+                logger.info(f"Fallback mechanism used for {fallback_connections_used} nodes.")
+
+            # --- Convert edge tuples to Edge objects ---
+            for i, j in edge_list_with_fallback:
+                node_i = all_nodes[i]
+                node_j = all_nodes[j]
+                edge_label = f"{node_i.get_label()}-{node_j.get_label()}"
+                edge = self.edge_class(node_i, node_j, edge_label)
+                node_i.add_edge(edge)
+                node_j.add_edge(edge)
+                edge_objects.append(edge)
+
+        # ----- Final Validation Step ----- #
+        if node_index_to_subgroup_id: # Only validate if map exists
+             logger.info("Starting final edge validation for subgroup constraints...")
+             violation_count = 0
+             warning_limit = 10
+             validation_errors = 0
+             # Create node-to-index map for efficient lookup - assuming Node objects are hashable
+             try:
+                  node_to_index = {node: idx for idx, node in enumerate(all_nodes)}
+                  lookup_possible = True
+             except TypeError:
+                  logger.warning("Node objects are not hashable, cannot create efficient node_to_index map for validation.")
+                  lookup_possible = False
+                  
+             for edge in tqdm(edge_objects, desc="Validating edges", disable=self.hyperparameters["silent_mode"]):
+                 try:
+                     node1, node2 = edge.get_nodes()
+                     idx1, idx2 = -1, -1
+                     
+                     # Find original indices
+                     if lookup_possible:
+                          idx1 = node_to_index.get(node1, -1)
+                          idx2 = node_to_index.get(node2, -1)
+                     else: # Fallback to slower list search if nodes aren't hashable
+                          try:
+                               idx1 = all_nodes.index(node1)
+                               idx2 = all_nodes.index(node2)
+                          except ValueError:
+                               pass # Indices remain -1
+                               
+                     if idx1 == -1 or idx2 == -1:
+                         node1_id = getattr(node1, 'id', 'UNKNOWN') # Attempt to get an ID
+                         node2_id = getattr(node2, 'id', 'UNKNOWN')
+                         logger.error(f"Could not find node instance {node1_id} or {node2_id} in all_nodes list during validation.")
+                         validation_errors += 1
+                         continue
+
+                     subgroup1 = node_index_to_subgroup_id.get(idx1)
+                     subgroup2 = node_index_to_subgroup_id.get(idx2)
+
+                     if subgroup1 is None or subgroup2 is None:
+                         logger.error(f"Missing subgroup ID for node {idx1} ({subgroup1}) or node {idx2} ({subgroup2}) during validation.")
+                         validation_errors += 1
+                         continue
+
+                     if subgroup1 != subgroup2:
+                         violation_count += 1
+                         if violation_count <= warning_limit:
+                             logger.warning(f"Subgroup Violation ({violation_count}): Edge connects node {idx1} (subgroup {subgroup1}) and node {idx2} (subgroup {subgroup2})")
+                         elif violation_count == warning_limit + 1:
+                             logger.warning("Further subgroup violation warnings suppressed.")
+                             
+                 except Exception as e:
+                     logger.error(f"Error during edge validation: {e}", exc_info=True) # Log stack trace
+                     validation_errors += 1
+                     if validation_errors > 100: # Stop validation if too many errors occur
+                         logger.error("Aborting validation due to excessive errors.")
+                         break
+                         
+             if validation_errors > 0:
+                 logger.error(f"Encountered {validation_errors} errors during subgroup validation process.")
+             logger.info(f"Subgroup validation complete. Found {violation_count} edges potentially violating subgroup constraints.")
+        else:
+             logger.info("Skipping subgroup validation as node_index_to_subgroup_id map was not provided.")
+
+        # Create the HyperGraph object
+        graph = HyperGraph(nodes=all_nodes) 
         return graph
         
     def _build_graph_standard(self, nodes, split_name):
@@ -1040,40 +1216,88 @@ class HierarchicalDeepfakeDataloader(Dataloader):
             split_name: Name of the split for logging
             
         Returns:
-            HyperGraph object
+            Tuple[HyperGraph, int]: The constructed graph and the number of edges 
+                                   remaining after attribute filtering (before fallback).
         """
         if not nodes:
             logger.info(f"No nodes for {split_name} split, returning empty graph")
-            return HyperGraph([])
+            return HyperGraph([]), 0
         
         logger.info(f"\nBuilding graph for {split_name} split ({len(nodes)} nodes)...")
         
         # Step 1: Group nodes by race and gender
         race_gender_groups = self._group_by_categorical(nodes)
+        node_index_to_subgroup_id = {} # Initialize the map
         
-        # Step 2: Initialize edges with all connections within each race-gender group
+        # Step 2: Initialize edges with all connections within each race-gender group (and age subgroups)
         all_edges = []
-        for group_indices in race_gender_groups.values():
+        # Iterate through items to get the key (race, gender) and value (indices)
+        for group_key, group_indices in race_gender_groups.items():
+            race, gender = group_key # Unpack the key
+
             # For very large groups, consider age-based subgrouping
-            if len(group_indices) > 1000:
-                subgroups = self._create_age_subgroups(nodes, group_indices)
-                logger.info(f"Large group split into {len(subgroups)} age-based subgroups")
+            # Threshold can be tuned based on performance/memory
+            if len(group_indices) > self.hyperparameters.get("age_split_threshold", 1000):
+                logger.debug(f"Creating age subgroups for {group_key} (size {len(group_indices)})")
+                age_subgroups = self._create_age_subgroups(nodes, group_indices)
+                logger.info(f"Group '{group_key}' split into {len(age_subgroups)} age subgroups")
                 
-                # Connect nodes within each age subgroup
-                for subgroup in subgroups:
-                    if len(subgroup) > 1:
-                        all_edges.extend(combinations(subgroup, 2))
+                # Add these more specific subgroups to the final list
+                for age_subgroup_indices in age_subgroups:
+                    # Assign a unique subgroup ID for each age subgroup
+                    # Using a tuple including the age group identifier (e.g., its first node index for simplicity)
+                    subgroup_id = (race, gender, f"age_group_{age_subgroup_indices[0]}")
+                    for node_idx in age_subgroup_indices:
+                        node_index_to_subgroup_id[node_idx] = subgroup_id
             else:
-                # Connect all nodes within the race-gender group
-                all_edges.extend(combinations(group_indices, 2))
+                # Assign subgroup ID (race, gender) for smaller groups
+                subgroup_id = (race, gender)
+                for node_idx in group_indices:
+                    node_index_to_subgroup_id[node_idx] = subgroup_id
+                    
+            # --- REMOVED OLD EDGE CREATION HERE ---
+            # # Connect all nodes within the race-gender group
+            # if len(group_indices) > 1: # Ensure there's more than one node to connect
+            #     all_edges.extend(combinations(group_indices, 2))
         
-        logger.info(f"Created {len(all_edges)} initial edges based on race-gender grouping")
+        logger.info(f"Generated subgroup mapping for {len(node_index_to_subgroup_id)} nodes across {len(set(node_index_to_subgroup_id.values()))} subgroups.")
+
+        # Step 2.5: Create initial edges STRICTLY within final subgroups
+        all_edges = []
+        nodes_by_subgroup = defaultdict(list)
+        for node_idx, subgroup_id in node_index_to_subgroup_id.items():
+            nodes_by_subgroup[subgroup_id].append(node_idx)
+
+        # DEBUG: Log largest subgroup size
+        if nodes_by_subgroup:
+            max_subgroup_size = max(len(indices) for indices in nodes_by_subgroup.values())
+            logger.info(f"Largest subgroup size: {max_subgroup_size}")
+        else:
+            logger.info("No subgroups found.")
+
+        for subgroup_id, nodes_in_subgroup in nodes_by_subgroup.items():
+            if len(nodes_in_subgroup) > 1:
+                all_edges.extend(combinations(nodes_in_subgroup, 2))
+
+        # DEBUG: Log initial edge count explicitly
+        logger.info(f"Created {len(all_edges)} initial edges strictly within {len(nodes_by_subgroup)} subgroups.")
+        initial_edge_count = len(all_edges)
+        logger.info(f"Total initial edges before filtering: {initial_edge_count}")
         
-        # Step 3: Apply attribute filtering
-        all_edges = self._apply_attribute_filtering(nodes, all_edges, split_name)
+        # Step 3: Apply attribute filtering - PASS THE MAP
+        # Ensure _apply_attribute_filtering accepts and potentially uses the map if needed
+        filtered_edges = self._apply_attribute_filtering(nodes, all_edges, split_name, node_index_to_subgroup_id)
         
-        # Step 4 & 5: Create graph from edges
-        return self._create_graph_from_edges(nodes, all_edges, split_name)
+        # DEBUG: Log edge count immediately before graph creation
+        logger.info(f"Passing {len(filtered_edges)} edges to _create_graph_from_edges")
+        # Store the count of edges after filtering
+        num_edges_after_filter = len(filtered_edges)
+        
+        # Step 4 & 5: Create graph from edges - PASS THE MAP
+        # _create_graph_from_edges uses the map for fallback and validation
+        graph = self._create_graph_from_edges(nodes, filtered_edges, split_name, node_index_to_subgroup_id)
+        
+        return graph, num_edges_after_filter
     
     def _build_graph(self, nodes, split_name):
         """
@@ -1090,4 +1314,35 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         if len(nodes) > 10000:  # For very large datasets
             return self._build_graph_chunked(nodes, split_name)
         else:  # For smaller datasets
-            return self._build_graph_standard(nodes, split_name)
+            graph, _ = self._build_graph_standard(nodes, split_name)
+            return graph
+
+    def get_graph(self, split='train'):
+        """
+        Get the graph for a specific split
+        
+        Args:
+            split: Name of the split to retrieve ('train', 'val', 'test')
+            
+        Returns:
+            HyperGraph object
+        """
+        # Load the graph if not already loaded
+        if not hasattr(self, 'graphs'):
+            self.load()
+        
+        # Return the graph for the specified split
+        return self.graphs[split]
+
+    def get_graph(self, split='train'):
+        """
+        Get the graph for a specific split
+        
+        Args:
+            split: Name of the split to retrieve ('train', 'val', 'test')
+            
+        Returns:
+            HyperGraph object
+        """
+        graph, _ = self._build_graph_standard(nodes, split)
+        return graph

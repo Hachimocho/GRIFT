@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from itertools import product
 from tqdm import tqdm
 import logging  # Add missing import for logging module
+import traceback # Add traceback import
 
 # Add a null handler for silencing logging
 class NullHandler(logging.Handler):
@@ -245,9 +246,9 @@ def cache_nodes(dataloader=None, cache_file="cached_nodes.pkl", nodes_per_split=
 def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symmetry_steps, embedding_steps):
     """Run grid search over threshold parameters and log results"""
     # Create search grid
-    quality_thresholds = np.linspace(.5, 1, quality_steps)
-    symmetry_thresholds = np.linspace(.5, 1, symmetry_steps)
-    embedding_thresholds = np.linspace(.5, 1, embedding_steps)
+    quality_thresholds = np.linspace(.5, .9, quality_steps)
+    symmetry_thresholds = np.linspace(.5, .9, symmetry_steps)
+    embedding_thresholds = np.linspace(.9, .999, embedding_steps)
     
     # Create results dataframe
     results = []
@@ -259,21 +260,17 @@ def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symm
     
     # Create a single progress bar for all combinations
     combinations = list(product(quality_thresholds, symmetry_thresholds, embedding_thresholds))
-    progress_bar = tqdm(total=len(combinations), desc=f"Grid search progress ({len(combinations)} combinations)")
-    processed = 0
-    
-    # Run search
+    progress_bar = tqdm(total=len(combinations), desc="Running grid search")
+
     for q_thresh, s_thresh, e_thresh in combinations:
-        # Format thresholds to 2 decimal places
-        q_thresh_rounded = round(q_thresh, 2)
-        s_thresh_rounded = round(s_thresh, 2)
-        e_thresh_rounded = round(e_thresh, 2)
+        # Round thresholds for cleaner reporting
+        q_thresh_str = round(q_thresh, 2)
+        s_thresh_str = round(s_thresh, 2)
+        e_thresh_str = round(e_thresh, 2)
         
         # Update progress bar with detailed description
-        processed += 1
-        percentage = (processed / len(combinations)) * 100
         progress_bar.set_description(
-            f"Combination {processed}/{len(combinations)} ({percentage:.1f}%) - Testing Q:{q_thresh_rounded} S:{s_thresh_rounded} E:{e_thresh_rounded}"
+            f"Combination {progress_bar.n+1}/{len(combinations)} - Testing Q:{q_thresh_str} S:{s_thresh_str} E:{e_thresh_str}"
         )
         progress_bar.update(0)  # Force refresh without incrementing
         
@@ -284,9 +281,9 @@ def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symm
             test_mode=False,  # Don't limit nodes
             visualize=False,  # Don't create visualizations during search
             show_viz=False,
-            quality_threshold=q_thresh_rounded,
-            symmetry_threshold=s_thresh_rounded,
-            embedding_threshold=e_thresh_rounded,
+            quality_threshold=q_thresh_str,
+            symmetry_threshold=s_thresh_str,
+            embedding_threshold=e_thresh_str,
             silent_mode=True  # Disable internal progress bars and logging during grid search
         )
         
@@ -317,74 +314,39 @@ def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symm
         tqdm.__init__ = silent_tqdm__init__
         
         try:
-            # IMPORTANT: To ensure we get accurate results that match the actual graph construction,
-            # we need to completely suppress all output and capture the logs to detect whether
-            # the fallback mechanism was triggered
-            
-            # Create a custom log handler that will capture log messages we're interested in
-            log_capture = []
-            
-            class CaptureHandler(logging.Handler):
-                def emit(self, record):
-                    log_capture.append(record.getMessage())
-            
-            # Add our capture handler to the logger
-            logger = logging.getLogger('HierarchicalDataloader')
-            capture_handler = CaptureHandler()
-            logger.addHandler(capture_handler)
-            
-            # Build graph with current thresholds - this will now capture log messages
-            graph = dataloader._build_graph(nodes, split_name)
-            
-            # Check if the fallback mechanism was triggered
-            fallback_triggered = any('disconnected nodes' in msg for msg in log_capture)
-            num_edges_after_filter = 0
-            
-            # Look for the log message about quality filtering
-            for msg in log_capture:
-                if 'Quality filtering:' in msg:
-                    # Extract the number of edges that remained after filtering
-                    parts = msg.split('/')
-                    if len(parts) > 1:
-                        num_edges_after_filter = int(parts[0].split(':')[1].strip())
-            
-            # Remove our capture handler
-            logger.removeHandler(capture_handler)
+            # Call _build_graph_standard directly to get the count
+            graph, num_edges_after_filter = dataloader._build_graph_standard(nodes, split_name)
+
+            # Check if fallback was triggered (using the info stored on the graph)
+            fallback_triggered = getattr(graph, 'fallback_triggered', False)
+            fallback_nodes_count = getattr(graph, 'fallback_nodes_count', 0)
+            fallback_pct = (fallback_nodes_count / len(nodes) * 100) if len(nodes) > 0 else 0
             
             # Calculate metrics on the graph after construction (including fallback connections)
-            all_nodes = graph.get_nodes()
+            all_nodes_in_graph = graph.get_nodes()
             total_edges = 0
-            node_degrees = [0] * len(all_nodes)
+            node_degrees = [0] * len(all_nodes_in_graph)
             
-            # Count degrees and then divide by 2 for undirected graphs
-            for node in all_nodes:
-                node_degrees[all_nodes.index(node)] = len(node.edges)
-            
+            # Count degrees using the graph's adjacency list
+            for i, node in enumerate(all_nodes_in_graph):
+                node_degrees[i] = len(node.get_adjacent_nodes())
+
             total_edges = sum(node_degrees) // 2  # Divide by 2 since each edge is counted twice
-            avg_degree = sum(node_degrees) / len(all_nodes) if all_nodes else 0
-            
-            # Count how many disconnected nodes have been connected by the fallback mechanism
-            connected_by_fallback = 0
-            if fallback_triggered:
-                # If all edges were filtered out, then all nodes were connected by the fallback
-                if num_edges_after_filter == 0:
-                    connected_by_fallback = len(all_nodes)
+            avg_degree = sum(node_degrees) / len(all_nodes_in_graph) if all_nodes_in_graph else 0
             
             # Store the node count for this test
-            node_count = len(all_nodes)
+            node_count = len(all_nodes_in_graph)
             
             # Save results with detailed information about the filtering and fallback
             results.append({
-                'quality_threshold': q_thresh_rounded,
-                'symmetry_threshold': s_thresh_rounded,
-                'embedding_threshold': e_thresh_rounded,
+                'quality_threshold': q_thresh_str,
+                'symmetry_threshold': s_thresh_str,
+                'embedding_threshold': e_thresh_str,
                 'average_degree': avg_degree,
                 'total_edges': total_edges,
-                'node_count': node_count,
+                'num_edges_after_filter': num_edges_after_filter, # Use direct count
                 'fallback_triggered': fallback_triggered,
-                'edges_after_filter': num_edges_after_filter,
-                'connected_by_fallback': connected_by_fallback,
-                'fallback_pct': round(connected_by_fallback/node_count*100, 2) if node_count else 0
+                'fallback_pct': fallback_pct
             })
             
             # Write current result to CSV file (append mode)
@@ -399,24 +361,36 @@ def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symm
             progress_bar.set_postfix(avg_degree=f"{avg_degree:.2f}", total_edges=total_edges)
             
         except Exception as e:
-            # Restore all output streams and logging first
+            # Restore output streams TEMPORARILY to print the error
             sys.stdout = original_stdout
             sys.stderr = original_stderr
-            
-            # Restore all logger handlers
-            for logger_name, handlers in original_handlers.items():
-                logging.getLogger(logger_name).handlers = handlers
-            logging.getLogger().handlers = original_root_handlers
-            
-            # Restore tqdm
-            tqdm.__init__ = original_tqdm
-            
-            # Now print the error
-            print(f"Error with thresholds ({q_thresh_rounded}, {s_thresh_rounded}, {e_thresh_rounded}): {e}")
-            continue
-            
+            print(f"\n--- ERROR ENCOUNTERED during grid search for thresholds: Q={q_thresh_str}, S={s_thresh_str}, E={e_thresh_str} ---")
+            traceback.print_exc() # Print the full traceback
+            print("--------------------------------------------------------------------------------")
+            print("Stopping grid search due to error.")
+            # Restore suppressors just in case, although we will exit
+            sys.stdout = null_output
+            sys.stderr = null_output
+            # Re-raise the exception to halt the script
+            raise e 
+            # Optionally, append error and continue:
+            # results.append({
+            #     'quality_threshold': q_thresh_str,
+            #     'symmetry_threshold': s_thresh_str,
+            #     'embedding_threshold': e_thresh_str,
+            #     'average_degree': 0,
+            #     'total_edges': 0,
+            #     'fallback_triggered': False,
+            #     'fallback_pct': 0,
+            #     'num_edges_after_filter': 0,
+            #     'error': f"{e.__class__.__name__}: {e}"
+            # })
+            # # Suppress output again before continuing loop
+            # sys.stdout = null_output
+            # sys.stderr = null_output
+
         finally:
-            # Always restore all output streams and logging
+            # Ensure output streams and loggers are restored
             sys.stdout = original_stdout
             sys.stderr = original_stderr
             
@@ -549,6 +523,7 @@ def visualize_search_results(results_df, output_prefix):
     print(f"Visualizations saved to logs/search_plots/{output_prefix}_*.png")
 
 def main():
+    data_root = "/home/brg2890/major/datasets/ai-face"
     args = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
@@ -577,7 +552,7 @@ def main():
         # Load nodes directly from datasets
         print("Loading nodes from datasets...")
         # Initialize the AIFaceDataset with correct parameters (using positional arguments)
-        dataset = AIFaceDataset("/home/brg2890/major/datasets/ai-face", ImageFileData, {}, AttributeNode, {"threshold": 2})
+        dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": 2})
         
         dataloader = HierarchicalDeepfakeDataloader(
             datasets=[dataset],
@@ -648,8 +623,8 @@ def main():
         print("\nTop 5 threshold configurations by average degree:")
         top_configs = results_df.sort_values('average_degree', ascending=False).head(5)
         for _, row in top_configs.iterrows():
-            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0)}% of nodes]"
-            edges_after_filter = row.get('edges_after_filter', 'unknown')
+            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0):.1f}% nodes]"
+            edges_after_filter = row.get('num_edges_after_filter', 'unknown')
             
             print(f"Quality: {row['quality_threshold']:.2f}, "
                   f"Symmetry: {row['symmetry_threshold']:.2f}, "
@@ -658,13 +633,13 @@ def main():
                   f"Total Edges: {row['total_edges']}, "
                   f"Edges After Filter: {edges_after_filter}, "
                   f"{fallback_info}")
-        
+
         # Print bottom 5 configurations by average degree
         print("\nBottom 5 threshold configurations by average degree:")
         bottom_configs = results_df.sort_values('average_degree').head(5)
         for _, row in bottom_configs.iterrows():
-            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0)}% of nodes]"
-            edges_after_filter = row.get('edges_after_filter', 'unknown')
+            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0):.1f}% nodes]"
+            edges_after_filter = row.get('num_edges_after_filter', 'unknown')
             
             print(f"Quality: {row['quality_threshold']:.2f}, "
                   f"Symmetry: {row['symmetry_threshold']:.2f}, "
@@ -677,32 +652,100 @@ def main():
         return
     
     # Regular mode: Create dataloader and build graphs
-    dataloader = HierarchicalDeepfakeDataloader(
-        datasets=[],  # Empty since we're providing nodes directly
-        edge_class=Edge,
-        test_mode=args.test,
-        visualize=args.visualize,
-        show_viz=args.show,
-        quality_threshold=args.quality_threshold,
-        symmetry_threshold=args.symmetry_threshold,
-        embedding_threshold=args.embedding_threshold
-    )
+    graph_cache_dir = "graph_cache"
+    os.makedirs(graph_cache_dir, exist_ok=True)
+    q_thresh_str = f"{args.quality_threshold:.3f}"
+    s_thresh_str = f"{args.symmetry_threshold:.3f}"
+    e_thresh_str = f"{args.embedding_threshold:.3f}"
     
-    # Create graphs with the loaded nodes
     graph_construction_start = time.time()
-    # Only build edges for train graph, val and test graphs should have no edges
-    train_graph = dataloader._build_graph(train_nodes, "train")
-    val_graph = HyperGraph(val_nodes)  # Create graph with nodes only, no edges
-    test_graph = HyperGraph(test_nodes)  # Create graph with nodes only, no edges
+    train_graph, val_graph, test_graph = None, None, None
+
+    for split_name in ['train', 'val', 'test']:
+        # Extract dataset name from data_root path (Corrected)
+        dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
+        # Determine subset identifier (Corrected)
+        subset_id = f"subset" if args.use_cached and not args.use_full_cache else "full"
+        
+        dataloader = HierarchicalDeepfakeDataloader(
+            datasets=[],  # Empty since we're providing nodes directly
+            edge_class=Edge,
+            test_mode=args.test,
+            visualize=args.visualize,
+            show_viz=args.show,
+            quality_threshold=args.quality_threshold,
+            symmetry_threshold=args.symmetry_threshold,
+            embedding_threshold=args.embedding_threshold
+        )
+        
+        # Determine subset identifier
+        subset_id = f"subset{args.cached_nodes}" if args.cached_nodes else "full"
+        # Create Specific Cache Filename
+        cache_filename = os.path.join(
+            graph_cache_dir,
+            f"{dataset_name}_{split_name}_{subset_id}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}.pkl"
+        )
+
+        # Check/Load Graph Cache
+        graph = None
+        loaded_from_cache = False
+
+        if os.path.exists(cache_filename):
+            try:
+                with open(cache_filename, 'rb') as f:
+                    graph = pickle.load(f)
+                print(f"\nLoaded {split_name} graph from cache: {cache_filename}")
+                loaded_from_cache = True
+            except Exception as e:
+                print(f"\nError loading {split_name} graph from cache file {cache_filename}: {e}. Regenerating.")
+                graph = None
+
+        # Build Graph if not cached
+        if graph is None:
+            print(f"\nBuilding graph for {split_name} split ({len(train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes)} nodes)...")
+            if split_name == 'train':
+                graph = dataloader._build_graph_standard(train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes, split_name)
+            elif split_name == 'val':
+                graph = HyperGraph(val_nodes)  # Create graph with nodes only, no edges
+            else:
+                graph = HyperGraph(test_nodes)  # Create graph with nodes only, no edges
+            
+            # Save Graph to Cache
+            if graph: # Only save if graph build was successful
+                try:
+                    with open(cache_filename, 'wb') as f:
+                        pickle.dump(graph, f)
+                    print(f"Saved {split_name} graph to cache: {cache_filename}")
+                except Exception as e:
+                    print(f"Error saving {split_name} graph to cache file {cache_filename}: {e}")
+            else:
+                print(f"Skipping cache save for {split_name} due to build failure.")
+
+        # Assign the graph to the correct variable
+        if split_name == 'train':
+            train_graph = graph
+        elif split_name == 'val':
+            val_graph = graph
+        else:
+            test_graph = graph
+
     graph_construction_time = time.time() - graph_construction_start
-    
-    # Print timing information
+    total_time = time.time() - node_loading_start
+
+    # Performance Reporting & Validation
     print("\nPerformance:")
-    total_time = node_loading_time + graph_construction_time
     print(f"Total time: {total_time:.2f} seconds")
     print(f"  - Node loading: {node_loading_time:.2f} seconds ({node_loading_time/total_time*100:.1f}%)")
     print(f"  - Graph construction: {graph_construction_time:.2f} seconds ({graph_construction_time/total_time*100:.1f}%)")
-    
+
+    # Validate graph objects
+    if not train_graph or not val_graph or not test_graph:
+        print("\nError: One or more graphs failed to build or load. Cannot proceed with validation.")
+        return
+    if not train_graph.nodes or not val_graph.nodes or not test_graph.nodes:
+        print("\nError: One or more graphs have no nodes. Cannot proceed with validation.")
+        return
+
     total_nodes = (len(train_graph.get_nodes()) + 
                    len(val_graph.get_nodes()) + 
                    len(test_graph.get_nodes()))
@@ -721,8 +764,134 @@ def main():
     print(f"Edge creation speed: {total_edges / graph_construction_time:.2f} edges/second")
     
     # Print average degree (edges per node)
-    print(f"Average degree: {(total_edges * 2) / total_nodes:.2f}")
+    print(f"Average degree: {(total_edges * 2) / len(train_graph.get_nodes()):.2f}")
     
+    # Create graph managers for each split
+    train_manager = NoGraphManager(copy.deepcopy(train_graph))
+    val_manager = NoGraphManager(copy.deepcopy(val_graph))
+    test_manager = NoGraphManager(copy.deepcopy(test_graph))
+    
+    # Define architectures to test
+    cnn_architectures = [
+        "swintransformdf",
+        "resnestdf", 
+        #"effnetdf",
+        #"mesonetdf",
+        #"squeezenetdf",
+        #"vistransformdf",
+        
+    ]
+
+    random.seed(13247987501)
+    
+    # Define traversal types to compare
+    #traversal_types = ["comprehensive", "random", "i-value"]
+    traversal_types = ["i-value"]
+    
+    # Test each architecture with both traversal types
+    for arch in cnn_architectures:
+        print(f"\n{'='*80}")
+        print(f"Testing {arch} architecture")
+        print(f"{'='*80}\n")
+        
+        for traversal_type in traversal_types:
+            print(f"\n{'-'*40}")
+            print(f"Using {traversal_type} traversal")
+            print(f"{'-'*40}\n")
+            
+            try:
+                # Create model with adjusted learning rate
+                model = CNNModel(
+                    f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
+                    arch,
+                    0.001, 
+                    True
+                )
+                
+                # Create trainer based on traversal type
+                if traversal_type == "i-value":
+                    trainer = IValueTrainer(
+                        train_manager,  # Use train manager
+                        None,  # Will be set by get_traversal
+                        None,  # Will be set by get_traversal
+                        [model],
+                        attribute_metadata=attribute_metadata
+                    )
+                else:  # random or comprehensive traversal
+                    trainer = ExperimentTrainer(
+                        train_manager,  # Use train manager
+                        None,  # Will be set by get_traversal
+                        None,  # Will be set by get_traversal
+                        None,  # Will be set by get_traversal
+                        [model],
+                        traversal_type=traversal_type,
+                        attribute_metadata=attribute_metadata
+                    )
+                
+                # Create traversals for each split
+                # Use more pointers and adjust steps based on graph sizes
+                train_size = len(train_manager.graph.get_nodes())
+                val_size = len(val_manager.graph.get_nodes())
+                test_size = len(test_manager.graph.get_nodes())
+                
+                print(f"\nGraph sizes:")
+                print(f"Train: {train_size} nodes")
+                print(f"Val: {val_size} nodes")
+                print(f"Test: {test_size} nodes")
+                
+                # Calculate appropriate number of steps
+                train_steps = 2000
+                val_steps = 1000 
+                test_steps = None  # Use None to visit all test nodes
+                
+                if traversal_type == "comprehensive":
+                    train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                else:
+                    train_traversal = trainer.get_traversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
+                test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
+                
+                print(f"\nTraversal settings:")
+                print(f"Train: {train_steps} steps with 1 pointers")
+                print(f"Val: {val_steps} steps with 1 pointers")
+                print(f"Test: All nodes with 1 pointers")
+                
+                # Update trainer with correct traversals
+                trainer.train_traversal = train_traversal
+                trainer.val_traversal = val_traversal
+                trainer.test_traversal = test_traversal
+                
+                try:
+                    print(f"Training {arch} with {traversal_type} traversal...")
+                    trainer.run(num_epochs=5)
+                    print(f"Testing {arch} with {traversal_type} traversal...")
+                    test_metrics = trainer.test()
+                    
+                    # Handle both single dict and list of dicts for backwards compatibility
+                    if isinstance(test_metrics, list):
+                        for i, metrics in enumerate(test_metrics):
+                            print(f"\nModel {i+1} Results:")
+                            print(f"Loss: {metrics.get('avg_loss', 0.0):.4f}")
+                            print(f"Accuracy: {metrics.get('accuracy', 0.0):.4f}")
+                            print(f"Bias Loss: {metrics.get('avg_bias_loss', 0.0):.4f}")
+                    else:
+                        print("\nTest Results:")
+                        print(f"Loss: {test_metrics.get('avg_loss', 0.0):.4f}")
+                        print(f"Accuracy: {test_metrics.get('accuracy', 0.0):.4f}")
+                        print(f"Bias Loss: {test_metrics.get('avg_bias_loss', 0.0):.4f}")
+                        
+                    print(f"\nCompleted evaluation of {arch} with {traversal_type} traversal")
+                except Exception as e:
+                    print(f"\nError while evaluating {arch} with {traversal_type}: {str(e)}")
+                    log_exception(logfile, *sys.exc_info())
+                    continue  # Continue with next configuration
+                    
+            except Exception as e:
+                print(f"\nError while setting up {arch} with {traversal_type}: {str(e)}")
+                log_exception(logfile, *sys.exc_info())
+                continue  # Continue with next configuration
+
+
     print("\nDone!")
 
 if __name__ == "__main__":
