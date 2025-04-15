@@ -35,6 +35,30 @@ from nodes.atrnode import AttributeNode
 from graphs.HyperGraph import HyperGraph
 from data.ImageFileData import ImageFileData
 
+# Imports for model training/testing
+import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
+from contextlib import contextmanager
+from trainers.ExperimentTrainer import ExperimentTrainer
+from trainers.IValueTrainer import IValueTrainer
+from dataloaders.UnclusteredDeepfakeDataloader import UnclusteredDeepfakeDataloader
+from datasets.AIFaceDataset import AIFaceDataset
+from data.ImageFileData import ImageFileData
+from nodes.atrnode import AttributeNode
+from managers.NoGraphManager import NoGraphManager
+from managers.PerformanceGraphManager import PerformanceGraphManager
+from traversals.ComprehensiveTraversal import ComprehensiveTraversal
+from traversals.IValueTraversal import IValueTraversal
+from traversals.RandomTraversal import RandomTraversal
+from models.CNNModel import CNNModel
+from edges.Edge import Edge
+import copy
+import torch
+import time
+import random
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Test the hierarchical graph construction approach')
     parser.add_argument('--test', action='store_true', help='Run in test mode with limited nodes')
