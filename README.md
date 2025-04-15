@@ -28,7 +28,7 @@ This is a test build. To run the test:
 2. Build the environment using the environment.yml file
 3. Get the AI-face dataset unpacked on your system (https://github.com/Purdue-M2/AI-Face-FairnessBench)
 4. Update the dataset path to your AI-face dataset root
-5. Move the csv files in /csvs to your AI-face dataset root 
+5. Generate quality csvs using the regenerate_quality_csvs.sh script, or request them from me (they're too large for the git repo)
 6. Run the current test build at test_hierarchical.py. The test script supports several options:
 6a. --test: Run in test mode with limited nodes, good for low-compute machines
 6b. --visualize: Generate graph visualization csvs for use in cosmograph
