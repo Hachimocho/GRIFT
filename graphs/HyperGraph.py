@@ -1,5 +1,7 @@
 import random
 import matplotlib.pyplot as plt
+from nodes.Node import Node
+from edges.Edge import Edge
 
 """
 Planning/TODO/brainstorming:
@@ -85,7 +87,9 @@ class HyperGraph():
         Args:
             nodes (list): The nodes that make up the graph.
         """
+        # Store nodes and create a lookup map for quick access by node ID
         self.nodes = nodes
+        self._node_data_map = {node.node_id: node for node in self.nodes} # Use node_id as key
         
     def __len__(self):
         """
@@ -158,8 +162,13 @@ class HyperGraph():
         Args:
             node (Node): The node to add to the hypergraph.
         """
-        self.nodes.append(node)
-        
+        if node.node_id not in self._node_data_map: # Check using node_id
+            self.nodes.append(node)
+            self._node_data_map[node.node_id] = node # Add using node_id
+        else:
+            # Handle duplicate node add attempt if necessary, e.g., log warning
+            print(f"Warning: Node with ID {node.node_id} already exists.")
+            
     def get_random_node(self):
         """
         Get a random node from the hypergraph.
@@ -220,6 +229,64 @@ class HyperGraph():
             current_hop = list(next_hop)
         return k_hop_list
 
+    def get_edge_list(self):
+        """
+        Extracts a list of unique edges represented as tuples of node identifiers.
+        Ensures edges are stored consistently, e.g., (min_id, max_id).
+
+        Returns:
+            list: A list of tuples, where each tuple is (node1_id, node2_id).
+        """
+        edge_set = set()
+        for node in self.nodes:
+            # Access edges directly if Node stores them, or use get_adjacent_nodes/get_edges
+            # Assuming node.edges exists and contains Edge objects
+            if hasattr(node, 'edges'):
+                for edge in node.edges:
+                    node1, node2 = edge.get_nodes()
+                    id1 = node1.node_id # Use node_id
+                    id2 = node2.node_id # Use node_id
+                    # Ensure consistent ordering and add to set to handle duplicates
+                    edge_tuple = tuple(sorted((id1, id2)))
+                    edge_set.add(edge_tuple)
+            else:
+                # Fallback or alternative if edges aren't directly accessible
+                # This part might need adjustment based on actual Node/Edge implementation
+                pass 
+        return list(edge_set)
+
+    def add_edges_from_list(self, edge_list):
+        """
+        Adds edges to the graph based on a list of node identifier pairs.
+
+        Args:
+            edge_list (list): A list of tuples, where each tuple is (node1_id, node2_id).
+        """
+        if not self._node_data_map:
+             # Rebuild map if it wasn't created during init or is empty
+             self._node_data_map = {node.node_id: node for node in self.nodes} # Use node_id
+             
+        edges_added_count = 0
+        for id1, id2 in edge_list: # Assume these are node_ids
+            node1 = self._node_data_map.get(id1)
+            node2 = self._node_data_map.get(id2)
+
+            if node1 and node2:
+                # Create a new Edge object. Assuming Edge takes node1, node2, and optionally data/weight.
+                # Using None for edge data 'x' as it's not stored in the simple list.
+                new_edge = Edge(node1, node2, x=None) 
+                
+                # Add the edge to both nodes. Assumes Node.add_edge exists.
+                if hasattr(node1, 'add_edge') and hasattr(node2, 'add_edge'):
+                    node1.add_edge(new_edge)
+                    node2.add_edge(new_edge)
+                    edges_added_count += 1
+                else:
+                    print(f"Warning: Nodes {id1} or {id2} missing 'add_edge' method.")
+            else:
+                print(f"Warning: Could not find nodes for edge ({id1}, {id2}). Skipping.")
+        print(f"Added {edges_added_count} edges from the list.")
+
     def save_display(self, path):
         """
         Save and display the hypergraph.
@@ -253,5 +320,3 @@ class HyperGraph():
         ax.axis('off')
         fig.savefig(path, dpi=300, bbox_inches='tight')
         plt.close(fig)
-        
-    

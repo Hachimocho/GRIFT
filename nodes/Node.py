@@ -10,7 +10,8 @@ class Node():
         }
     }
     
-    def __init__(self, split, data, edges, label):
+    def __init__(self, node_id, split, data, edges, label):
+        self.node_id = node_id
         self.split = split
         self.data = data
         self.edges = edges
@@ -41,12 +42,12 @@ class Node():
         
     def __eq__(self, other):
         if isinstance(other, Node):
-            return self.data == other.data
+            return self.node_id == other.node_id
         else:
             return False
         
     def __hash__(self):
-        return hash(self.data)
+        return hash(self.node_id)
     
     def get_split(self):
         return self.split

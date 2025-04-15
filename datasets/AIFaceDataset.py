@@ -527,7 +527,7 @@ class AIFaceDataset(Dataset):
                     threshold = self.node_args.get('threshold', 80)
                     
                     # Create the node with all required arguments
-                    node = self.node_class(subset, data, [], label, attributes, threshold)
+                    node = self.node_class(path, subset, data, [], label, attributes, threshold)
                     node.attributes["Target"] = targets[i]
                     node.attributes["subset"] = subset
                     
@@ -625,7 +625,7 @@ class AIFaceDataset(Dataset):
             threshold = node_args.get('threshold', 80)
             
             # Create the node with all required arguments
-            node = node_class(subset, data, [], label, attributes, threshold)
+            node = node_class(path, subset, data, [], label, attributes, threshold)
             node.attributes["Target"] = target
             node.attributes["subset"] = subset
             
@@ -772,7 +772,7 @@ class AIFaceDataset(Dataset):
         
         # Pass args in correct order as required by AttributeNode.__init__
         node_init_start = time.time()
-        node = node_class(subset, data, [], label, attributes, threshold)
+        node = node_class(path, subset, data, [], label, attributes, threshold)
         node_init_time = time.time() - node_init_start
         
         # Store additional info in attributes dict

@@ -965,3 +965,18 @@ These changes ensure that the graph structure is properly rewired based on model
 - **Cause:** Attempting to divide the embedding matrix (shape N, 512) by the norms vector (shape N,) without proper broadcasting.
 - **Fix:** Reshaped the `norms[mask]` vector to `norms[mask][:, np.newaxis]` (shape N, 1) before the division operation. This allows NumPy to correctly broadcast the division across the embedding dimensions.
 - **Impact:** Resolved the `ValueError`, enabling correct vectorized calculation of cosine similarity for embeddings.
+
+## 2025-04-14: Node ID Implementation for Caching
+
+- **Node Class (`nodes/Node.py`):**
+    - Added `node_id` parameter to `__init__`.
+    - Updated `__eq__` and `__hash__` methods to use `self.node_id` for comparisons and hashing.
+- **HyperGraph Class (`graphs/HyperGraph.py`):**
+    - Modified internal `_node_data_map` to use `node.node_id` as keys.
+    - Updated `add_node` to check for duplicates based on `node_id`.
+    - Updated `get_edge_list` to return tuples of `node_id`s.
+    - Updated `add_edges_from_list` to look up nodes using the provided IDs.
+- **AIFaceDataset (`datasets/AIFaceDataset.py`):**
+    - Modified the `Node` instantiation within `create_nodes_threaded.process_slice` and `create_node` to pass the image file `path` as the first argument (`node_id`).
+
+These changes ensure that nodes have a unique, hashable identifier, allowing the edge-list caching mechanism to function correctly.

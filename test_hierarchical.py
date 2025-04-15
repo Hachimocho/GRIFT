@@ -10,7 +10,7 @@ import time
 import argparse
 import os
 import sys
-import pickle
+import dill
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -94,7 +94,7 @@ def load_cached_nodes(cache_file, use_full_cache=False):
     print(f"Loading nodes from cache file: {cache_file}")
     try:
         with open(cache_file, 'rb') as f:
-            cached_data = pickle.load(f)
+            cached_data = dill.load(f)
             
         # Check cache format
         if isinstance(cached_data, dict) and 'full' in cached_data and 'subset' in cached_data:
@@ -221,13 +221,13 @@ def cache_nodes(dataloader=None, cache_file="cached_nodes.pkl", nodes_per_split=
     
     # Use a higher pickle protocol to ensure numpy arrays are properly serialized
     with open(cache_file, 'wb') as f:
-        pickle.dump(cached_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        dill.dump(cached_data, f)
     print("Cache saved successfully!")
     
     # Verify cache immediately to ensure embeddings are properly saved
     print("\nVerifying cache...")
     with open(cache_file, 'rb') as f:
-        verification_data = pickle.load(f)
+        verification_data = dill.load(f)
     
     # Count embeddings in cached data
     print("Embedding statistics after caching:")
@@ -523,6 +523,9 @@ def visualize_search_results(results_df, output_prefix):
     print(f"Visualizations saved to logs/search_plots/{output_prefix}_*.png")
 
 def main():
+    # Set higher recursion depth for pickling large graphs
+    sys.setrecursionlimit(3000) 
+    
     data_root = "/home/brg2890/major/datasets/ai-face"
     args = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -683,7 +686,7 @@ def main():
         # Create Specific Cache Filename
         cache_filename = os.path.join(
             graph_cache_dir,
-            f"{dataset_name}_{split_name}_{subset_id}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}.pkl"
+            f"{dataset_name}_{split_name}_{subset_id}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_edges.pkl"
         )
 
         # Check/Load Graph Cache
@@ -692,43 +695,86 @@ def main():
 
         if os.path.exists(cache_filename):
             try:
+                print(f"\nFound edge cache file: {cache_filename}. Attempting to load.")
+                # 1. Load Nodes (ensure nodes are loaded for the split)
+                split_nodes = train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes
+                if not split_nodes:
+                    raise ValueError(f"Nodes for split '{split_name}' not found or loaded.")
+                
+                # 2. Load Edge List
                 with open(cache_filename, 'rb') as f:
-                    graph = pickle.load(f)
-                print(f"\nLoaded {split_name} graph from cache: {cache_filename}")
+                    edge_list = dill.load(f)
+                    
+                # 3. Reconstruct Graph
+                print(f"Creating graph shell for {split_name} with {len(split_nodes)} nodes.")
+                graph = HyperGraph(split_nodes) 
+                print(f"Adding {len(edge_list)} edges from cache...")
+                graph.add_edges_from_list(edge_list)
+                
+                print(f"Successfully loaded and reconstructed {split_name} graph from edge cache.")
                 loaded_from_cache = True
             except Exception as e:
-                print(f"\nError loading {split_name} graph from cache file {cache_filename}: {e}. Regenerating.")
-                graph = None
+                print(f"\nError loading/reconstructing {split_name} graph from edge cache {cache_filename}: {e}. Regenerating.")
+                graph = None # Ensure regeneration if loading fails
 
-        # Build Graph if not cached
-        if graph is None:
-            print(f"\nBuilding graph for {split_name} split ({len(train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes)} nodes)...")
-            if split_name == 'train':
-                graph = dataloader._build_graph_standard(train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes, split_name)
-            elif split_name == 'val':
-                graph = HyperGraph(val_nodes)  # Create graph with nodes only, no edges
-            else:
-                graph = HyperGraph(test_nodes)  # Create graph with nodes only, no edges
+        # --- Build Graph if not loaded from cache --- 
+        if not loaded_from_cache:
+            # Ensure nodes are available
+            split_nodes = train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes
+            if not split_nodes:
+                 print(f"Error: Nodes for split '{split_name}' not available for building graph.")
+                 continue # Or handle error appropriately
+                 
+            print(f"\nBuilding graph for {split_name} split ({len(split_nodes)} nodes)... No suitable cache found or --use-cached=False.")
+            # Use the dataloader to build the graph
+            # Assuming dataloader.build_graph returns the graph object directly now
+            # If it still returns a tuple, adjust accordingly (e.g., graph = dataloader.build_graph(...)[0] )
+            graph_build_result = dataloader._build_graph_standard(split_nodes, split_name)
             
-            # Save Graph to Cache
+            # Handle potential tuple return from build_graph_standard
+            if isinstance(graph_build_result, tuple):
+                 graph = graph_build_result[0] 
+                 # Potentially handle other elements in the tuple if needed
+            else:
+                 graph = graph_build_result
+            
+            # --- Save Edge List to Cache --- 
             if graph: # Only save if graph build was successful
                 try:
+                    print(f"Extracting edge list for {split_name} graph...")
+                    edge_list_to_save = graph.get_edge_list()
+                    print(f"Saving {len(edge_list_to_save)} edges for {split_name} graph to cache: {cache_filename}")
                     with open(cache_filename, 'wb') as f:
-                        pickle.dump(graph, f)
-                    print(f"Saved {split_name} graph to cache: {cache_filename}")
+                        dill.dump(edge_list_to_save, f) # Save the list, no recurse needed
+                    print(f"Saved {split_name} edge list to cache.")
                 except Exception as e:
-                    print(f"Error saving {split_name} graph to cache file {cache_filename}: {e}")
+                    print(f"Error extracting or saving {split_name} edge list to cache file {cache_filename}: {e}")
             else:
                 print(f"Skipping cache save for {split_name} due to build failure.")
 
-        # Assign the graph to the correct variable
-        if split_name == 'train':
-            train_graph = graph
-        elif split_name == 'val':
-            val_graph = graph
+        # --- Store Graph --- 
+        # This part assumes 'graph' holds the final HyperGraph object, either loaded or built
+        if graph:
+             print(f"[Debug] Type of graph object for {split_name} before assignment: {type(graph)}")
+             if split_name == 'train':
+                 train_graph = graph # Assign the graph object
+             elif split_name == 'val':
+                 val_graph = graph
+             else:
+                 test_graph = graph
         else:
-            test_graph = graph
+            print(f"Error: Failed to load or build graph for {split_name}. Skipping assignment.")
+            # Decide how to handle this - exit, continue, assign None? 
+            # Assigning None might cause issues later if not checked
+            if split_name == 'train': train_graph = None
+            elif split_name == 'val': val_graph = None
+            else: test_graph = None 
 
+    # Check if all graphs were loaded/built successfully before proceeding
+    if train_graph is None or val_graph is None or test_graph is None:
+        print("\nError: One or more graphs could not be loaded or built. Exiting.")
+        sys.exit(1)
+        
     graph_construction_time = time.time() - graph_construction_start
     total_time = time.time() - node_loading_start
 

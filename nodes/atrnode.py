@@ -10,8 +10,8 @@ class AttributeNode(Node):
         }
     }
     
-    def __init__(self, split, data, edges, label, attributes, threshold):
-        super().__init__(split, data, edges, label)
+    def __init__(self, node_id, split, data, edges, label, attributes, threshold):
+        super().__init__(node_id, split, data, edges, label)
         
         self.attributes = attributes
         self.threshold = threshold
