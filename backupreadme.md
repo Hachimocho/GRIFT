@@ -7,7 +7,7 @@ The general idea is as follows:
 - This training process is repeated for several epochs, and the model is deployed on validation and testing nodes to evaluate its performance.
 
 This training process is a generic implementation, and can be used for any dataset and model.
-In fact, it is designed to be as general as possible, using a module-based approach.
+In fact, it is designed to be as general as possible, using a module-based approach
 
 - Data: The data is represented by a class called Data, used to manage data points and their attributes as well as dynamically loading data from a source.
 - Node: The node is represented by a class called Node, used to store Data objects and their connections to other nodes.
@@ -23,28 +23,19 @@ In fact, it is designed to be as general as possible, using a module-based appro
 The framework is designed to be modular and extensible, allowing for easy integration of new data, node, edge, graph, manager, model, traversal, dataset, dataloader, and trainer classes.
 This makes it easy to experiment with different data sources, models, and traversal methods without having to modify the core framework.
 
-This is a test build. To run the test:
-1. Get the anaconda or mamba package managers running on your system
-2. Build the environment using the environment.yml file
-3. Get the AI-face dataset unpacked on your system (https://github.com/Purdue-M2/AI-Face-FairnessBench)
-4. Update the dataset path to your AI-face dataset root
-5. Move the csv files in /csvs to your AI-face dataset root 
-6. Run the current test build at test_hierarchical.py. The test script supports several options:
-6a. --test: Run in test mode with limited nodes, good for low-compute machines
-6b. --visualize: Generate graph visualization csvs for use in cosmograph
-6c. --show: Deprecated due to switching to cosmograph
-6d. --quality-threshold: Set the quality threshold edge construction in the graph
-6e. --symmetry-threshold: Set the symmetry threshold edge construction in the graph
-6f. --embedding-threshold: Set the embedding threshold edge construction in the graph
-6g. --cache-nodes: Cache nodes so node loading can be skipped next time
-6h. --cache-full: Deprecated due to node caching changes
-6i. --use-cached: Use previously cached nodes instead of loading from dataset
-6j. --use-full-cache: Load the full dataset from cache instead of the subset
-6k. --cached-nodes: Number of nodes to cache per split when not using full cache
-6l. --cache-file: Path to cache file for saving/loading nodes
-6m. --search: Run grid search over threshold combinations
-6n. --search-split: Split to use for grid search (default: train)
-6o. --quality-steps: Number of steps for quality threshold grid search (default: 5)
-6p. --symmetry-steps: Number of steps for symmetry threshold grid search (default: 5)
-6q. --embedding-steps: Number of steps for embedding threshold grid search (default: 5)
-6r. --search-results: File to save search results to (default: threshold_search_results.csv)
+Each module has a set of hyperparameters that can be tuned to optimize the performance of the framework, as well as a set of tags that can be used to identify what other modules can be used with it.
+
+We also use integration with wandb to optimize the training process in several ways. It allows for distriubed training using a unique lock system that allows systems to claim sweeps to run, as well as doing hyperparameter optimization for each module. 
+
+The module combinations themselves are also optimized using ACE, the Adaptive Combination Engine. This is designed to find the best combination of modules for a given task, by scoring tested combination of modules based on their performance on a validation set and using these scores to predict the performance of unseen combinations.
+
+This is a work in progress. The goals for the project are, in the following order:
+1. Finish the test.py implementation to allow for easy testing of the framework
+2. Finish implementing IValueTraversal to allow for intelligent traversal of the graph based on the information content of nodes
+3. Finish the ACE implementation to allow for easy optimization of the module combinations
+4. Finish the training, agent, and control server implementations to allow for easy distributed training of models
+5. Complete comprehensive tests to ensure that the framework is working correctly
+6. Update all modules with correct tags so that they are compatible with the framework
+7. Complete the documentation for the framework
+8. Add automated tests so that new modules can be automatically tested and verified to work with all modules that their tags allow for
+9. Follow up work in implementing more modules and improving both parts of the optimization process.

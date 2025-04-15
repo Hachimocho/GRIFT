@@ -753,7 +753,7 @@ def main():
             # Use the dataloader to build the graph
             # Assuming dataloader.build_graph returns the graph object directly now
             # If it still returns a tuple, adjust accordingly (e.g., graph = dataloader.build_graph(...)[0] )
-            graph_build_result = dataloader._build_graph_standard(split_nodes, split_name)
+            graph_build_result = dataloader._build_graph_standard(split_nodes, split_name) if split_name == 'train' else HyperGraph(split_nodes)
             
             # Handle potential tuple return from build_graph_standard
             if isinstance(graph_build_result, tuple):
@@ -835,11 +835,13 @@ def main():
     
     # Print average degree (edges per node)
     print(f"Average degree: {(total_edges * 2) / len(train_graph.get_nodes()):.2f}")
+
+    sys.exit()
     
     # Create graph managers for each split
-    train_manager = NoGraphManager(copy.deepcopy(train_graph))
-    val_manager = NoGraphManager(copy.deepcopy(val_graph))
-    test_manager = NoGraphManager(copy.deepcopy(test_graph))
+    train_manager = NoGraphManager(train_graph)
+    val_manager = NoGraphManager(val_graph)
+    test_manager = NoGraphManager(test_graph)
     
     # Define architectures to test
     cnn_architectures = [
