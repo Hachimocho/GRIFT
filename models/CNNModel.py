@@ -4,6 +4,7 @@ import cv2
 from models.Model import Model
 from torchvision import transforms
 import importlib
+import os
 
 class CNNModel(Model):
     tags = ["cnn", "deepfakes"]
@@ -14,8 +15,9 @@ class CNNModel(Model):
             "amsgrad": {"values": [True, False]}
         }
     }
-    def __init__(self, save_path, model_name, lr, amsgrad):
+    def __init__(self, save_path, model_name, lr, amsgrad, device):
         super().__init__(save_path)
+        self.device = device  # Store the device
         ActiveModel = importlib.import_module(f'models.detectors.{model_name}').ModelOut
         self.model = ActiveModel(
             pretrained=True,  # Use pretrained weights
@@ -23,7 +25,7 @@ class CNNModel(Model):
             output_classes=1,
             classification_strategy='binary'
         )  
-        self.model.model.cuda()
+        self.model.model.to(self.device) # Move model to the specified device
         self.loss = nn.BCEWithLogitsLoss()
         
         # Add weight decay for regularization
@@ -113,8 +115,8 @@ class CNNModel(Model):
         if mode == "train":
             for model in self.models:
                 model.train()
-            y_hat = self.model(torch.stack(batch).cuda())
-            y = torch.tensor(y).unsqueeze(1).cuda()
+            y_hat = self.model(torch.stack(batch).to(self.device))
+            y = torch.tensor(y).unsqueeze(1).to(self.device)
             loss = self.loss(y_hat, y.float())
             loss.backward()
             self.optim.step()
@@ -134,15 +136,15 @@ class CNNModel(Model):
         # Perform validation
         elif mode == "val":
             self.model.eval()
-            y_hat = self.model(torch.stack(batch).cuda())
-            y = torch.tensor(y).unsqueeze(1).cuda()
+            y_hat = self.model(torch.stack(batch).to(self.device))
+            y = torch.tensor(y).unsqueeze(1).to(self.device)
             loss = self.loss(y_hat, y.float())
         
         # Run testing 
         elif mode == "test":
             self.model.eval()
-            y_hat = self.model(torch.stack(batch).cuda())
-            y = torch.tensor(y).unsqueeze(1).cuda()
+            y_hat = self.model(torch.stack(batch).to(self.device))
+            y = torch.tensor(y).unsqueeze(1).to(self.device)
             loss = self.loss(y_hat, y.float())
             
             
@@ -156,14 +158,29 @@ class CNNModel(Model):
             
         self.stored_mode = mode
         
-    def save_checkpoint(self):
-        torch.save(self.model.model.state_dict(), self.save_path)
-        
-    def load_checkpoint(self):
-        self.model.model.load_state_dict(torch.load(self.save_path))
+    def save_checkpoint(self, filepath):
+        """Saves the model and optimizer state dictionaries to a file."""
+        checkpoint = {
+            'model_state_dict': self.model.model.state_dict(),
+            'optimizer_state_dict': self.optim.state_dict(),
+        }
+        torch.save(checkpoint, filepath)
+        # print(f"CNNModel checkpoint saved to {filepath}") # Optional: for debugging
+
+    def load_checkpoint(self, filepath):
+        """Loads the model and optimizer state dictionaries from a file."""
+        if not os.path.exists(filepath):
+            print(f"Warning: Checkpoint file not found at {filepath}. Skipping load.")
+            return
+            
+        checkpoint = torch.load(filepath, map_location=self.device) # Load to the correct device
+        self.model.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optim.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.model.model.to(self.device) # Ensure model is on the correct device after loading
+        # print(f"CNNModel checkpoint loaded from {filepath}") # Optional: for debugging
 
     def save(self):
-        self.save_checkpoint()
+        self.save_checkpoint(self.save_path)
         
     def load(self):
-        self.load_checkpoint()
+        self.load_checkpoint(self.save_path)

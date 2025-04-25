@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from torch.cuda.amp import GradScaler
 from nodes.atrnode import AttributeNode
+from utils.attribute_utils import AttributeMetadata, AttributeBiasLoss
 
 #1
 """
@@ -31,72 +32,6 @@ The idea of I value traversal is as follows:
    inter-attribute and intra-attribute bias
 """
 
-class AttributeMetadata:
-    def __init__(self, name, attr_type, possible_values=None):
-        self.name = name
-        self.attr_type = attr_type  # 'categorical' or 'continuous'
-        self.possible_values = possible_values  # For categorical attributes
-        self.value_counts = defaultdict(int)  # Track distribution of values
-        self.predictions = defaultdict(list)  # Track predictions per value
-
-class AttributeBiasLoss(nn.Module):
-    def __init__(self, attribute_metadata, attr_map):
-        super(AttributeBiasLoss, self).__init__()
-        self.attribute_metadata = attribute_metadata
-        self.attr_map = attr_map
-        
-    def forward(self, predictions, node_attrs_list):
-        """Calculate bias loss based on attribute predictions."""
-        if isinstance(node_attrs_list, torch.Tensor) or not node_attrs_list:
-            return torch.zeros(1, device=predictions.device)
-            
-        batch_size = predictions.size(0)
-        
-        # Get predictions per sample
-        pred_probs = predictions.sigmoid()
-        
-        # Group predictions by attribute values
-        attr_predictions = defaultdict(lambda: defaultdict(list))
-        
-        # First pass: collect predictions for each attribute value
-        for i, node_attrs in enumerate(node_attrs_list):
-            if not isinstance(node_attrs, dict):
-                continue
-                
-            for attr_name, attr_val in node_attrs.items():
-                if attr_name in self.attr_map:
-                    attr_predictions[attr_name][attr_val].append(pred_probs[i])
-        
-        total_loss = torch.tensor(0.0, device=predictions.device)
-        num_comparisons = 0
-        
-        # Second pass: calculate bias loss between different attribute values
-        for attr_name, value_preds in attr_predictions.items():
-            if len(value_preds) < 2:  # Need at least 2 different values to compare
-                continue
-                
-            # Calculate mean prediction for each attribute value
-            value_means = {}
-            for value, preds in value_preds.items():
-                if preds:
-                    value_means[value] = torch.stack(preds).mean()
-            
-            # Compare means between different attribute values
-            values = list(value_means.keys())
-            for i in range(len(values)):
-                for j in range(i + 1, len(values)):
-                    val1, val2 = values[i], values[j]
-                    mean1, mean2 = value_means[val1], value_means[val2]
-                    # Bias loss is the squared difference between means
-                    bias_loss = F.mse_loss(mean1, mean2)
-                    total_loss += bias_loss
-                    num_comparisons += 1
-        
-        # Return average bias loss
-        if num_comparisons > 0:
-            return total_loss / num_comparisons
-        return torch.zeros(1, device=predictions.device)
-
 class IValueTrainer(Trainer):
     """
     IValueTrainer is a subclass of Trainer that uses DQN to predict I-values
@@ -105,80 +40,143 @@ class IValueTrainer(Trainer):
     """
     tags = ["i-value"]
     
-    def __init__(self, graphmanager, train_traversal, val_traversal, models, attribute_metadata=None):
-        """Initialize the trainer with memory optimizations."""
-        super().__init__(graphmanager, train_traversal, val_traversal, models)
-        self.attribute_metadata = attribute_metadata
-        
-        # Memory optimization settings
-        self.batch_size = 32  # Reduced from 128
-        self.mini_batch_size = 8  # Reduced from 16
-        self.gradient_accumulation_steps = 8  # Increased from 4 for more gradual updates
-        self.max_nodes_per_epoch = 10000  # Increased to match validation size
-        self.steps = 0  # Track total steps for gradient accumulation
-        
-        # Initialize scaler for mixed precision training
-        self.scaler = GradScaler()
-        
-        # Enable memory-efficient attention if using transformer models
-        torch.backends.cuda.enable_mem_efficient_sdp(True)
-        
-        # Set PyTorch memory allocator settings
-        if hasattr(torch.cuda, 'memory'):
-            torch.cuda.memory.set_per_process_memory_fraction(0.8)  # Reserve some GPU memory
-            
-        # Initialize DQN models for each split
-        input_dim = 2  # Base features: label and degree
-        if attribute_metadata:
-            for attr in attribute_metadata:
-                if attr['type'] == 'categorical':
-                    input_dim += len(attr.get('possible_values', []))
-                else:
-                    input_dim += 1
-                    
-        self.dqns = [DQNModel(input_dim).cuda() for _ in range(len(models))]
-        
-        # Connect DQN models to graph manager for performance tracking
-        if hasattr(self.graphmanager, 'set_i_value_predictor'):
-            self.graphmanager.set_i_value_predictor(self.dqns[0])  # Use first DQN model
-            
-        # Store attribute metadata
+    def __init__(self, graphmanager, models, device, train_traversal=None, # Allow None initially
+                 attribute_metadata=None, use_bias_loss_in_training=False,
+                 bias_loss_weight=1.0, loss_fn=None):
+        """Initialize the trainer with memory optimizations and DQN setup for embeddings."""
+        super().__init__(graphmanager, train_traversal, models, attribute_metadata=attribute_metadata)
+        print("Initializing IValueTrainer...")
+        self.device = device  # Store the device
+
+        # Loss function setup
+        if loss_fn is None:
+            raise ValueError("loss_fn must be provided to IValueTrainer")
+        self.criterion = loss_fn
+
+
+        # Extract categorical attributes for tracking
+        self.categorical_attrs_for_tracking = []
+        if self.attribute_metadata:
+            self.categorical_attrs_for_tracking = [
+                attr['name'] for attr in self.attribute_metadata if attr.get('type') == 'categorical'
+            ]
+            if not self.categorical_attrs_for_tracking:
+                 print("IValueTrainer: No categorical attributes found in metadata for tracking.")
+            else:
+                 print(f"IValueTrainer: Will track distribution for attributes: {self.categorical_attrs_for_tracking}")
+
+
+        # Process attribute_metadata dict list into AttributeMetadata objects FIRST
         if attribute_metadata is not None:
+            print("Processing attribute metadata...")
             self.attribute_metadata = [
                 AttributeMetadata(
                     name=attr['name'],
                     attr_type=attr['type'],
-                    possible_values=attr['possible_values']
+                    possible_values=attr.get('possible_values', None)
                 )
                 for attr in attribute_metadata
             ]
-            
             # Create attribute map for efficient lookup
             self.attr_map = {attr.name: attr for attr in self.attribute_metadata}
-            
             # Bias measurement and correction
-            self.bias_loss = AttributeBiasLoss(self.attribute_metadata, self.attr_map).cuda()
-            self.bias_weight = 0.1  # Weight for bias loss term
-            
-            # Track prediction statistics per attribute value
-            self.prediction_stats = defaultdict(lambda: defaultdict(list))
-            
-            # Setup logging
-            self.log_dir = Path("logs")
-            self.log_dir.mkdir(exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file = self.log_dir / f"ivalue_trainer_{timestamp}.json"
-            self.metrics_history = []
-            
-            # Prefetch queue for data loading
-            self.prefetch_queue = Queue(maxsize=3)
-            
-            # Cache for computed features
-            self.feature_cache = {}
-            
-            # Accumulate gradients for larger effective batch
-            self.gradient_accumulation_steps = 4
+            self.bias_loss = AttributeBiasLoss(self.attribute_metadata, self.attr_map).cuda() # Use self.attribute_metadata
+            self.bias_weight = bias_loss_weight  # Weight for bias loss term
+        else:
+            print("No attribute metadata provided.")
+            self.attribute_metadata = None
+            self.attr_map = {}
+            self.bias_loss = None
+            self.bias_weight = 0.0
+
+        self.embedding_dim = 512 # Define expected embedding dimension
+        self.feature_dim = None # Will be calculated
+
+        # Memory optimization settings
+        self.batch_size = 32  # Batch size for primary model training steps
+        self.mini_batch_size = 8 # Potentially unused? Check usage.
+        # Grad accumulation likely applies to primary model training
+        self.gradient_accumulation_steps = 8
+        self.max_nodes_per_epoch = 10000
+        self.prefetch_workers = 4 # Number of threads for prefetching data
+        self.scaler = GradScaler() # For mixed precision training of primary model
+
+        # Initialize prediction stats (optional, keep if used)
+        self.prediction_stats = defaultdict(lambda: defaultdict(list)) # Restore original prediction stats structure
+
         
+
+        # Setup DQN Models
+        self.dqns = []
+        # Check the processed self.attribute_metadata
+        if self.attribute_metadata is not None:
+            # Get a sample node to determine feature dimension
+            try:
+                # Get the graph directly from the manager (assumed to be the training graph)
+                train_graph = self.graphmanager.get_graph() # Corrected call
+                if train_graph is None or len(train_graph.nodes) == 0: # Check graph/nodes directly
+                     print("Warning: Train graph not available or empty. Cannot determine DQN feature dimension.")
+                     sample_node = None
+                else:
+                     # Use list conversion for safer iteration if underlying structure is complex
+                     sample_node = list(train_graph.get_nodes())[0]
+
+                if sample_node:
+                    sample_features, sample_embedding = self._get_dqn_features(sample_node)
+
+                    if sample_features is not None:
+                        self.feature_dim = sample_features.shape[0]
+                        print(f"Determined DQN feature dimension (excluding embedding): {self.feature_dim}")
+                        # Instantiate DQN for each primary model
+                        for i in range(len(self.models)):
+                            print(f"Initializing DQN for primary model {i}")
+                            dqn = DQNModel(
+                                feature_dim=self.feature_dim, 
+                                embedding_dim=self.embedding_dim,
+                                device=self.device  # Pass the device
+                            )
+                            self.dqns.append(dqn) # DQNModel handles moving itself to device
+                    else:
+                        print("Warning: Could not determine feature dimension from sample node. DQN not initialized.")
+                        self.dqns = None # Use None to indicate no DQNs
+                else:
+                    print("Warning: Could not get a sample node. DQN not initialized.")
+                    self.dqns = None
+            except StopIteration: # This might not be needed if we check length/use list
+                print("Warning: Train graph has no nodes (StopIteration). DQN not initialized.")
+                self.dqns = None
+            except Exception as e:
+                print(f"Error initializing DQN: {e}. DQN not initialized.")
+                self.dqns = None
+        else:
+            print("Warning: No attribute metadata provided. DQN not initialized.")
+            self.dqns = None
+
+        # Setup logging
+        self.log_dir = Path("logs")
+        self.log_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = self.log_dir / f"ivalue_trainer_{timestamp}.json"
+        self.metrics_history = []
+
+        # Prefetch queue for data loading
+        # Queue size relative to workers and batch size
+        self.prefetch_queue = Queue(maxsize=self.prefetch_workers * 2)
+
+        # Cache for computed features (optional, consider LRUCache for size limit)
+        self.feature_cache = {}
+
+        # Gradient accumulation steps defined above
+
+        self.use_bias_loss_in_training = use_bias_loss_in_training
+    # Add this method to the class
+    def set_train_traversal(self, train_traversal):
+        """Sets the training traversal strategy after initialization."""
+        if self.train_traversal is not None:
+            print("Warning: Overwriting existing train_traversal in IValueTrainer.")
+        self.train_traversal = train_traversal
+        print(f"IValueTrainer: train_traversal set to {type(train_traversal).__name__}")
+
     def _clear_memory(self):
         """Clear unused memory."""
         if torch.cuda.is_available():
@@ -196,33 +194,69 @@ class IValueTrainer(Trainer):
     def _get_dqn_features(self, node):
         """Extract attribute features for DQN input."""
         try:
+            # Ensure node is the expected type (e.g., AttributeNode)
+            if not isinstance(node, AttributeNode):
+                print(f"Warning: Expected AttributeNode, got {type(node)}. Cannot extract DQN features.")
+                return None, None
+
             # Get all attributes as a list
-            features = []
-            
-            # Add basic node features
-            features.append(float(node.label))  # Label (0 or 1)
-            features.append(len(node.get_adjacent_nodes()) / 100.0)  # Normalized degree
-            
-            # Add attribute features if available
-            if hasattr(node, 'attributes'):
+            features_list = []
+            embedding_data = None
+
+            # Extract standard attributes based on metadata
+            # Check if attribute_metadata was successfully processed in __init__
+            if self.attribute_metadata:
                 for attr_meta in self.attribute_metadata:
-                    attr_name = attr_meta.name
-                    if attr_name in node.attributes:
-                        value = node.attributes[attr_name]
-                        if attr_meta.attr_type == 'categorical':
-                            # One-hot encode categorical values
-                            if attr_meta.possible_values:
-                                for possible_value in attr_meta.possible_values:
-                                    features.append(1.0 if value == possible_value else 0.0)
-                        else:  # continuous
-                            features.append(float(value))
-            
-            # Convert to tensor and keep on CPU initially
-            return torch.tensor(features, dtype=torch.float32)
-            
+                    attr_name = attr_meta.name # Use AttributeMetadata object properties
+                    attr_type = attr_meta.attr_type
+
+                    # Special handling for face embedding
+                    if attr_name == 'face_embedding':
+                        embedding_data = node.attributes.get(attr_name)
+                        continue # Skip adding embedding to features_list here
+
+                    # Handle other attributes
+                    if attr_type == 'categorical':
+                        # One-hot encode categorical values
+                        if attr_meta.possible_values:
+                            for possible_value in attr_meta.possible_values:
+                                features_list.append(1.0 if node.attributes.get(attr_name) == possible_value else 0.0)
+                    else:  # continuous
+                        try:
+                            features_list.append(float(node.attributes.get(attr_name, 0))) # Default to 0 if missing
+                        except (TypeError, ValueError) as e:
+                            # This should ideally not happen if embedding is handled above,
+                            # but catch potential errors with other numerical types.
+                            print(f"Warning: Could not convert attribute '{attr_name}' value '{node.attributes.get(attr_name)}' to float: {e}. Using 0.")
+                            features_list.append(0.0)
+            elif isinstance(node, AttributeNode): # Fallback if no metadata, but node is AttributeNode
+                # Fallback: Use default features if no metadata (e.g., label, degree)
+                # This part might need adjustment based on expected fallback behavior
+                features_list.append(float(node.label))  # Label (0 or 1)
+                features_list.append(len(node.get_adjacent_nodes()) / 100.0)  # Normalized degree
+
+            # Convert features list to tensor
+            try:
+                features_tensor = torch.tensor(features_list, dtype=torch.float32)
+            except Exception as e:
+                print(f"Error converting features list to tensor: {e}. List: {features_list}")
+                features_tensor = None
+
+            # Handle embedding: convert to tensor or create zero tensor if missing/invalid
+            embedding_tensor = None
+            if embedding_data is not None:
+                try:
+                    embedding_tensor = torch.tensor(embedding_data, dtype=torch.float32)
+                except Exception as e:
+                    print(f"Error converting embedding to tensor: {e}. Using zeros.")
+                    embedding_tensor = torch.zeros(self.embedding_dim, dtype=torch.float32)
+
+            # Return both tensors
+            return features_tensor, embedding_tensor
+
         except Exception as e:
-            print(f"Error extracting DQN features: {str(e)}")
-            return None
+            print(f"Error extracting DQN features: {e}")
+            return None, None # Return None to indicate failure
 
     def _get_cnn_features(self, node):
         """Extract image features for CNN input."""
@@ -242,20 +276,57 @@ class IValueTrainer(Trainer):
         return batched_image
     
     def get_i_value(self, node, model_idx):
-        """Calculate I-value as 1-Q for a given node."""
+        """Predicts the I-value for a given node using the specified DQN model.
+        I-value = 1 - Q_value(state), where state comes from node features.
+        """
         try:
-            # Get node features
-            node_features = self._get_dqn_features(node)
-            if node_features is None:
+            # Check if DQN models are available
+            if self.dqns is None or model_idx >= len(self.dqns):
+                print(f"Warning: DQN model {model_idx} not available for I-value calculation.")
+                return 0.0 # Default I-value if DQN doesn't exist
+
+            # Get the target DQN model and its device
+            dqn_model = self.dqns[model_idx]
+            target_device = dqn_model.device # Get device from the DQN model
+
+            # Retrieve features and embedding for the node
+            features_tensor, embedding_tensor = self._get_dqn_features(node)
+
+            # Check if feature extraction was successful
+            if features_tensor is None:
+                print(f"Warning: Could not extract features for node {node.node_id}. Cannot calculate I-value.")
                 return 0.0
-                
-            # Forward pass through DQN
-            with torch.no_grad():
-                # DQN will handle moving tensor to correct device
-                q_value = self.dqns[model_idx](node_features)
-                
-            # Convert to scalar and calculate I-value
-            q_value = q_value.item()
+
+            # Handle potentially missing embedding tensor
+            if embedding_tensor is None:
+                # Create a zero tensor with the expected embedding dimension if missing
+                embedding_tensor = torch.zeros(self.embedding_dim, device=target_device)
+            elif not isinstance(embedding_tensor, torch.Tensor):
+                # Ensure it's a tensor if it exists but isn't one already
+                try:
+                    embedding_tensor = torch.tensor(embedding_tensor, dtype=torch.float32, device=target_device)
+                except Exception as e:
+                    print(f"Error converting embedding to tensor for node {node.node_id}: {e}. Using zeros.")
+                    embedding_tensor = torch.zeros(self.embedding_dim, device=target_device)
+            else:
+                # Ensure existing tensor is on the correct device
+                embedding_tensor = embedding_tensor.to(target_device)
+
+            # Features should already be a tensor from _get_dqn_features
+            features_tensor = features_tensor.to(target_device)
+
+            # Add batch dimension
+            features_tensor = features_tensor.unsqueeze(0)
+            # Unsqueeze embedding tensor AFTER ensuring it's on the correct device
+            embedding_tensor = embedding_tensor.unsqueeze(0)
+
+            # Ensure DQN is on the correct device
+            q_value = dqn_model.predict_i_value(features_tensor.to(dqn_model.device), 
+                                                 embedding_tensor.to(dqn_model.device))
+
+            # I-value = 1 - Q-value (assuming Q is normalized or represents probability-like value)
+            # Ensure Q-value is detached and moved to CPU for calculation
+            q_value = q_value.detach().cpu().item()
             i_value = 1.0 - q_value
             
             # Update prediction stats
@@ -343,19 +414,31 @@ class IValueTrainer(Trainer):
             
             for node in batch_nodes:
                 try:
+                    if not isinstance(node, AttributeNode):
+                        continue
+                        
+                    # Get node data
                     data = node.get_data()
                     if data is None:
                         continue
                         
+                    # Load image data
                     img_data = data.load_data()
                     if img_data is None:
                         continue
                         
-                    # Transform image using model's transform method
-                    transformed_img = cnn_model.transform(img_data)
-                    if transformed_img is not None:
-                        processed_batch.append(transformed_img)
-                        valid_nodes.append(node)
+                    # Transform image data using model's transform method
+                    if not isinstance(img_data, torch.Tensor):
+                        try:
+                            # Get the first model's transform method
+                            transform = self.models[0].transform
+                            img_data = transform(img_data)
+                        except Exception as e:
+                            print(f"Error transforming image: {str(e)}")
+                            continue
+                            
+                    processed_batch.append(img_data)
+                    valid_nodes.append(node)
                         
                 except Exception as e:
                     print(f"Error processing node in batch: {str(e)}")
@@ -380,7 +463,7 @@ class IValueTrainer(Trainer):
         """Process node data and update DQN replay buffer with comprehensive bias awareness."""
         try:
             # Get node features for DQN
-            dqn_features = self._get_dqn_features(node)
+            dqn_features, dqn_embedding = self._get_dqn_features(node)
             if dqn_features is None:
                 return None, None, None, False
                 
@@ -426,7 +509,7 @@ class IValueTrainer(Trainer):
             dqn_loss = self.train_dqn(model_idx)
             
             # Calculate losses
-            classification_loss = self.models[model_idx].loss(output, label)
+            classification_loss = self.criterion(output, label)
             total_loss = classification_loss + self.bias_weight * curr_bias_loss
             
             # Get I-value for performance tracking
@@ -473,8 +556,8 @@ class IValueTrainer(Trainer):
                 
                 # Calculate loss
                 loss = sum(
-                    model.loss(output.squeeze(), labels)
-                    for model, output in zip(self.models, outputs)
+                    self.criterion(output.squeeze(), labels)
+                    for output in outputs
                 ) / len(self.models)
                 
             # Backward pass with gradient scaling
@@ -492,7 +575,7 @@ class IValueTrainer(Trainer):
             print(f"Error in train_step: {str(e)}")
             return 0.0
     
-    def train(self, epoch):
+    def train(self):
         """Train the model for one epoch using memory-efficient approach."""
         try:
             # Set models to training mode
@@ -506,7 +589,11 @@ class IValueTrainer(Trainer):
             correct = 0
             total = 0
             batch_count = 0
+            total_train_bias_loss = 0
             
+            if self.train_traversal is None:
+                raise ValueError("train_traversal must be set before training.")
+
             # Reset traversal for this epoch
             self.train_traversal.reset_pointers()
             
@@ -514,8 +601,19 @@ class IValueTrainer(Trainer):
             total_nodes = self.train_traversal.num_steps
             print(f"Training on {total_nodes} nodes this epoch")
             
+            # --- Clear previous epoch's distribution --- 
+            attribute_distribution = defaultdict(lambda: defaultdict(int))
+            track_attributes = bool(self.categorical_attrs_for_tracking)
+            if track_attributes:
+                print(f"Tracking attribute distribution for attributes: {self.categorical_attrs_for_tracking}")
+            else:
+                print("Warning: attribute tracking is disabled. No attribute distribution will be tracked or returned.")
+
+            # Initialize metrics for the epoch
+            total_loss_cnn = 0.0
+
             # Process nodes in batches
-            pbar = tqdm(total=total_nodes, desc=f"Epoch {epoch}")
+            pbar = tqdm(total=total_nodes, desc=f"Epoch")
             
             nodes_processed = 0
             while nodes_processed < total_nodes:
@@ -525,9 +623,21 @@ class IValueTrainer(Trainer):
                     if not batch_nodes:
                         continue  # Skip this iteration but don't break the loop
                         
+                    # --- Track Attribute Distribution --- 
+                    if track_attributes:
+                         for node in batch_nodes:
+                             if hasattr(node, 'attributes') and node.attributes: # Check each node
+                                 for attr_name in self.categorical_attrs_for_tracking:
+                                     if attr_name in node.attributes:
+                                         attr_value = node.attributes[attr_name]
+                                         # Use str() for potential non-hashable values
+                                         attribute_distribution[attr_name][str(attr_value)] += 1 
+                    # ------------------------------------
+
                     # Process nodes
                     batch_data = []
                     batch_labels = []
+                    current_batch_nodes = []
                     
                     for node in batch_nodes:
                         try:
@@ -556,6 +666,7 @@ class IValueTrainer(Trainer):
                             
                             batch_data.append(img_data)
                             batch_labels.append(float(node.label))
+                            current_batch_nodes.append(node)
                             
                         except Exception as e:
                             print(f"Error processing node: {str(e)}")
@@ -564,7 +675,7 @@ class IValueTrainer(Trainer):
                     if not batch_data:
                         continue
                         
-                    # Stack batch data
+                    # Stack tensors
                     try:
                         features = torch.stack(batch_data).cuda()
                         labels = torch.tensor(batch_labels, dtype=torch.float32).cuda()
@@ -573,16 +684,45 @@ class IValueTrainer(Trainer):
                         for j in range(0, len(features), self.mini_batch_size):
                             mini_features = features[j:j + self.mini_batch_size]
                             mini_labels = labels[j:j + self.mini_batch_size]
+                            mini_batch_nodes = current_batch_nodes[j:j + self.mini_batch_size]
                             
                             # Forward pass
                             outputs = self.models[0](mini_features)
-                            loss = self.models[0].loss(outputs, mini_labels.unsqueeze(1))
+                            primary_loss = self.criterion(outputs, mini_labels.unsqueeze(1))
+                            
+                            # Calculate bias loss
+                            bias_loss_val = torch.tensor(0.0, device=primary_loss.device)
+                            if self.bias_loss is not None:
+                                try:
+                                    valid_indices = [idx for idx, node in enumerate(mini_batch_nodes)
+                                                     if hasattr(node, 'attributes') and isinstance(node.attributes, dict)]
+                                    if valid_indices:
+                                        valid_nodes = [mini_batch_nodes[i] for i in valid_indices]
+                                        valid_outputs = outputs[valid_indices]
+                                        valid_labels = mini_labels[valid_indices]
+                                        
+                                        current_bias_loss = self.bias_loss(valid_outputs, valid_labels.unsqueeze(1), valid_nodes)
+                                        if isinstance(current_bias_loss, torch.Tensor):
+                                            bias_loss_val = current_bias_loss
+                                            total_train_bias_loss += bias_loss_val.item()
+                                        else:
+                                            print(f"Warning: Training bias loss calculation returned non-tensor: {current_bias_loss}")
+                                except Exception as e:
+                                    print(f"Error calculating training bias loss: {e}")
+                            
+                            # Combine losses
+                            combined_loss = primary_loss
+                            if self.use_bias_loss_in_training and self.bias_loss is not None:
+                                combined_loss = combined_loss + self.bias_weight * bias_loss_val
                             
                             # Backward pass
-                            loss.backward()
+                            combined_loss.backward()
+                            
+                            # Step optimizer for the primary model
+                            self.models[0].optim.step()
                             
                             # Update metrics
-                            total_loss += loss.item()
+                            total_loss += primary_loss.item()
                             predicted = (torch.sigmoid(outputs) > 0.5).float()
                             correct += (predicted == mini_labels.unsqueeze(1)).sum().item()
                             total += len(mini_labels)
@@ -615,325 +755,35 @@ class IValueTrainer(Trainer):
             
             # Compute epoch metrics
             if batch_count == 0:
-                return self._get_empty_metrics(epoch)
+                return self._get_empty_metrics()
                 
             metrics = {
-                'epoch': epoch,
                 'avg_loss': total_loss / batch_count,
                 'accuracy': correct / max(1, total),
-                'avg_bias_loss': 0.0 # TBD
+                'avg_bias_loss': total_train_bias_loss / batch_count
             }
             
             # Log metrics
             self.log_metrics(metrics)
             
-            return metrics
+            return metrics, attribute_distribution
             
         except Exception as e:
             print(f"Error in training: {str(e)}")
-            return self._get_empty_metrics(epoch)
-    
-    def val(self, epoch):
-        """Validation phase using I-value based traversal."""
-        total_loss = 0
-        total_bias_loss = 0
-        correct_predictions = 0
-        total_predictions = 0
-        num_batches = 0
-        mini_batch_size = 32
-        
-        # Reset validation traversal at start of validation
-        self.val_traversal.reset_pointers()
-        
-        try:
-            # Get total number of nodes for progress bar
-            total_nodes = len(list(self.val_traversal.graph.get_nodes()))
-            progress_bar = tqdm(total=total_nodes, desc="Validation Progress")
-            nodes_processed = 0
-            
-            while True:  # Keep going until we get an empty batch
-                batch = self.val_traversal.traverse()
-                if not batch:  # If batch is empty, we're done
-                    break
-                
-                # Process in mini-batches
-                for i in range(0, len(batch), mini_batch_size):
-                    mini_batch = batch[i:i + mini_batch_size]
-                    nodes_processed += len(mini_batch)
-                    
-                    features_list = []
-                    labels_list = []
-                    
-                    # Collect features and labels
-                    for node in mini_batch:
-                        if not hasattr(node, 'get_label') or not hasattr(node, 'attributes'):
-                            continue
-                            
-                        try:
-                            features = self._get_cnn_features(node)
-                            features_list.append(features)
-                            labels_list.append(node.get_label())
-                        except Exception as e:
-                            continue
-                    
-                    if not features_list:
-                        continue
-                    
-                    # Stack features and labels
-                    if len(features_list) == 1:
-                        features_batch = features_list[0]  # Single tensor, no need to stack
-                    else:
-                        features_batch = torch.cat(features_list, dim=0)
-                    labels_batch = torch.tensor(labels_list).cuda()
-                    
-                    # Validate each model
-                    for model_idx, model in enumerate(self.models):
-                        model.model.eval()
-                        
-                        with torch.no_grad():
-                            # Forward pass
-                            outputs = model(features_batch)
-                            preds = (torch.sigmoid(outputs) > 0.5).float()
-                            
-                            # Calculate metrics
-                            labels_batch = labels_batch.float().unsqueeze(1)
-                            correct = (preds == labels_batch).sum().item()
-                            total_predictions += len(labels_batch)
-                            correct_predictions += correct
-                            
-                            # Calculate losses
-                            loss = model.loss(outputs, labels_batch)
-                            total_loss += loss.item()
-                            
-                            # Calculate bias loss using all nodes in mini-batch
-                            try:
-                                batch_attrs = [node.attributes for node in mini_batch if hasattr(node, 'attributes')]
-                                if batch_attrs:
-                                    bias_loss = self.bias_loss(outputs, batch_attrs)
-                                    total_bias_loss += bias_loss.item() if isinstance(bias_loss, torch.Tensor) else 0
-                            except Exception as e:
-                                print(f"Error calculating validation bias loss: {e}")
-                            
-                            num_batches += 1
-                    
-                    # Update progress
-                    progress_bar.update(len(mini_batch))
-                    progress_bar.set_description(
-                        f"Validation Progress | Loss: {total_loss/max(num_batches,1):.4f} | Acc: {correct_predictions/max(total_predictions,1):.4f}"
-                    )
-            
-            progress_bar.close()
-            
-        except Exception as e:
-            progress_bar.close()
-            print(f"Error in validation: {e}")
-            return self._get_empty_metrics(epoch)
-            
-        return {
-            'avg_loss': total_loss / max(num_batches, 1),
-            'avg_bias_loss': total_bias_loss / max(num_batches, 1),
-            'accuracy': correct_predictions / total_predictions
-        }
+            return self._get_empty_metrics()
 
-    def test(self):
-        """
-        Testing phase using I-value based traversal.
-        Similar to validation but using the test traversal.
-        """
-        metrics_per_model = [{
-            'total_loss': 0,
-            'total_bias_loss': 0,
-            'correct_predictions': 0,
-            'total_predictions': 0,
-            'num_batches': 0
-        } for _ in self.models]
-        
-        mini_batch_size = 32
-        
-        try:
-            # Get total number of nodes for progress bar
-            total_nodes = len(list(self.test_traversal.graph.get_nodes()))
-            progress_bar = tqdm(total=total_nodes, desc="Testing Progress")
-            nodes_processed = 0
-            
-            # Testing loop
-            while True:  # Keep going until we get an empty batch
-                batch = self.test_traversal.traverse()  # Get next batch
-                if not batch:  # If batch is empty, we're done
-                    break
-                
-                # Process in mini-batches
-                for i in range(0, len(batch), mini_batch_size):
-                    mini_batch = batch[i:i + mini_batch_size]
-                    nodes_processed += len(mini_batch)
-                    
-                    features_list = []
-                    labels_list = []
-                    
-                    # Collect features and labels
-                    for node in mini_batch:
-                        if not hasattr(node, 'get_label') or not hasattr(node, 'attributes'):
-                            continue
-                            
-                        try:
-                            features = self._get_cnn_features(node)
-                            features_list.append(features)
-                            labels_list.append(node.get_label())
-                        except Exception as e:
-                            continue
-                    
-                    if not features_list:
-                        continue
-                    
-                    # Stack features and labels
-                    if len(features_list) == 1:
-                        features_batch = features_list[0]  # Single tensor, no need to stack
-                    else:
-                        features_batch = torch.cat(features_list, dim=0)
-                    labels_batch = torch.tensor(labels_list).cuda()
-                    
-                    # Test each model separately
-                    for model_idx, model in enumerate(self.models):
-                        model.model.eval()
-                        metrics = metrics_per_model[model_idx]
-                        
-                        with torch.no_grad():
-                            # Forward pass
-                            outputs = model(features_batch)
-                            preds = (torch.sigmoid(outputs) > 0.5).float()
-                            
-                            # Calculate metrics
-                            labels_batch = labels_batch.float().unsqueeze(1)
-                            correct = (preds == labels_batch).sum().item()
-                            metrics['total_predictions'] += len(labels_batch)
-                            metrics['correct_predictions'] += correct
-                            
-                            # Calculate losses
-                            loss = model.loss(outputs, labels_batch)
-                            metrics['total_loss'] += loss.item()
-                            
-                            # Calculate bias loss using all nodes in mini-batch
-                            try:
-                                batch_attrs = [node.attributes for node in mini_batch if hasattr(node, 'attributes')]
-                                if batch_attrs:
-                                    bias_loss = self.bias_loss(outputs, batch_attrs)
-                                    metrics['total_bias_loss'] += bias_loss.item() if isinstance(bias_loss, torch.Tensor) else 0
-                            except Exception as e:
-                                print(f"Error calculating test bias loss for model {model_idx}: {e}")
-                            
-                            metrics['num_batches'] += 1
-                    
-                    # Update progress with average metrics across models
-                    avg_loss = sum(m['total_loss']/max(m['num_batches'],1) for m in metrics_per_model) / len(self.models)
-                    avg_acc = sum(m['correct_predictions']/max(m['total_predictions'],1) for m in metrics_per_model) / len(self.models)
-                    progress_bar.update(len(mini_batch))
-                    progress_bar.set_description(
-                        f"Testing Progress | Avg Loss: {avg_loss:.4f} | Avg Acc: {avg_acc:.4f}"
-                    )
-            
-            progress_bar.close()
-            
-            # Return separate metrics for each model
-            return [{
-                'avg_loss': metrics['total_loss'] / max(metrics['num_batches'], 1),
-                'avg_bias_loss': metrics['total_bias_loss'] / max(metrics['num_batches'], 1),
-                'accuracy': metrics['correct_predictions'] / max(metrics['total_predictions'], 1)
-            } for metrics in metrics_per_model]
-            
-        except Exception as e:
-            progress_bar.close()
-            print(f"Error in testing: {e}")
-            return [{
-                'avg_loss': 0.0,
-                'avg_bias_loss': 0.0,
-                'accuracy': 0.0
-            } for _ in self.models]
+    def get_model_by_id(self, node_id):
+        # Simple hash function to distribute nodes among models
+        return node_id % len(self.models)
 
-    def _get_empty_metrics(self, epoch):
+    def _get_empty_metrics(self):
         """Return empty metrics structure for when no valid data is processed."""
         return {
-            'epoch': epoch,
             'avg_loss': 0.0,
             'accuracy': 0.0,
             'avg_bias_loss': 0.0
         }
         
-    def run(self, num_epochs=15):
-        """Run training with early stopping and reduced validation."""
-        best_val_loss = float('inf')
-        patience = 5
-        patience_counter = 0
-        
-        for epoch in range(num_epochs):
-            try:
-                # Training phase
-                train_metrics = self.train(epoch)
-                if train_metrics is None:
-                    train_metrics = self._get_empty_metrics(epoch)
-                
-                # Validation phase
-                val_metrics = self.val(epoch)
-                if val_metrics is None:
-                    val_metrics = self._get_empty_metrics(epoch)
-                
-                # Log metrics
-                metrics = {
-                    'epoch': epoch,
-                    'train_loss': train_metrics.get('avg_loss', 0.0),
-                    'train_accuracy': train_metrics.get('accuracy', 0.0),
-                    'train_bias_loss': train_metrics.get('avg_bias_loss', 0.0),
-                    'val_loss': val_metrics.get('avg_loss', 0.0),
-                    'val_accuracy': val_metrics.get('accuracy', 0.0),
-                    'val_bias_loss': val_metrics.get('avg_bias_loss', 0.0),
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                # Log metrics
-                self.log_metrics(metrics)
-                
-                # Early stopping check
-                current_val_loss = val_metrics.get('avg_loss', float('inf'))
-                if current_val_loss < best_val_loss:
-                    best_val_loss = current_val_loss
-                    patience_counter = 0
-                    # Save best model
-                    for i, model in enumerate(self.models):
-                        model.save()
-                else:
-                    patience_counter += 1
-                    if patience_counter >= patience:
-                        print(f"Early stopping triggered after {epoch + 1} epochs")
-                        break
-                        
-            except Exception as e:
-                print(f"Error in epoch {epoch}: {str(e)}")
-                continue
-                
-    def test_run(self):
-        """Run evaluation on the test set."""
-        try:
-            # Load best models
-            for model in self.models:
-                model.load()
-                
-            # Run test
-            test_metrics = self.test()
-            if test_metrics is None:
-                test_metrics = self._get_empty_metrics(-1)
-                
-            print("\nTest Results:")
-            for i, metrics in enumerate(test_metrics):
-                print(f"Model {i+1}:")
-                print(f"Loss: {metrics.get('avg_loss', 0.0):.4f}")
-                print(f"Accuracy: {metrics.get('accuracy', 0.0):.4f}")
-                print(f"Bias Loss: {metrics.get('avg_bias_loss', 0.0):.4f}")
-            
-            return test_metrics
-            
-        except Exception as e:
-            print(f"Error in test run: {str(e)}")
-            return self._get_empty_metrics(-1)
-    
     def log_metrics(self, metrics):
         """Log training metrics to file."""
         metrics_dict = {}
@@ -953,3 +803,56 @@ class IValueTrainer(Trainer):
         
         # Also print to console
         print(f"Metrics: {metrics_dict}")
+
+    def get_all_final_i_values(self, graph_split: str) -> dict:
+        """Calculates the final I-value for all nodes in the specified graph split.
+
+        Args:
+            graph_split: The name of the graph split ('train', 'val', or 'test').
+
+        Returns:
+            A dictionary mapping node IDs to their final I-values.
+        """
+        if graph_split == 'train':
+            graph = self.train_manager.graph
+        elif graph_split == 'val':
+            graph = self.val_manager.graph
+        elif graph_split == 'test':
+            graph = self.test_manager.graph
+        else:
+            raise ValueError(f"Invalid graph_split: {graph_split}. Must be 'train', 'val', or 'test'.")
+
+        if not graph:
+            print(f"Warning: Graph for split '{graph_split}' not found in IValueTrainer. Cannot calculate I-values.")
+            return {}
+
+        nodes = graph.get_nodes()
+        if not nodes:
+            print(f"Warning: No nodes found in graph for split '{graph_split}'.")
+            return {}
+
+        final_i_values = {}
+        self.dqns[0].eval()  # Set model to evaluation mode
+
+        with torch.no_grad():
+            for node in nodes:
+                if hasattr(node, 'attributes') and isinstance(node.attributes, dict):
+                    try:
+                        # Prepare input tensor (handle potential missing attributes or non-numeric values)
+                        # Assuming attributes are pre-processed or can be converted
+                        # This part might need adjustment based on how attributes are structured and fed to the model
+                        attr_tensor = self._get_dqn_features(node)[0].to(self.device)
+                        # Predict Q-values
+                        q_values = self.dqns[0](attr_tensor)
+                        # I-value = 1 - max(Q-values) - Assuming DQN predicts Q-values for actions/neighbors
+                        # Adjust based on your DQN output definition. If it outputs a single value, use that.
+                        i_value = 1.0 - torch.max(q_values).item() 
+                        final_i_values[node.id] = i_value
+                    except Exception as e:
+                        print(f"Warning: Could not calculate I-value for node {node.id} in split {graph_split}: {e}")
+                        final_i_values[node.id] = -1.0 # Or some indicator value
+                else:
+                    # Handle nodes without attributes if necessary
+                    final_i_values[node.id] = -1.0 # Assign a default/indicator value
+
+        return final_i_values

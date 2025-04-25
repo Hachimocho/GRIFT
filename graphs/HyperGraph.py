@@ -287,6 +287,9 @@ class HyperGraph():
                 print(f"Warning: Could not find nodes for edge ({id1}, {id2}). Skipping.")
         print(f"Added {edges_added_count} edges from the list.")
 
+    def num_edges(self):
+        return len(self.get_edge_list())
+
     def save_display(self, path):
         """
         Save and display the hypergraph.

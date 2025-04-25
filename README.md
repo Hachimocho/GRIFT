@@ -23,6 +23,16 @@ In fact, it is designed to be as general as possible, using a module-based appro
 The framework is designed to be modular and extensible, allowing for easy integration of new data, node, edge, graph, manager, model, traversal, dataset, dataloader, and trainer classes.
 This makes it easy to experiment with different data sources, models, and traversal methods without having to modify the core framework.
 
+We also use a novel method called I-value estimation to monitor and reduce model bias as follows (subject to change as the methods are further developed):
+
+1. Initialize DQN to predict Q values for nodes based on their attributes
+2. Traverse primary model to nodes and generate predictions
+3. Use prediction correctness as reward signal for DQN
+4. DQN predicts Q values for nearby nodes to guide traversal
+5. Calculate I values as 1-Q for exploration
+6. Use DQN weights and prediction patterns to measure and correct both
+   inter-attribute and intra-attribute bias
+
 This is a test build. To run the test:
 1. Get the anaconda or mamba package managers running on your system
 2. Build the environment using the environment.yml file

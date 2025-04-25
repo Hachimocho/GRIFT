@@ -187,3 +187,4 @@ bckup.py
 face_landmarker_v2_with_blendshapes.task
 utils/shape_predictor_68_face_landmarks.dat
 *.pkl
+*.pth

@@ -16,13 +16,12 @@ class Trainer():
     """
     tags = ["none"]
     hyperparameters: dict | None = None
-    def __init__(self, graphmanager, train_traversal, test_traversal, models, num_steps=1000):
+    def __init__(self, graphmanager, train_traversal, models, num_steps=1000, attribute_metadata=None):
         self.graphmanager = graphmanager
         self.models = models
         self.optims = [torch.optim.Adam(model.model.parameters(), lr=0.001) for model in self.models]
         self.losses = [nn.BCEWithLogitsLoss() for model in self.models]
         self.train_traversal = train_traversal
-        self.test_traversal = test_traversal
         self.epochs = 15
         self.batches = [[] for model in self.models]
         self.batch_size = 10
@@ -45,6 +44,7 @@ class Trainer():
         # Pessimistic accuracy initialization allows for high starting I values for unseen nodes
         # Based on "optimism in the face of uncertainty" from standard RL
         self.stored_prediction_accuracy = [{node: [0] for node in self.graphmanager.get_graph().get_nodes()} for model in self.models]
+        self.attribute_metadata = attribute_metadata
         
     def run(self):
         print("Running trainer.")
@@ -58,12 +58,12 @@ class Trainer():
             self.graphmanager.update_graph()
             for i, model in enumerate(self.models):
                 avg_train_acc = sum(self.train_acc_history[i]) / len(self.train_acc_history[i]) if len(self.train_acc_history[i]) > 0 else 0
+                avg_val_acc = sum(self.val_acc_history[i]) / len(self.val_acc_history[i]) if len(self.val_acc_history[i]) > 0 else 0
                 if avg_val_acc > best_accs[i]:
                     best_accs[i] = avg_val_acc
                     self.models[i].save_checkpoint()
                 else:
                     self.models[i].load_checkpoint()
-                avg_val_acc = sum(self.val_acc_history[i]) / len(self.val_acc_history[i]) if len(self.val_acc_history[i]) > 0 else 0
                 wandb.log({"epoch": epoch, f"train_acc_model_{i}": avg_train_acc, f"val_acc_model_{i}": avg_val_acc})
         for i, acc in enumerate(best_accs):
             wandb.log({f"best_acc_model_{i}": acc})

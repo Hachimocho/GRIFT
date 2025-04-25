@@ -9,6 +9,8 @@ This script tests the new hierarchical graph construction approach which:
 import time
 import argparse
 import os
+import cv2
+from collections import defaultdict
 import sys
 import dill
 import numpy as np
@@ -19,6 +21,7 @@ from itertools import product
 from tqdm import tqdm
 import logging  # Add missing import for logging module
 import traceback # Add traceback import
+import json # Add json import
 
 # Add a null handler for silencing logging
 class NullHandler(logging.Handler):
@@ -51,6 +54,7 @@ from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.IValueTraversal import IValueTraversal
+from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop # Added Import
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from edges.Edge import Edge
@@ -58,6 +62,344 @@ import copy
 import torch
 import time
 import random
+
+import torch
+import torch.nn as nn
+import numpy as np
+import traceback
+from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader # Make sure DataLoader is imported
+import os # Added for path operations
+import sys # Added for exception logging
+from contextlib import contextmanager
+import io
+
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None): 
+    """Evaluates the model on the provided nodes, calculates standard metrics,
+       and optionally calculates bias metrics based on categorical attributes.
+    """
+    model.eval() # Ensure model is in evaluation mode
+    model.model.to(device)
+
+    total_loss = 0.0
+    total_bias_loss = 0.0
+    correct_predictions = 0
+    total_nodes_processed = 0
+    nodes_in_dataset = len(nodes_to_evaluate)
+    num_batches = (nodes_in_dataset + batch_size - 1) // batch_size
+
+    print(f"\nRunning inference for {desc} (Dataset Size: {nodes_in_dataset}, Batch Size: {batch_size})...")
+
+    all_predictions = []
+    all_labels = []
+    subgroup_stats = defaultdict(lambda: {'count': 0, 'correct': 0})
+    categorical_attrs = []
+    if attribute_metadata:
+        categorical_attrs = [
+            attr for attr in attribute_metadata if attr.get('type') == 'categorical'
+        ]
+        if not categorical_attrs:
+            print("Warning: attribute_metadata provided, but no categorical attributes found for bias calculation.")
+            attribute_metadata = None # Disable bias calculation if no categorical attrs
+        else:
+            print(f"Bias calculation enabled for attributes: {[attr['name'] for attr in categorical_attrs]}")
+
+    with torch.no_grad(): # Ensure no gradients are calculated during evaluation
+        for i in tqdm(range(num_batches), desc=f"Inferring {desc}", leave=False):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, nodes_in_dataset)
+            batch_nodes = nodes_to_evaluate[start_idx:end_idx]
+
+            batch_images_loaded = []
+            batch_labels_loaded = []
+            batch_nodes_loaded = [] # Keep track of nodes successfully loaded in batch
+
+            # Load data for the current batch
+            for node in batch_nodes:
+                try:
+                    node_data = node.get_data()
+                    if node_data:
+                        img = node_data.load_data()
+                        label = node.get_label()
+                        if img is not None and label is not None:
+                            # Apply transformations (ensure model has transform attribute)
+                            if hasattr(model, 'transform') and model.transform:
+                                # Assume load_data gives numpy HWC, BGR - needs conversion
+                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
+                                img_tensor = model.transform(img)
+                            elif isinstance(img, np.ndarray):
+                                # Basic conversion if no transform available
+                                img_tensor = torch.from_numpy(img).float()
+                                if img_tensor.ndim == 3: # Basic HWC to CHW
+                                     img_tensor = img_tensor.permute(2, 0, 1)
+                            elif isinstance(img, torch.Tensor):
+                                img_tensor = img # Already a tensor
+                            else:
+                                print(f"Warning: Unexpected image data type ({type(img)}) for node {node.node_id}")
+                                continue # Skip node
+                                
+                            batch_images_loaded.append(img_tensor)
+                            batch_labels_loaded.append(float(label))
+                            batch_nodes_loaded.append(node) # Add node if data loaded
+                        else:
+                            # print(f"DEBUG: Img or Label is None for node {node.node_id}")
+                            pass
+                    else:
+                        # print(f"DEBUG: node.get_data() returned None for node {node.node_id}")
+                        pass
+                except Exception as e_load:
+                    print(f"ERROR loading data for node {getattr(node, 'node_id', 'N/A')} in {desc}: {e_load}")
+                    continue # Skip node on error
+
+            # Skip batch if no data was successfully loaded
+            if not batch_images_loaded:
+                # print(f"DEBUG: Skipping empty batch {i} in {desc}")
+                continue
+
+            # Stack loaded data into tensors
+            try:
+                batch_images_tensor = torch.stack(batch_images_loaded).to(device)
+                batch_labels_tensor = torch.tensor(batch_labels_loaded, dtype=torch.float).unsqueeze(1).to(device) # Ensure [batch, 1]
+            except Exception as e_stack:
+                print(f"ERROR stacking tensors for batch {i} in {desc}: {e_stack}")
+                continue # Skip batch if stacking fails
+
+            # Perform inference
+            try:                
+                outputs = model(batch_images_tensor)
+                preds = (torch.sigmoid(outputs) > 0.5).float()
+
+                correct = (preds == batch_labels_tensor).sum().item()
+                correct_predictions += correct
+                current_batch_size = batch_labels_tensor.size(0)
+                total_nodes_processed += current_batch_size
+
+                loss = loss_fn(outputs, batch_labels_tensor)
+                total_loss += loss.item() * current_batch_size # Accumulate total loss scaled by batch size
+
+                if bias_loss_fn and batch_nodes_loaded: # Use successfully loaded nodes
+                    try:
+                        # Ensure bias_loss_fn can handle the list of node objects
+                        bias_loss_val = bias_loss_fn(outputs, batch_labels_tensor, batch_nodes_loaded)
+                        total_bias_loss += bias_loss_val.item() * current_batch_size # Accumulate total bias loss
+                    except Exception as e_bias:
+                        print(f"\nWarning: Error calculating bias loss for batch in {desc}: {e_bias}")
+                        total_bias_loss += 0.0 # Add 0 on error for this batch
+            except Exception as e_inf:
+                 print(f"\nError during model inference or loss calculation in {desc}: {e_inf}")
+                 # Potentially skip batch or handle error appropriately
+                 continue # Skip batch on inference error
+
+            # --- Store Predictions and Labels for Metrics --- 
+            predictions = torch.sigmoid(outputs).cpu().numpy() > 0.5
+            current_labels = batch_labels_tensor.cpu().numpy().astype(int)
+            all_predictions.extend(predictions.astype(int))
+            all_labels.extend(current_labels)
+
+            # --- Associate predictions/labels with nodes for bias calc ---
+            node_results = {}
+            if attribute_metadata and categorical_attrs:
+                 for i, node in enumerate(batch_nodes_loaded):
+                      node_results[node.node_id] = {
+                           'prediction': predictions[i],
+                           'label': current_labels[i],
+                           'node': node # Store the node object itself
+                      }
+
+            # --- Update Subgroup Stats for Bias Calculation ---
+            if attribute_metadata and categorical_attrs: # Check again in case it was disabled
+                # Iterate through the results we just stored for the successfully processed batch
+                for node_id, result in node_results.items():
+                    node = result['node']
+                    prediction = result['prediction']
+                    label = result['label']
+                    try:
+                        subgroup_key_parts = []
+                        valid_node = True
+                        for cat_attr in categorical_attrs:
+                            attr_name = cat_attr['name']
+                            # Check if node has attributes and the specific attribute
+                            if not hasattr(node, 'attributes') or node.attributes is None or attr_name not in node.attributes:
+                                valid_node = False
+                                break
+                            attr_value = node.attributes[attr_name]
+                            subgroup_key_parts.append(f"{attr_name}_{attr_value}")
+
+                        if valid_node:
+                            subgroup_key = "_".join(subgroup_key_parts)
+                            subgroup_stats[subgroup_key]['count'] += 1
+                            # Compare prediction and label for this specific node
+                            if prediction == label:
+                                subgroup_stats[subgroup_key]['correct'] += 1
+                    except Exception as e_subgroup:
+                         print(f"Warning: Error processing node {getattr(node, 'node_id', 'N/A')} for bias subgroup stats: {e_subgroup}")
+
+    # --- Final Metrics Calculation ---
+    # Nodes skipped is estimated as total in dataset minus those successfully processed
+    skipped_loading = nodes_in_dataset - total_nodes_processed
+
+    final_metrics = {}
+    if total_nodes_processed > 0:
+        final_metrics['accuracy'] = (correct_predictions / total_nodes_processed) * 100
+        final_metrics['average_loss'] = total_loss / total_nodes_processed # Average loss per successfully processed sample
+    else:
+        final_metrics['accuracy'] = 0.0
+        final_metrics['average_loss'] = float('nan')
+
+    if bias_loss_fn:
+         if total_nodes_processed > 0:
+             final_metrics['average_bias_loss'] = total_bias_loss / total_nodes_processed # Average bias loss per successfully processed sample
+         else:
+             final_metrics['average_bias_loss'] = float('nan')
+
+    final_metrics['total_nodes_in_dataset'] = nodes_in_dataset
+    final_metrics['total_nodes_skipped_loading'] = skipped_loading
+    final_metrics['total_predictions_made'] = total_nodes_processed # Nodes that contributed to metrics
+
+    print(f"\n{desc} Results: Accuracy={final_metrics.get('accuracy', 0.0):.2f}%, Avg Loss={final_metrics.get('average_loss', float('nan')):.4f}", end='')
+    if bias_loss_fn and 'average_bias_loss' in final_metrics:
+         print(f", Avg Bias Loss={final_metrics.get('average_bias_loss', float('nan')):.4f}", end='')
+    # Adjust print statement to reflect dataset size and predictions made
+    print(f" (Dataset Size: {nodes_in_dataset}, Skipped Loading: {skipped_loading}, Predictions Made: {total_nodes_processed})")
+
+    # --- Bias Calculation Setup --- 
+    bias_metrics = {}
+    if attribute_metadata and categorical_attrs: # Check again in case it was disabled
+        print(f"Bias calculation enabled for attributes: {[attr['name'] for attr in categorical_attrs]}")
+
+    # --- Calculate Bias Metrics --- (Only if enabled and stats collected)
+    if attribute_metadata and categorical_attrs and subgroup_stats:
+        subgroup_accuracies = {}
+        min_subgroup_acc = 1.0
+        max_subgroup_acc = 0.0
+        total_subgroup_abs_diff = 0.0
+        num_subgroups = 0
+
+        print("\n--- Bias Analysis --- ")
+        per_attribute_stats = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'correct': 0})) # Define BEFORE subgroup loop
+        overall_accuracy = final_metrics['accuracy'] / 100 # Convert to decimal
+        for key, stats in sorted(subgroup_stats.items()):
+            count = stats['count']
+            correct = stats['correct']
+            if count > 0:
+                accuracy = correct / count
+                subgroup_accuracies[key] = accuracy
+                print(f"  Subgroup '{key}': Accuracy = {accuracy:.4f} (Count: {count})")
+                min_subgroup_acc = min(min_subgroup_acc, accuracy)
+                max_subgroup_acc = max(max_subgroup_acc, accuracy)
+                total_subgroup_abs_diff += abs(accuracy - overall_accuracy) # Use decimal overall_accuracy
+                num_subgroups += 1
+                # Populate per_attribute_stats INSIDE subgroup loop
+                key_parts = key.split('_')
+                i = 0
+                while i < len(key_parts):
+                    attr_name = key_parts[i]
+                    attr_value = key_parts[i+1]
+                    per_attribute_stats[attr_name][attr_value]['count'] += count
+                    per_attribute_stats[attr_name][attr_value]['correct'] += correct
+                    i += 2 # Move to the next attribute-value pair
+            else:
+                print(f"  Subgroup '{key}': Accuracy = N/A (Count: 0)")
+                subgroup_accuracies[key] = None
+
+        overall_bias = max_subgroup_acc - min_subgroup_acc if num_subgroups > 0 else 0
+        average_subgroup_bias = (total_subgroup_abs_diff / num_subgroups) if num_subgroups > 0 else 0
+        bias_metrics['subgroup_accuracies'] = subgroup_accuracies
+        bias_metrics['overall_bias'] = overall_bias
+        bias_metrics['average_subgroup_bias'] = average_subgroup_bias # Add average subgroup bias
+
+        print(f"Overall Bias (Max Acc Diff across subgroups): {overall_bias:.4f}")
+        print(f"Average Subgroup Bias (Avg Abs Diff from Overall Acc): {average_subgroup_bias:.4f}") # Print average subgroup bias
+
+        # Calculate per-attribute bias
+        per_attribute_accuracies = defaultdict(dict)
+        per_attribute_bias = {}
+        total_attribute_bias = 0.0
+        num_attributes = 0
+
+        print("\nPer-Attribute Analysis:")
+        for attr_name, value_stats in sorted(per_attribute_stats.items()):
+            print(f"  Attribute '{attr_name}':")
+            min_attr_acc = 1.0
+            max_attr_acc = 0.0
+            value_count = 0
+            for value, stats in sorted(value_stats.items()):
+                count = stats['count']
+                correct = stats['correct']
+                if count > 0:
+                    accuracy = correct / count
+                    per_attribute_accuracies[attr_name][value] = accuracy
+                    print(f"    Value '{value}': Accuracy = {accuracy:.4f} (Count: {count})")
+                    min_attr_acc = min(min_attr_acc, accuracy)
+                    max_attr_acc = max(max_attr_acc, accuracy)
+                    value_count += 1
+                else:
+                    print(f"    Value '{value}': Accuracy = N/A (Count: 0)")
+                    per_attribute_accuracies[attr_name][value] = None
+            
+            attr_bias = max_attr_acc - min_attr_acc if value_count > 0 else 0
+            per_attribute_bias[attr_name] = attr_bias
+            total_attribute_bias += attr_bias
+            num_attributes += 1
+            print(f"    Bias for '{attr_name}' (Max Acc Diff): {attr_bias:.4f}")
+
+        average_attribute_bias = (total_attribute_bias / num_attributes) if num_attributes > 0 else 0
+        bias_metrics['per_attribute_accuracies'] = per_attribute_accuracies
+        bias_metrics['per_attribute_bias'] = per_attribute_bias
+        bias_metrics['average_attribute_bias'] = average_attribute_bias # Add average attribute bias
+        print(f"Average Attribute Bias (Avg Max Acc Diff): {average_attribute_bias:.4f}") # Print average attribute bias
+
+    # --- Return Results --- 
+    final_metrics['bias_metrics'] = bias_metrics # Include bias metrics
+    return final_metrics
+
+@contextmanager
+def capture_output(filename):
+    """Capture all stdout and stderr output to a file while still printing to terminal"""
+    class TeeStream:
+        def __init__(self, stdout, logfile):
+            self.stdout = stdout
+            self.logfile = logfile
+            
+        def write(self, message):
+            self.stdout.write(message)
+            self.logfile.write(message)
+            
+        def flush(self):
+            self.stdout.flush()
+            self.logfile.flush()
+    
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    logpath = log_dir / filename
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    
+    try:
+        with open(logpath, 'w') as logfile:
+            tee_stdout = TeeStream(old_stdout, logfile)
+            tee_stderr = TeeStream(old_stderr, logfile)
+            sys.stdout = tee_stdout
+            sys.stderr = tee_stderr
+            yield logpath
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+def log_exception(logfile, exc_type, exc_value, exc_traceback):
+    """Log an exception with its traceback to both stdout and the log file"""
+    exc_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    print('\n' + '=' * 80)
+    print('Exception occurred:')
+    print(exc_text)
+    print('=' * 80)
+    
+    with open(logfile, 'a') as f:
+        f.write('\n' + '=' * 80 + '\n')
+        f.write('Exception occurred:\n')
+        f.write(exc_text)
+        f.write('=' * 80 + '\n')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test the hierarchical graph construction approach')
@@ -98,6 +440,18 @@ def parse_args():
                         help='Number of steps for embedding threshold grid search (default: 5)')
     parser.add_argument('--search-results', type=str, default='threshold_search_results.csv',
                         help='File to save search results to (default: threshold_search_results.csv)')
+    
+    # Training options
+    parser.add_argument('--batch-size', type=int, default=96,
+                        help='Batch size for training and evaluation (default: 96)')
+    parser.add_argument('--num-workers', type=int, default=4,
+                        help='Number of worker processes for DataLoader (default: 4)')
+    parser.add_argument('--num-epochs', type=int, default=50,
+                        help='Number of training epochs (default: 50)')
+    parser.add_argument('--bias_loss_weight', type=float, default=0.00,
+                        help='Weight for bias loss (default: 0.00)')
+    parser.add_argument('--load-last-checkpoint', action='store_true',
+                        help='Load the last best checkpoint if validation accuracy decreases.')
     
     return parser.parse_args()
 
@@ -547,8 +901,16 @@ def visualize_search_results(results_df, output_prefix):
     print(f"Visualizations saved to logs/search_plots/{output_prefix}_*.png")
 
 def main():
-    # Set higher recursion depth for pickling large graphs
-    sys.setrecursionlimit(3000) 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Define the primary loss function
+    criterion = nn.BCEWithLogitsLoss().to(device)
+    print(f"Primary loss function defined: {criterion.__class__.__name__}")
+
+    # Run with output capture
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logfile = Path("logs") / f"test_run_{timestamp}.log"
     
     data_root = "/home/brg2890/major/datasets/ai-face"
     args = parse_args()
@@ -556,6 +918,89 @@ def main():
     os.makedirs("logs", exist_ok=True)
     log_file = f"logs/hierarchical_test_{timestamp}.log"
     print(f"Starting test run, logging to: {log_file}")
+
+    # Set up attribute metadata for I-value traversal
+    attribute_metadata = [
+            {
+                'name': 'Ground Truth Gender',
+                'type': 'categorical',
+                'possible_values': [0, 1]  
+            },
+            {
+                'name': 'Ground Truth Race',
+                'type': 'categorical',
+                'possible_values': [0, 1, 2, 3]  
+            },
+            {
+                'name': 'Ground Truth Age',
+                'type': 'categorical',
+                'possible_values': [0, 1, 2, 3]  
+            },
+            {
+                'name': 'blur',
+                'type': 'continuous'
+            },
+            {
+                'name': 'brightness',
+                'type': 'continuous'
+            },
+            {
+                'name': 'contrast',
+                'type': 'continuous'
+            },
+            {
+                'name': 'compression',
+                'type': 'continuous'
+            },
+            {
+                'name': 'symmetry_eye',
+                'type': 'continuous'
+            },
+            {
+                'name': 'symmetry_mouth',
+                'type': 'continuous'
+            },
+            {
+                'name': 'symmetry_nose',
+                'type': 'continuous'
+            },
+            {
+                'name': 'symmetry_overall',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_angry',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_disgust',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_fear',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_happy',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_sad',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_surprise',
+                'type': 'continuous'
+            },
+            {
+                'name': 'emotion_neutral',
+                'type': 'continuous'
+            },
+            {
+                'name': 'face_embedding',
+                'type': 'continuous'
+            }
+        ]
     
     # Set up a dataloader for loading datasets
     edge_class = Edge
@@ -594,8 +1039,7 @@ def main():
         print("Separating nodes by split...")
         train_nodes = [node for node in all_nodes if node.split == 'train']
         val_nodes = [node for node in all_nodes if node.split == 'val']
-        test_nodes = [node for node in all_nodes if node.split == 'test']
-        
+        test_nodes = [node for node in all_nodes if node.split == 'test']        
         # Cache nodes if requested
         if args.cache_nodes:
             print("Caching nodes...")
@@ -705,8 +1149,13 @@ def main():
             embedding_threshold=args.embedding_threshold
         )
         
-        # Determine subset identifier
-        subset_id = f"subset{args.cached_nodes}" if args.cached_nodes else "full"
+        # Determine subset identifier (robust to full/subset cache usage)
+        if args.use_full_cache:
+            subset_id = "full"
+        elif args.cached_nodes:
+            subset_id = f"subset{args.cached_nodes}"
+        else:
+            subset_id = "full"
         # Create Specific Cache Filename
         cache_filename = os.path.join(
             graph_cache_dir,
@@ -836,135 +1285,346 @@ def main():
     # Print average degree (edges per node)
     print(f"Average degree: {(total_edges * 2) / len(train_graph.get_nodes()):.2f}")
 
-    sys.exit()
-    
-    # Create graph managers for each split
-    train_manager = NoGraphManager(train_graph)
-    val_manager = NoGraphManager(val_graph)
-    test_manager = NoGraphManager(test_graph)
-    
-    # Define architectures to test
-    cnn_architectures = [
-        "swintransformdf",
-        "resnestdf", 
-        #"effnetdf",
-        #"mesonetdf",
-        #"squeezenetdf",
-        #"vistransformdf",
-        
-    ]
+    #print(f"Node example: {list(train_graph.get_nodes())[0]}")
+    #sys.exit()
 
-    random.seed(13247987501)
+    with capture_output(logfile.name) as logpath:
+        print(f"Starting test run, logging to: {logfile}")
     
-    # Define traversal types to compare
-    #traversal_types = ["comprehensive", "random", "i-value"]
-    traversal_types = ["i-value"]
-    
-    # Test each architecture with both traversal types
-    for arch in cnn_architectures:
-        print(f"\n{'='*80}")
-        print(f"Testing {arch} architecture")
-        print(f"{'='*80}\n")
-        
-        for traversal_type in traversal_types:
-            print(f"\n{'-'*40}")
-            print(f"Using {traversal_type} traversal")
-            print(f"{'-'*40}\n")
+        # Create graph managers for each split
+        train_manager = NoGraphManager(train_graph)
+        val_manager = NoGraphManager(val_graph)
+        test_manager = NoGraphManager(test_graph)
+
+        # --- Get Nodes from Graphs for DataLoaders ---
+        val_nodes_from_graph = val_manager.graph.get_nodes()
+        test_nodes_from_graph = test_manager.graph.get_nodes()
+        print(f"Retrieved {len(val_nodes_from_graph)} validation nodes and {len(test_nodes_from_graph)} test nodes from graph managers.")
+
+        # ===============================
+        # Model/Trainer Setup
+        # ===============================
+        # Define architectures to test
+        cnn_architectures = [
+            "swintransformdf",
+            "resnestdf", 
+            #"effnetdf",
+            #"mesonetdf",
+            #"squeezenetdf",
+            #"vistransformdf",
             
-            try:
-                # Create model with adjusted learning rate
-                model = CNNModel(
-                    f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
-                    arch,
-                    0.001, 
-                    True
-                )
-                
-                # Create trainer based on traversal type
-                if traversal_type == "i-value":
-                    trainer = IValueTrainer(
-                        train_manager,  # Use train manager
-                        None,  # Will be set by get_traversal
-                        None,  # Will be set by get_traversal
-                        [model],
-                        attribute_metadata=attribute_metadata
-                    )
-                else:  # random or comprehensive traversal
-                    trainer = ExperimentTrainer(
-                        train_manager,  # Use train manager
-                        None,  # Will be set by get_traversal
-                        None,  # Will be set by get_traversal
-                        None,  # Will be set by get_traversal
-                        [model],
-                        traversal_type=traversal_type,
-                        attribute_metadata=attribute_metadata
-                    )
-                
-                # Create traversals for each split
-                # Use more pointers and adjust steps based on graph sizes
-                train_size = len(train_manager.graph.get_nodes())
-                val_size = len(val_manager.graph.get_nodes())
-                test_size = len(test_manager.graph.get_nodes())
-                
-                print(f"\nGraph sizes:")
-                print(f"Train: {train_size} nodes")
-                print(f"Val: {val_size} nodes")
-                print(f"Test: {test_size} nodes")
-                
-                # Calculate appropriate number of steps
-                train_steps = 2000
-                val_steps = 1000 
-                test_steps = None  # Use None to visit all test nodes
-                
-                if traversal_type == "comprehensive":
-                    train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
-                else:
-                    train_traversal = trainer.get_traversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
-                val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
-                test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
-                
-                print(f"\nTraversal settings:")
-                print(f"Train: {train_steps} steps with 1 pointers")
-                print(f"Val: {val_steps} steps with 1 pointers")
-                print(f"Test: All nodes with 1 pointers")
-                
-                # Update trainer with correct traversals
-                trainer.train_traversal = train_traversal
-                trainer.val_traversal = val_traversal
-                trainer.test_traversal = test_traversal
+        ]
+
+        random.seed(13247987501)
+        
+        # Define traversal types to compare
+        traversal_types = ["i-value", "comprehensive", "random", "i-value-cluster-hop"] # Added 'i-value-cluster-hop'
+        #traversal_types = ["i-value"]
+        
+        # Test each architecture with both traversal types
+        for arch in cnn_architectures:
+            print(f"\n{'='*80}")
+            print(f"Testing {arch} architecture")
+            print(f"{'='*80}\n")
+            
+            for traversal_type in traversal_types:
+                print(f"\n{'-'*40}")
+                print(f"Using {traversal_type} traversal")
+                print(f"{'-'*40}\n")
                 
                 try:
-                    print(f"Training {arch} with {traversal_type} traversal...")
-                    trainer.run(num_epochs=5)
-                    print(f"Testing {arch} with {traversal_type} traversal...")
-                    test_metrics = trainer.test()
+
+                    # Create traversals for training
+                    # Use more pointers and adjust steps based on graph sizes
+                    train_size = len(train_manager.graph.get_nodes())
+                    val_size = len(val_manager.graph.get_nodes())
+                    test_size = len(test_manager.graph.get_nodes())
                     
-                    # Handle both single dict and list of dicts for backwards compatibility
-                    if isinstance(test_metrics, list):
-                        for i, metrics in enumerate(test_metrics):
-                            print(f"\nModel {i+1} Results:")
-                            print(f"Loss: {metrics.get('avg_loss', 0.0):.4f}")
-                            print(f"Accuracy: {metrics.get('accuracy', 0.0):.4f}")
-                            print(f"Bias Loss: {metrics.get('avg_bias_loss', 0.0):.4f}")
+                    print(f"\nGraph sizes:")
+                    print(f"Train: {train_size} nodes")
+                    print(f"Val: {val_size} nodes")
+                    print(f"Test: {test_size} nodes")
+                    
+                    # Calculate appropriate number of steps
+                    train_steps = 1000
+                    val_steps = 1000 
+                    test_steps = None  # Use None to visit all test nodes
+                    
+                    # Create Traversal instances
+                    if traversal_type == "comprehensive":
+                        train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    elif traversal_type == "random":
+                        train_traversal = RandomTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
+                    elif traversal_type == "i-value":
+                        # Use the trainer's method to get the configured IValueTraversal
+                        train_traversal = IValueTraversal(
+                            graph=train_manager.graph,
+                            num_pointers=1,
+                            num_steps=train_steps
+                        )
+                    elif traversal_type == "i-value-cluster-hop":
+                        # Instantiate the cluster hop traversal, passing the trainer
+                        train_traversal = IValueTraversalClusterHop(
+                             graph=train_manager.graph, 
+                             num_pointers=1, 
+                             num_steps=train_steps
+                        )
                     else:
-                        print("\nTest Results:")
-                        print(f"Loss: {test_metrics.get('avg_loss', 0.0):.4f}")
-                        print(f"Accuracy: {test_metrics.get('accuracy', 0.0):.4f}")
-                        print(f"Bias Loss: {test_metrics.get('avg_bias_loss', 0.0):.4f}")
-                        
-                    print(f"\nCompleted evaluation of {arch} with {traversal_type} traversal")
-                except Exception as e:
-                    print(f"\nError while evaluating {arch} with {traversal_type}: {str(e)}")
-                    log_exception(logfile, *sys.exc_info())
-                    continue  # Continue with next configuration
+                        raise ValueError(f"Unsupported traversal type for training: {traversal_type}")
+
+                    # Create model with adjusted learning rate
+                    model = CNNModel(
+                        f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
+                        arch,
+                        0.001, 
+                        True,
+                        device=device  # Pass the device
+                    )
                     
-            except Exception as e:
-                print(f"\nError while setting up {arch} with {traversal_type}: {str(e)}")
-                log_exception(logfile, *sys.exc_info())
-                continue  # Continue with next configuration
+                    # --- Early Stopping & Best Model Checkpoint --- 
+                    best_val_accuracy = 0.0
+                    epochs_no_improve = 0
+                    patience = 10 # Example patience
+                    best_model_checkpoint_path = f"checkpoints/{arch}_{traversal_type}_best.pth"
+                    os.makedirs(os.path.dirname(best_model_checkpoint_path), exist_ok=True) # Ensure dir exists
+
+                    # Find the section starting around line 1311
+                    if traversal_type == "i-value" or traversal_type == "i-value-cluster-hop":
+                        # 1. Create IValueTrainer *without* train_traversal
+                        trainer = IValueTrainer(
+                            graphmanager=train_manager,
+                            models=[model], # Use model
+                            device=device,
+                            attribute_metadata=attribute_metadata,
+                            use_bias_loss_in_training=True, # Example
+                            bias_loss_weight=args.bias_loss_weight,
+                            loss_fn=criterion,
+                            train_traversal=None # Explicitly pass None
+                        )
+                    
+                        # 2. Create the specific IValueTraversal needed
+                        if traversal_type == "i-value":
+                            # This assumes IValueTraversal also needs the trainer or its components
+                            # If IValueTraversal doesn't need the trainer, adjust its __init__ and this call
+                            # For now, assuming it might need the trainer similar to cluster hop
+                            train_traversal = IValueTraversal( # Replace with actual IValueTraversal class if different
+                                graph=train_manager.graph,
+                                num_pointers=1,
+                                num_steps=train_steps,
+                                trainer=trainer # Pass the trainer instance
+                            )
+                        elif traversal_type == "i-value-cluster-hop":
+                            train_traversal = IValueTraversalClusterHop(
+                                graph=train_manager.graph,
+                                num_pointers=1,
+                                num_steps=train_steps,
+                                trainer=trainer # Pass the trainer instance
+                            )
+                    
+                        # 3. Set the traversal back on the trainer
+                        trainer.set_train_traversal(train_traversal)
+
+                    else:  # random or comprehensive traversal
+                        # Example ExperimentTrainer call:
+                            trainer = ExperimentTrainer(
+                            graphmanager=train_manager,
+                            train_traversal=train_traversal,
+                            models=[model], # Wrap the primary CNN model in a list
+                            device=device,
+                            traversal_type=traversal_type,
+                            attribute_metadata=attribute_metadata, # Pass metadata if needed by init
+                            loss_fn=criterion # <-- ADD THIS
+                        )
+                    
+                    
+                        
+                    # val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
+                    # test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
+                    
+                    print(f"\nTraversal settings:")
+                    print(f"Train: {train_steps} steps with 1 pointers")
+                    print(f"Val: {val_steps} steps with 1 pointers")
+                    print(f"Test: All nodes with 1 pointers")
+                    
+                    # Update trainer with correct traversals
+                    trainer.train_traversal = train_traversal
+                    # trainer.val_traversal = val_traversal # Removed: Using val_loader now
+                    # trainer.test_traversal = test_traversal # Removed: Using test_loader now
+                    
+                    try:
+                        print(f"Training {arch} with {traversal_type} traversal...")
+                        for epoch in range(args.num_epochs):
+                            print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
+                            train_start_time = time.time()
+                            train_distribution = None # Initialize distribution as None
+                            train_metrics, train_distribution = trainer.train()
+                            
+                            
+                            print(f"  Train Metrics: {train_metrics}")
+                            
+                            # --- Print Training Attribute Distribution --- 
+                            if train_distribution: # Check if distribution was returned and is not None
+                                print("  Training Attribute Distribution for this Epoch:")
+                                # Use json.dumps for pretty printing the nested defaultdict
+                                print(json.dumps(train_distribution, indent=4))
+                            else:
+                                print("  No attribute distribution tracked or returned for this trainer type.")
+                            # ---------------------------------------------
+
+                            # --- Validation Step --- 
+                            if val_nodes_from_graph:
+                                model = trainer.models[0] if trainer.models else None
+                                if not model:
+                                    print(f"ERROR: No model found in trainer for {arch} with {traversal_type}. Skipping.")
+                                    continue
+
+                                model.eval() # Set model to evaluation mode
+                                val_metrics = evaluate_model(
+                                    model=model,
+                                    nodes_to_evaluate=val_nodes_from_graph,
+                                    loss_fn=criterion,
+                                    batch_size=args.batch_size,
+                                    bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
+                                    device=device,
+                                    desc="Validation",
+                                    attribute_metadata=attribute_metadata
+                                )
+                                
+                                current_val_accuracy = val_metrics.get('accuracy', 0.0)
+
+                                if current_val_accuracy > best_val_accuracy:
+                                    best_val_accuracy = current_val_accuracy
+                                    best_epoch = epoch + 1
+                                    # Save primary model checkpoint
+                                    model.save_checkpoint(best_model_checkpoint_path)
+                                    # Save DQN checkpoint(s) if using IValueTrainer
+                                    if isinstance(trainer, IValueTrainer) and trainer.dqns:
+                                        for i, dqn_model in enumerate(trainer.dqns):
+                                            dqn_checkpoint_path = best_model_checkpoint_path.replace('.pt', f'_dqn{i}.pt')
+                                            dqn_model.save_checkpoint(dqn_checkpoint_path)
+                                    print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}. Model(s) saved to {best_model_checkpoint_path} (and DQN paths if applicable)")
+                                elif args.load_last_checkpoint and epoch > 0: # Check if we need to load the previous best
+                                    print(f"Validation accuracy did not improve. Current: {val_metrics['accuracy']:.4f}, Best: {best_val_accuracy:.4f}. Loading checkpoint from epoch {best_epoch}.")
+                                    if os.path.exists(best_model_checkpoint_path):
+                                        # Load primary model checkpoint
+                                        model.load_checkpoint(best_model_checkpoint_path)
+                                        # Load DQN checkpoint(s) if using IValueTrainer
+                                        if isinstance(trainer, IValueTrainer) and trainer.dqns:
+                                            for i, dqn_model in enumerate(trainer.dqns):
+                                                dqn_checkpoint_path = best_model_checkpoint_path.replace('.pt', f'_dqn{i}.pt')
+                                                if os.path.exists(dqn_checkpoint_path):
+                                                    dqn_model.load_checkpoint(dqn_checkpoint_path)
+                                                else:
+                                                    print(f"Warning: DQN Checkpoint {dqn_checkpoint_path} not found, cannot reload DQN {i}.")
+                                    else:
+                                        print(f"Warning: Checkpoint {best_model_checkpoint_path} not found, cannot reload primary model.")
+                                else:
+                                    print(f"Validation accuracy did not improve from {best_val_accuracy:.4f} (best epoch {best_epoch})")
+ 
+                        # Load best model for final testing
+                        if args.num_epochs > 0:
+                            print(f"\nLoading best model from epoch {best_epoch} for final testing (Val Acc: {best_val_accuracy:.4f}) from {best_model_checkpoint_path}")
+                            if os.path.exists(best_model_checkpoint_path):
+                                try:
+                                    # Load primary model checkpoint
+                                    model.load_checkpoint(best_model_checkpoint_path)
+                                    model.eval() # Ensure model is in eval mode for testing
+                                    print("Best model loaded successfully.")
+                                    
+                                    print(f"\nRunning final evaluation on Test Set...")
+                                    test_metrics = evaluate_model(
+                                        model=model,
+                                        nodes_to_evaluate=test_nodes_from_graph,
+                                        loss_fn=criterion,
+                                        batch_size=args.batch_size,
+                                        bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
+                                        device=device,
+                                        desc="Final Test Evaluation",
+                                        attribute_metadata=attribute_metadata
+                                    )
+                                    print("\n--- Final Test Results --- ")
+                                    print(json.dumps(test_metrics, indent=2))
+                                    # Optional: Save test_metrics to a results file
+                                
+                                except Exception as e_load:
+                                     print(f"ERROR loading best model checkpoint: {e_load}")
+                                     log_exception(logfile, *sys.exc_info())
+                                     test_metrics = {"error": "Failed to load best model"}
+                            else:
+                                print(f"ERROR: Best model checkpoint not found at {best_model_checkpoint_path}. Testing with the last state model.")
+                                model.eval()
+                                test_metrics = evaluate_model(
+                                    model=model,
+                                    nodes_to_evaluate=test_nodes_from_graph,
+                                    loss_fn=criterion,
+                                    batch_size=args.batch_size,
+                                    bias_loss_fn=trainer.bias_loss,
+                                    device=device,
+                                    desc="Final Test Set (Last State)",
+                                    attribute_metadata=attribute_metadata
+                                )
+                                print("\n--- Final Test Results (Last State Model) --- ")
+                                print(json.dumps(test_metrics, indent=2))
+
+                    except Exception as e_inner_loop:
+                        print(f"\nError during training/evaluation loop for {arch} with {traversal_type}: {str(e_inner_loop)}")
+                        log_exception(logfile, *sys.exc_info())
+                        continue # Continue with the next configuration
+
+                    # --- Cleanup Old Test Call --- 
+                    # print(f"Testing {arch} with {traversal_type} traversal...")
+                    # test_metrics = trainer.test() # Removed
+
+                    # --- Calculate and Save Final I-Values (Keep or remove based on needs) --- 
+                        final_i_values = {}
+                        node_data_list = []
+                        test_graph_nodes = test_manager.graph.get_nodes() # Get test nodes
+                        
+                        if isinstance(trainer, IValueTrainer):
+                            print("Calculating final I-values for test nodes...")
+                        # This assumes get_all_final_i_values exists and works correctly
+                        # final_i_values = trainer.get_all_final_i_values(graph_split='test') 
+                        # Placeholder: 
+                        final_i_values = {}
+                        print(f"Placeholder: Calculated I-values for {len(final_i_values)} nodes.")
+                            
+                        # Gather data for all test nodes
+                        print("Gathering node data for output CSV...")
+                        for node in tqdm(test_graph_nodes, desc="Processing test nodes for CSV"): 
+                            node_info = {'node_id': node.node_id}
+                            # Add attributes if they exist
+                            if hasattr(node, 'attributes') and isinstance(node.attributes, dict):
+                                node_info.update(node.attributes)
+                            # Add ground truth if available
+                            node_info['ground_truth'] = node.label if hasattr(node, 'label') else 'N/A'
+                            # Add predicted label if available from test_metrics? Requires mapping node_id to prediction
+                            # node_info['predicted_label'] = ... # This needs linking test_metrics output to nodes
+                            # Add I-value if available
+                            node_info['i_value'] = final_i_values.get(node.node_id, 'N/A')
+                            node_data_list.append(node_info)
+                            
+                    # Save detailed results to CSV
+                        if node_data_list:
+                            output_csv_path = os.path.join(args.log_dir if args.log_dir else '.', f"detailed_results_{arch}_{traversal_type}.csv")
+                            try:
+                                df_results = pd.DataFrame(node_data_list)
+                                df_results.to_csv(output_csv_path, index=False)
+                                print(f"Detailed node results saved to {output_csv_path}")
+                            except Exception as e_csv:
+                                print(f"Error saving detailed results CSV: {e_csv}")
+                        else:
+                            print("No node data collected for CSV output.")
+
+                except Exception as e:
+                    log_exception(logfile, *sys.exc_info())
+                    print(f"\nOuter Error setting up {arch} with {traversal_type}: {str(e)}")
+                    continue  # Continue with next configuration
 
 
     print("\nDone!")
+    
+    if logpath:
+        print(f"Output captured in: {logpath}")
 
 if __name__ == "__main__":
     main()
