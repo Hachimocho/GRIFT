@@ -258,22 +258,7 @@ class IValueTrainer(Trainer):
             print(f"Error extracting DQN features: {e}")
             return None, None # Return None to indicate failure
 
-    def _get_cnn_features(self, node):
-        """Extract image features for CNN input."""
-        # Get the image data and transform it for CNN input
-        image_data = node.get_data().load_data()
-        image_rgb = cv2.cvtColor(image_data, cv2.COLOR_BGR2RGB)
-        
-        # Convert to PIL Image for torchvision transforms
-        image_pil = Image.fromarray(image_rgb)
-        
-        # Apply transformations using the parent class's transform
-        transformed_image = self.transform(image_pil)  # Shape: [C, H, W]
-        
-        # Add batch dimension and move to GPU
-        batched_image = transformed_image.unsqueeze(0).cuda()  # Shape: [1, C, H, W]
-        
-        return batched_image
+
     
     def get_i_value(self, node, model_idx):
         """Predicts the I-value for a given node using the specified DQN model.
@@ -321,13 +306,11 @@ class IValueTrainer(Trainer):
             embedding_tensor = embedding_tensor.unsqueeze(0)
 
             # Ensure DQN is on the correct device
-            q_value = dqn_model.predict_i_value(features_tensor.to(dqn_model.device), 
+            i_value = dqn_model.predict_i_value(features_tensor.to(dqn_model.device), 
                                                  embedding_tensor.to(dqn_model.device))
 
-            # I-value = 1 - Q-value (assuming Q is normalized or represents probability-like value)
-            # Ensure Q-value is detached and moved to CPU for calculation
-            q_value = q_value.detach().cpu().item()
-            i_value = 1.0 - q_value
+            # The value returned by predict_i_value IS the I-value (1 - sigmoid(Q))
+            i_value = i_value.detach().cpu().item()
             
             # Update prediction stats
             self.update_prediction_stats(node, i_value > 0.5, model_idx)
@@ -459,122 +442,6 @@ class IValueTrainer(Trainer):
             print(f"Error in preprocess_batch: {str(e)}")
             return None, None
 
-    def process_node_data(self, node, model_idx):
-        """Process node data and update DQN replay buffer with comprehensive bias awareness."""
-        try:
-            # Get node features for DQN
-            dqn_features, dqn_embedding = self._get_dqn_features(node)
-            if dqn_features is None:
-                return None, None, None, False
-                
-            # Get image features for CNN
-            image_features = self._get_cnn_features(node)
-            if image_features is None:
-                return None, None, None, False
-                
-            # Forward pass through model
-            output = self.models[model_idx](image_features)
-            
-            # Get label
-            label = torch.tensor([1.0 if node.is_fake() else 0.0], device='cuda').float()
-            
-            # Check prediction correctness
-            predicted = (torch.sigmoid(output) > 0.5).float()
-            correct = (predicted == label).item()
-            
-            # Update prediction stats for bias tracking
-            self.update_prediction_stats(node, correct, model_idx)
-            
-            # Calculate current bias loss
-            curr_bias_loss = self.bias_loss(output, [node.attributes])
-            
-            # Calculate rewards
-            # 1. Uncertainty reward: Higher for uncertain predictions
-            pred_prob = torch.sigmoid(output).item()
-            uncertainty_reward = 1.0 - abs(pred_prob - 0.5) * 2  # Max at 0.5, min at 0 or 1
-            
-            # 2. Bias reward: Higher for biased predictions (need correction)
-            bias_reward = min(curr_bias_loss, 1.0)  # Cap at 1.0
-            
-            # 3. Error reward: Higher for incorrect predictions (need improvement)
-            error_reward = 1.0 - correct
-            
-            # Combine rewards with weights
-            reward = bias_reward
-
-            # Store experience in replay buffer (state, reward)
-            self.dqns[model_idx].replay_buffer.append((dqn_features, reward))
-            
-            # Train DQN
-            dqn_loss = self.train_dqn(model_idx)
-            
-            # Calculate losses
-            classification_loss = self.criterion(output, label)
-            total_loss = classification_loss + self.bias_weight * curr_bias_loss
-            
-            # Get I-value for performance tracking
-            i_value = self.get_i_value(node, model_idx)
-            
-            # Update graph manager with performance tracking
-            if hasattr(self.graphmanager, 'track_performance'):
-                self.graphmanager.track_performance(node, i_value)
-            
-            # Update graph structure periodically
-            if hasattr(self.graphmanager, 'update_graph'):
-                self.graphmanager.update_graph()
-            
-            return total_loss, dqn_loss, curr_bias_loss, correct
-            
-        except Exception as e:
-            print(f"Error in process_node_data: {str(e)}")
-            return None, None, None, False
-    
-    def train_step(self, batch_nodes):
-        """Perform a single training step."""
-        try:
-            # Preprocess batch
-            images, nodes = self.preprocess_batch(batch_nodes)
-            if images is None or nodes is None:
-                return 0.0
-                
-            # Zero gradients
-            for model in self.models:
-                model.zero_grad()
-                
-            # Forward pass with mixed precision
-            with torch.cuda.amp.autocast():
-                outputs = []
-                for model in self.models:
-                    output = model(images)
-                    outputs.append(output)
-                    
-                # Get labels
-                labels = torch.tensor([
-                    1.0 if node.is_fake() else 0.0
-                    for node in nodes
-                ], device='cuda').float()
-                
-                # Calculate loss
-                loss = sum(
-                    self.criterion(output.squeeze(), labels)
-                    for output in outputs
-                ) / len(self.models)
-                
-            # Backward pass with gradient scaling
-            self.scaler.scale(loss).backward()
-            
-            # Gradient accumulation
-            if self.steps % self.gradient_accumulation_steps == 0:
-                for model in self.models:
-                    self.scaler.step(model.optim)
-                self.scaler.update()
-                
-            return loss.item()
-            
-        except Exception as e:
-            print(f"Error in train_step: {str(e)}")
-            return 0.0
-    
     def train(self):
         """Train the model for one epoch using memory-efficient approach."""
         try:
@@ -585,12 +452,12 @@ class IValueTrainer(Trainer):
                 dqn.train()
                 
             # Initialize metrics
-            total_loss = 0
+            total_loss = 0.0
             correct = 0
             total = 0
             batch_count = 0
-            total_train_bias_loss = 0
-            
+            total_train_bias_loss = 0.0
+
             if self.train_traversal is None:
                 raise ValueError("train_traversal must be set before training.")
 
@@ -608,9 +475,6 @@ class IValueTrainer(Trainer):
                 print(f"Tracking attribute distribution for attributes: {self.categorical_attrs_for_tracking}")
             else:
                 print("Warning: attribute tracking is disabled. No attribute distribution will be tracked or returned.")
-
-            # Initialize metrics for the epoch
-            total_loss_cnn = 0.0
 
             # Process nodes in batches
             pbar = tqdm(total=total_nodes, desc=f"Epoch")
@@ -634,124 +498,162 @@ class IValueTrainer(Trainer):
                                          attribute_distribution[attr_name][str(attr_value)] += 1 
                     # ------------------------------------
 
-                    # Process nodes
-                    batch_data = []
-                    batch_labels = []
-                    current_batch_nodes = []
-                    
+                    # Prepare batch data (images and labels)
+                    batch_images_loaded = []
+                    batch_labels_loaded = []
+                    batch_nodes_loaded = [] # Keep track of nodes successfully loaded
+                    batch_dqn_features = [] # Store corresponding features for DQN
+
                     for node in batch_nodes:
                         try:
-                            if not isinstance(node, AttributeNode):
-                                continue
-                                
-                            # Get node data
-                            data = node.get_data()
-                            if data is None:
-                                continue
-                                
-                            # Load image data
-                            img_data = data.load_data()
-                            if img_data is None:
-                                continue
-                            
-                            # Transform image data using model's transform method
-                            if not isinstance(img_data, torch.Tensor):
-                                try:
-                                    # Get the first model's transform method
-                                    transform = self.models[0].transform
-                                    img_data = transform(img_data)
-                                except Exception as e:
-                                    print(f"Error transforming image: {str(e)}")
-                                    continue
-                            
-                            batch_data.append(img_data)
-                            batch_labels.append(float(node.label))
-                            current_batch_nodes.append(node)
-                            
-                        except Exception as e:
-                            print(f"Error processing node: {str(e)}")
-                            continue
-                            
-                    if not batch_data:
-                        continue
-                        
-                    # Stack tensors
-                    try:
-                        features = torch.stack(batch_data).cuda()
-                        labels = torch.tensor(batch_labels, dtype=torch.float32).cuda()
-                        
-                        # Process mini-batches
-                        for j in range(0, len(features), self.mini_batch_size):
-                            mini_features = features[j:j + self.mini_batch_size]
-                            mini_labels = labels[j:j + self.mini_batch_size]
-                            mini_batch_nodes = current_batch_nodes[j:j + self.mini_batch_size]
-                            
-                            # Forward pass
-                            outputs = self.models[0](mini_features)
-                            primary_loss = self.criterion(outputs, mini_labels.unsqueeze(1))
-                            
-                            # Calculate bias loss
-                            bias_loss_val = torch.tensor(0.0, device=primary_loss.device)
-                            if self.bias_loss is not None:
-                                try:
-                                    valid_indices = [idx for idx, node in enumerate(mini_batch_nodes)
-                                                     if hasattr(node, 'attributes') and isinstance(node.attributes, dict)]
-                                    if valid_indices:
-                                        valid_nodes = [mini_batch_nodes[i] for i in valid_indices]
-                                        valid_outputs = outputs[valid_indices]
-                                        valid_labels = mini_labels[valid_indices]
-                                        
-                                        current_bias_loss = self.bias_loss(valid_outputs, valid_labels.unsqueeze(1), valid_nodes)
-                                        if isinstance(current_bias_loss, torch.Tensor):
-                                            bias_loss_val = current_bias_loss
-                                            total_train_bias_loss += bias_loss_val.item()
-                                        else:
-                                            print(f"Warning: Training bias loss calculation returned non-tensor: {current_bias_loss}")
-                                except Exception as e:
-                                    print(f"Error calculating training bias loss: {e}")
-                            
-                            # Combine losses
-                            combined_loss = primary_loss
-                            if self.use_bias_loss_in_training and self.bias_loss is not None:
-                                combined_loss = combined_loss + self.bias_weight * bias_loss_val
-                            
-                            # Backward pass
-                            combined_loss.backward()
-                            
-                            # Step optimizer for the primary model
-                            self.models[0].optim.step()
-                            
-                            # Update metrics
-                            total_loss += primary_loss.item()
-                            predicted = (torch.sigmoid(outputs) > 0.5).float()
-                            correct += (predicted == mini_labels.unsqueeze(1)).sum().item()
-                            total += len(mini_labels)
-                            
-                            # Step optimizer if needed
-                            if (batch_count + 1) % self.gradient_accumulation_steps == 0:
-                                for model in self.models:
-                                    model.optim.step()
-                                    model.optim.zero_grad()
+                            node_data = node.get_data()
+                            if node_data:
+                                img = node_data.load_data()
+                                label = node.get_label()
+                                if img is not None and label is not None:
+                                    # Set model to training mode for transforms
+                                    self.models[0].current_mode = "train" 
+                                    # Use the model's internal transform method
+                                    img_tensor = self.models[0].transform(img)
                                     
-                            batch_count += 1
-                            
-                        nodes_processed += len(batch_nodes)
-                        pbar.update(len(batch_nodes))
+                                    batch_images_loaded.append(img_tensor)
+                                    batch_labels_loaded.append(float(label))
+                                    batch_nodes_loaded.append(node) # Add node if data loaded
+                                else:
+                                    # Log skipped nodes due to missing image or label
+                                    self.skipped_nodes_loading += 1
+                                    # self.logger.debug(f"Skipped node {node.node_id}: Missing image or label.")
+                                    pass
+                            else:
+                                self.skipped_nodes_loading += 1
+                                # self.logger.debug(f"Skipped node {node.node_id}: No node data found.")
+                                pass
+                        except Exception as e:
+                            self.skipped_nodes_loading += 1
+                            self.logger.error(f"Error loading data for node {getattr(node, 'node_id', 'UNKNOWN')}: {e}", exc_info=False)
+                            continue # Skip this node
+                    
+                    # Skip batch if no data loaded
+                    if not batch_images_loaded:
+                        self.logger.warning(f"Epoch {epoch+1}: Batch {i // self.batch_size} skipped, no valid data loaded.")
+                        #print(f"DEBUG: Batch {batch_count} skipped, no valid data loaded.") # DEBUG
+                        continue
+
+                    # Convert lists to tensors
+                    batch_images_tensor = torch.stack(batch_images_loaded).to(self.device)
+                    batch_labels_tensor = torch.tensor(batch_labels_loaded, dtype=torch.float32).to(self.device).view(-1, 1)
+                    #print(f"DEBUG: Batch {batch_count} - Images tensor shape: {batch_images_tensor.shape}, Labels tensor shape: {batch_labels_tensor.shape}") # DEBUG
+
+                    # Mixed precision training
+                    with torch.cuda.amp.autocast():
+                        # Forward pass
+                        outputs = self.models[0](batch_images_tensor)
                         
-                    except RuntimeError as e:
-                        if "out of memory" in str(e):
-                            print("WARNING: out of memory")
-                            if hasattr(torch.cuda, 'empty_cache'):
-                                torch.cuda.empty_cache()
-                            continue
-                        else:
-                            raise e
+                        # Get labels
+                        labels = batch_labels_tensor
+                        
+                        # Calculate loss
+                        # ---- START DEBUG ----
+                        #print(f"DEBUG: Pre-Loss - Outputs shape: {outputs.shape}, Labels shape: {labels.shape}")
+                        #print(f"DEBUG: Pre-Loss - Outputs[:5]: {outputs[:5].flatten().tolist()}")
+                        #print(f"DEBUG: Pre-Loss - Labels[:5]: {labels[:5].flatten().tolist()}")
+                        # ---- END DEBUG ----
+                        loss = self.criterion(outputs, labels)
+                    # End autocast context
+                    
+                    total_loss += loss.item() # Add batch loss to total
+                    predicted = (torch.sigmoid(outputs) > 0.5).float()
+                    correct_count = (predicted == labels).sum().item()
+                    correct += correct_count # Add correct predictions
+                    total += len(labels) # Add total items in batch
+                    #print(f"DEBUG: Batch {batch_count} - Raw Loss: {loss.item()}") # DEBUG
+                        
+                    # Backward pass with gradient scaling
+                    self.scaler.scale(loss).backward()
+                    # loss.backward() # Standard backward pass - DISABLED
+                    
+                    self.scaler.step(self.models[0].optim)
+                    self.scaler.update()
+                    self.models[0].optim.zero_grad()
+
+                    # Gradient accumulation
+                    # if (batch_count + 1) % self.gradient_accumulation_steps == 0:
+                    #     # Scaler step replaced with standard optimizer step
+                    #     # self.scaler.step(self.models[0].optim)
+                    #     # self.scaler.update()
+                    #     self.models[0].optim.step() # Standard optimizer step
+                    #     self.models[0].optim.zero_grad()
+                        
+                    batch_count += 1
+
+                    
+                    
+                    # --- Start DQN Training Integration --- 
+                    if self.dqns:
+                        dqn_model = self.dqns[0] # Assuming a single DQN for now
+                        dqn_loss_this_batch = 0.0 # Optional tracking for this mini-batch
+                    
+                        for i, node in enumerate(batch_nodes_loaded):
+                            # 1. Calculate Reward for DQN (based on primary model correctness and confidence)
+                            prediction_probability = torch.sigmoid(outputs[i]).item() # Sigmoid output
+                            is_correct = (prediction_probability > 0.5) == (batch_labels_loaded[i] > 0.5)
                             
+                            # Calculate confidence-based reward
+                            # Confidence is higher when probability is further from 0.5
+                            confidence = abs(prediction_probability - 0.5) * 2 # Scale confidence to [0, 1]
+                            reward_sign = 1.0 if is_correct else -1.0
+                            dqn_reward = reward_sign * confidence
+                        
+                            # 2. Get DQN State (Features/Embedding)
+                            dqn_features, dqn_embedding = self._get_dqn_features(node)
+                        
+                            if dqn_features is None:
+                                print(f"Warning: Skipping DQN training for node {node.id} due to missing features")
+                                continue # Skip if features unavailable
+                        
+                            # Move features to DQN device & ensure embedding is handled
+                            dqn_features = dqn_features.to(dqn_model.device) 
+                            if dqn_embedding is not None:
+                                dqn_embedding = dqn_embedding.to(dqn_model.device)
+                        
+                            # 3. Push experience to Replay Buffer
+                            dqn_model.replay_buffer.append((
+                                dqn_features.detach(), 
+                                dqn_embedding.detach() if dqn_embedding is not None else None, 
+                                dqn_reward
+                            ))
+
+                        # 4. Perform DQN Learning Step (if buffer is large enough)
+                        if len(dqn_model.replay_buffer) >= dqn_model.batch_size:
+                            # Sample a batch from the buffer
+                            dqn_transitions = random.sample(dqn_model.replay_buffer, dqn_model.batch_size)
+                            # Call the DQN's train_step method
+                            dqn_loss_value = dqn_model.train_step(dqn_transitions)
+                            # Optional: Accumulate DQN loss if you want to track/log it
+                            # total_dqn_loss += dqn_loss_value
+                            # num_dqn_updates += 1
+                        else:
+                            print(f"Warning: Skipping DQN training for batch {batch_count} due to insufficient replay buffer size")
+                    # --- End DQN Training Integration ---
+
+                    nodes_processed += len(batch_nodes)
+                    pbar.update(len(batch_nodes))
+                    
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print("WARNING: out of memory")
+                        if hasattr(torch.cuda, 'empty_cache'):
+                            torch.cuda.empty_cache()
+                        continue
+                    else:
+                        raise e
+                        
                 except Exception as e:
                     print(f"Error processing batch: {str(e)}")
                     continue
                     
             pbar.close()
+            #print(f"DEBUG: End of Epoch - Final Accumulators: total_loss={total_loss}, correct={correct}, total={total}, batch_count={batch_count}, total_train_bias_loss={total_train_bias_loss}") # DEBUG
             
             # Compute epoch metrics
             if batch_count == 0:

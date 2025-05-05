@@ -1,5 +1,5 @@
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from traversals.Traversal import Traversal
 import importlib
 from models.DQNModel import DQNModel
@@ -28,6 +28,7 @@ class IValueTraversalClusterHop(Traversal):
         self.trainer = trainer
         self.current_batch_nodes = []  # Store nodes from current batch
         self.current_bias_hop_pointer_index = 0  # New attribute
+        self.hop_i_value_history = []  # Stores dicts of {subgroup: avg_ival} per hop
         
         # --- Cluster Hop Parameters --- 
         self.bias_hop_period = bias_hop_period
@@ -37,29 +38,49 @@ class IValueTraversalClusterHop(Traversal):
         
         self.reset_pointers()
 
-    def _get_i_value(self, pointer_data, node):
-        """Safely get I-value for a node, using pessimistic default."""
-        # Try getting from the pointer's dictionary first
-        i_val = pointer_data['i_values'].get(node, None)
-        if i_val is not None:
-            return i_val
-            
-        # If not found, try getting from the trainer (might be expensive)
-        if self.trainer:
-            try:
-                # Assume get_i_value might fail or return an indicator, handle appropriately
-                i_val = self.trainer.get_i_value(node, 0) # Using first model's DQN
-                # Ensure trainer's value is stored and returned, handle potential errors if needed
-                if isinstance(i_val, (int, float)): # Basic check
-                    pointer_data['i_values'][node] = i_val
-                    return i_val
-            except Exception as e:
-                # Log error if needed, e.g., print(f"Trainer error getting I-value for {node.id}: {e}")
-                pass # Fall through to pessimistic value
+    def _get_i_value(self, pointer_data, node, use_din=False):
+        """Safely get the I-value for a node, using cache, trainer (optionally DQN), or pessimistic default."""
 
-        # Fallback to pessimistic value
-        pointer_data['i_values'][node] = self.pessimistic_i_value
-        return self.pessimistic_i_value
+        # If using DQN, prioritize trainer call
+        if use_din:
+            if self.trainer:
+                try:
+                    # Use the DQN-based method
+                    i_val = self.trainer.get_i_value(node, 0)
+                    if isinstance(i_val, (int, float)):
+                        pointer_data['i_values'][node] = i_val # Update cache
+                        #print(f"Using trainer I-value {i_val} for node {node.node_id}")
+                        return i_val
+                    else:
+                        print(f"Trainer returned non-numeric I-value for {node.node_id}: {i_val}")
+                except Exception as e:
+                    print(f"Trainer error getting I-value for {node.node_id}: {e}")
+                    # Fall through to cache/pessimistic if trainer fails
+            else:
+                print(f"No trainer available for DQN I-value prediction for {node.node_id}")
+            
+            # If trainer failed or wasn't available, try cache as fallback before pessimistic
+            i_val_cached = pointer_data['i_values'].get(node, None)
+            if i_val_cached is not None:
+                #print(f"Using cached I-value {i_val_cached} for node {node.node_id} after trainer failure/absence")
+                return i_val_cached
+            else:
+                # If trainer failed AND not in cache, use pessimistic
+                pointer_data['i_values'][node] = self.pessimistic_i_value 
+                #print(f"Using pessimistic I-value {self.pessimistic_i_value} for node {node.node_id} (trainer failed, not cached)")
+                return self.pessimistic_i_value
+
+        # If not using DQN (use_din=False), check cache first
+        else: 
+            i_val_cached = pointer_data['i_values'].get(node, None)
+            if i_val_cached is not None:
+                #print(f"Using cached I-value {i_val_cached} for node {node.node_id} (use_din=False)")
+                return i_val_cached
+            else:
+                # Fallback to pessimistic value if not in cache and not using DQN
+                pointer_data['i_values'][node] = self.pessimistic_i_value
+                #print(f"Using pessimistic I-value {self.pessimistic_i_value} for node {node.node_id} (not cached, use_din=False)")
+                return self.pessimistic_i_value
 
     def reset_pointers(self):
         """Reset pointers and initialize I-values pessimistically."""
@@ -95,7 +116,7 @@ class IValueTraversalClusterHop(Traversal):
         pointer = self.pointers[pointer_idx]
         for node in self.graph.get_nodes():
             # Use the safe getter which handles trainer errors and stores the value
-            self._get_i_value(pointer, node)
+            self._get_i_value(pointer, node, use_din=True)
             # Old direct call: pointer['i_values'][node] = self.trainer.get_i_value(node, 0)  # Using first model's DQN
     
     def get_pointers(self):
@@ -105,6 +126,10 @@ class IValueTraversalClusterHop(Traversal):
         """Get the current batch of nodes being processed."""
         return [self.pointers[i]['current_node'] for i in range(self.num_pointers) if self.pointers[i]['current_node'] is not None]
     
+    def get_hop_i_value_history(self):
+        """Returns the history of calculated average I-values per subgroup during hops."""
+        return self.hop_i_value_history
+
     def traverse(self, batch_size=32):
         """Move pointers based on I-values, constraints, and periodic bias hops."""
         if self.t >= self.num_steps:
@@ -113,81 +138,111 @@ class IValueTraversalClusterHop(Traversal):
         self.t += 1
         batch_nodes = []
         visited_this_batch = set()
-        
-        # --- Periodic Bias Hop --- 
+        #print(f"\n--- Traversal Step {self.t} ---")
+        # print(f"Bias hop period: {self.bias_hop_period}")
+        # print(f"self.t % self.bias_hop_period: {self.t % self.bias_hop_period}")
+        # --- Bias Hop Logic --- 
         if self.bias_hop_period > 0 and self.t > 0 and self.t % self.bias_hop_period == 0:
-            print(f"\n--- Bias Hop Check at t={self.t} ---")
-            all_nodes = self.graph.get_nodes()
-            avg_i_values_by_group = defaultdict(lambda: {'total_i': 0, 'count': 0})
-            group_nodes = defaultdict(list) # Store nodes per group
-
-            # Calculate average I-value for each specified attribute group
-            for node in all_nodes:
-                # Ensure we use a consistent pointer reference for getting I-values during the check
-                # For simplicity, let's use the I-values from the first pointer's perspective
-                # Note: This could be refined later if needed.
-                i_value = self._get_i_value(self.pointers[0], node) 
+            pointer_to_hop_idx = self.current_bias_hop_pointer_index % self.num_pointers
+            pointer_to_hop_data = self.pointers[pointer_to_hop_idx]
+            #print(f"\n--- Bias Hop Check at t={self.t} for Pointer {pointer_to_hop_idx} ---")
+            
+            # Calculate average I-value for each subgroup defined by bias_attributes combination
+            subgroup_i_values = defaultdict(lambda: {'sum': 0.0, 'count': 0})
+            all_nodes_for_hop = list(self.graph.get_nodes()) # Consider all nodes for hop target pool
+            
+            for node in all_nodes_for_hop:
+                if not isinstance(node, AttributeNode) or not hasattr(node, 'attributes') or not node.attributes:
+                    continue # Skip nodes without attributes
+                    
+                # Create subgroup tuple (handle missing attributes)
+                subgroup_key_list = []
+                skip_node = False
                 for attr_name in self.bias_attributes:
-                    if attr_name in node.attributes:
-                        attr_value = node.attributes[attr_name]
-                        group_key = f"{attr_name}_{attr_value}"
-                        avg_i_values_by_group[group_key]['total_i'] += i_value
-                        avg_i_values_by_group[group_key]['count'] += 1
-                        group_nodes[group_key].append(node) # Store node
-
-            print("Average I-Values per Group:") # New logging
-            calculated_averages = {}
-            for group, data in avg_i_values_by_group.items():
+                    attr_value = node.attributes.get(attr_name, 'MISSING')
+                    # Optional: Skip nodes missing any bias attribute for hop calculation
+                    if attr_value == 'MISSING':
+                        print(f"Skipping node {node.node_id} due to missing bias attribute {attr_name}")
+                        skip_node = True
+                        break
+                    subgroup_key_list.append(f"{attr_name}_{attr_value}") # Create descriptive string keys
+                
+                if skip_node:
+                    continue
+                    
+                subgroup_key = tuple(sorted(subgroup_key_list)) # Use sorted tuple as dict key
+                
+                # Get I-value safely (using the pointer's perspective for consistency)
+                # USE CACHED/DEFAULT FOR HOP CALCULATION
+                i_val = self._get_i_value(pointer_to_hop_data, node, use_din=False) 
+                
+                subgroup_i_values[subgroup_key]['sum'] += i_val
+                subgroup_i_values[subgroup_key]['count'] += 1
+                
+            # Calculate averages and find the best subgroup
+            avg_i_values = {}
+            max_avg_i_value = -float('inf')
+            best_subgroup_key = None
+            
+            # Remove noisy print statements
+            for subgroup_key, data in subgroup_i_values.items():
                 if data['count'] > 0:
-                    avg = data['total_i'] / data['count']
-                    calculated_averages[group] = avg
-                    print(f"  {group}: {avg:.4f} (Count: {data['count']})") # New logging
-                else:
-                    print(f"  {group}: N/A (Count: 0)") # New logging
-                    calculated_averages[group] = self.pessimistic_i_value # Use pessimistic if no nodes seen
-
-            # Find the group with the highest average I-value
-            if calculated_averages:
-                max_avg_i_value = -1
-                target_group = None
-                # Sort groups alphabetically for consistent selection in case of ties (though unlikely with floats)
-                sorted_groups = sorted(calculated_averages.keys())
-                for group in sorted_groups:
-                    avg = calculated_averages[group]
+                    avg = data['sum'] / data['count']
+                    avg_i_values[subgroup_key] = avg
                     if avg > max_avg_i_value:
                         max_avg_i_value = avg
-                        target_group = group
-                
-                print(f"Target Group for Hop: {target_group} (Max Avg I-Value: {max_avg_i_value:.4f})") # New logging
+                        best_subgroup_key = subgroup_key
+                # else:
+                #    print(f"  {subgroup_key}: N/A (Count: 0)")
+            
+            # Store the calculated averages for this hop instance
+            if avg_i_values:
+                self.hop_i_value_history.append(avg_i_values)
 
-                if target_group and group_nodes[target_group]:
-                    # Select a random node from the target group
-                    selected_node = random.choice(group_nodes[target_group])
-                    print(f"Selected Node for Hop: {selected_node.id} (from group {target_group})") # New logging
-
-                    # Determine which pointer to move (cycle through them)
-                    pointer_to_move_idx = self.current_bias_hop_pointer_index
-                    pointer_to_move = self.pointers[pointer_to_move_idx]
-                    print(f"Moving Pointer Index: {pointer_to_move_idx} to Node {selected_node.id}") # New logging
-
-                    # Move the pointer
-                    pointer_to_move['current_node'] = selected_node
-                    pointer_to_move['path'].append(selected_node.id) # Add node to path
-                    pointer_to_move['last_node_id'] = selected_node.id # Update last node id
-                    # Reset step counter for this pointer after hop?
-                    # pointer_to_move['steps'] = 0 
-                    # Add target node to visited nodes for this pointer?
-                    # pointer_to_move['visited_nodes'].add(selected_node.id)
-
-                    # Increment and wrap the pointer index for the next hop
-                    self.current_bias_hop_pointer_index = (self.current_bias_hop_pointer_index + 1) % self.num_pointers
+            # Hop to a random node within the best subgroup
+            if best_subgroup_key:
+                # print(f"Target Subgroup for Hop: {best_subgroup_key} (Max Avg I-Value: {max_avg_i_value:.4f})")
+                target_nodes_in_subgroup = []
+                for node in all_nodes_for_hop:
+                     if not isinstance(node, AttributeNode) or not hasattr(node, 'attributes') or not node.attributes:
+                         continue
+                     # Recreate the key for comparison
+                     current_node_key_list = []
+                     valid_node = True
+                     for attr_name in self.bias_attributes:
+                          attr_value = node.attributes.get(attr_name, 'MISSING')
+                          # if attr_value == 'MISSING': # Apply same skip logic as above if used
+                          #    valid_node = False
+                          #    break
+                          current_node_key_list.append(f"{attr_name}_{attr_value}")
+                          
+                     if not valid_node:
+                         continue
+                         
+                     current_node_key = tuple(sorted(current_node_key_list))
+                     if current_node_key == best_subgroup_key:
+                          target_nodes_in_subgroup.append(node)
+                          
+                if target_nodes_in_subgroup:
+                    # --- Prevent hopping to the same node if it's the only one in the best subgroup ---
+                    if len(target_nodes_in_subgroup) == 1 and target_nodes_in_subgroup[0] == pointer_to_hop_data['current_node']:
+                        # print(f"Skipping hop for Pointer {pointer_to_hop_idx}: Target subgroup {best_subgroup_key} only contains the current node {pointer_to_hop_data['current_node'].node_id}.")
+                        pass
+                    else:
+                        hop_node = random.choice(target_nodes_in_subgroup)
+                        # print(f"Hopping Pointer {pointer_to_hop_idx} to node {hop_node.node_id} in subgroup {best_subgroup_key}")
+                        pointer_to_hop_data['current_node'] = hop_node
+                        pointer_to_hop_data['last_visited'] = {}
                 else:
-                    print(f"Warning: Target group '{target_group}' has no nodes or no groups calculated. Skipping hop.")
+                    # print(f"Warning: No nodes found for the best subgroup {best_subgroup_key}. No hop performed.")
+                    pass
             else:
-                 print("Warning: No groups to calculate average I-values from. Skipping hop.")
-            print("--- End Bias Hop Check ---")
-        # --- End Bias Hop ---
-        
+                # print("Warning: Could not determine best subgroup. No hop performed.")
+                pass
+
+            self.current_bias_hop_pointer_index += 1 # Move to the next pointer for the next hop cycle
+        # --- End Bias Hop Logic --- 
+
         # Update I-values periodically using trainer's predictions
         if self.trainer and self.t % self.predictor_update_period == 0:
             for pointer_idx in range(len(self.pointers)):
@@ -236,7 +291,8 @@ class IValueTraversalClusterHop(Traversal):
                         
                     # Choose next node based on I-values
                     # Use the safe getter for I-values
-                    i_values = [self._get_i_value(pointer, n) for n in valid_neighbors]
+                    #print("Updating I-values for valid neighbors...")
+                    i_values = [self._get_i_value(pointer, n, use_din=True) for n in valid_neighbors]
                     # Old: i_values = [pointer['i_values'].get(n, self.pessimistic_i_value) for n in valid_neighbors] # Use pessimistic if not found
                     
                     if not i_values: # Should not happen if valid_neighbors is not empty, but check

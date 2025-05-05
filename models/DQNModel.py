@@ -43,7 +43,95 @@ class DQNModel(nn.Module):
         self.replay_buffer = deque(maxlen=10000)
         self.batch_size = 32
         self.gamma = 0.99
+
+    def _process_embedding(self, embedding):
+        """Processes the node embedding if the processor exists."""
+        if self.embedding_processor and embedding is not None:
+            # Ensure embedding is on the correct device before processing
+            embedding = embedding.to(self.device)
+            return self.embedding_processor(embedding)
+        elif self.embedding_dim > 0:
+            # Return zeros if embedding is expected but None is provided
+            return torch.zeros(embedding.shape[0], self.compressed_embedding_dim, device=self.device)
+        else:
+            # Return None if no embedding dimension is configured
+            return None
+
+    def forward(self, node_features, node_embedding=None):
+        """Forward pass to predict Q-value.
+
+        Args:
+            node_features (torch.Tensor): Tensor of node features.
+            node_embedding (torch.Tensor, optional): Tensor of node embeddings. Defaults to None.
+
+        Returns:
+            torch.Tensor: Predicted Q-value.
+        """
+        # Ensure features are on the correct device
+        node_features = node_features.to(self.device)
         
+        processed_embedding = self._process_embedding(node_embedding)
+
+        if processed_embedding is not None:
+            # Ensure processed_embedding is on the correct device
+            processed_embedding = processed_embedding.to(self.device)
+            # print(f"DEBUG DQN Fwd: Features shape {node_features.shape}, Embedding shape {processed_embedding.shape}")
+            combined_features = torch.cat((node_features, processed_embedding), dim=1)
+        else:
+            combined_features = node_features
+        
+        x = F.relu(self.fc1(combined_features))
+        x = F.relu(self.fc2(x))
+        q_value = self.fc3(x)  # Raw Q-value prediction
+        return q_value
+    
+    def train_step(self, transitions):
+        """Performs a single training step on a batch of transitions.
+
+        Args:
+            transitions (list): A list of tuples, where each tuple is 
+                                (state_features, state_embedding, reward).
+
+        Returns:
+            float: The loss value for this training step.
+        """
+        if not transitions:
+            return 0.0 # Or raise an error
+
+        # Unpack the batch
+        # Handle potential None embeddings carefully during stacking
+        state_features_batch = torch.stack([t[0] for t in transitions]).to(self.device)
+        state_embeddings_batch = torch.stack([
+            t[1] if t[1] is not None 
+            else torch.zeros(self.embedding_dim if self.embedding_dim > 0 else 0, device=self.device) 
+            for t in transitions
+        ])
+         # Filter out zero tensors if no embedding dim exists
+        if self.embedding_dim <= 0:
+             state_embeddings_batch = None # Pass None to forward if no embeddings expected
+        else:
+            state_embeddings_batch = state_embeddings_batch.to(self.device)
+            
+        rewards_batch = torch.tensor([t[2] for t in transitions], dtype=torch.float32).unsqueeze(1).to(self.device)
+
+        # Get current Q-value predictions from the model
+        # Pass embeddings only if they exist
+        if state_embeddings_batch is not None:
+             current_q_values = self(state_features_batch, state_embeddings_batch)
+        else:
+             current_q_values = self(state_features_batch)
+             
+        # Calculate Loss (MSE between predicted Q and actual reward)
+        # Note: Using reward directly as the target Q-value (Q(s) = R(s))
+        loss = F.mse_loss(current_q_values, rewards_batch)
+
+        # Optimize DQN
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
+
     def save_checkpoint(self, filepath):
         """Saves the DQN model and optimizer state dictionaries."""
         checkpoint = {
@@ -70,87 +158,15 @@ class DQNModel(nn.Module):
         self.to(self.device) # Ensure model is on the correct device after loading
         # print(f"DQNModel checkpoint loaded from {filepath}")
         
-    def forward(self, x_features, x_embedding=None):
-        # Ensure inputs are on correct device
-        x_features = x_features.to(self.device)
-
-        if self.embedding_processor is not None and x_embedding is not None:
-            x_embedding = x_embedding.to(self.device)
-            # Check for batch dimension (unsqueeze if single sample)
-            if x_embedding.dim() == 1:
-                x_embedding = x_embedding.unsqueeze(0)
-            if x_features.dim() == 1:
-                x_features = x_features.unsqueeze(0)
-
-            processed_embedding = self.embedding_processor(x_embedding)
-            # Concatenate features and processed embedding
-            x_combined = torch.cat((x_features, processed_embedding), dim=1)
-        else:
-            # Check for batch dimension (unsqueeze if single sample)
-            if x_features.dim() == 1:
-                x_features = x_features.unsqueeze(0)
-            x_combined = x_features
-
-        # Pass through main network
-        x = F.relu(self.fc1(x_combined))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
-    
-    def get_attribute_weights(self):
-        """
-        Extract the weights from the first layer as attribute importance.
-        Note: These weights correspond to the concatenation of
-        original features and the *compressed* embedding features.
-        """
-        return self.fc1.weight.data.cpu().numpy()
-    
-    def train_step(self, batch):
-        """Train the DQN on a batch of experiences from replay buffer."""
-        # This method assumes it's called by IValueTrainer, which manages the buffer
-        # Use self.replay_buffer if DQN manages its own buffer internally
-        if len(batch) < self.batch_size:
-            # If the provided batch is smaller than batch_size, sample from internal buffer
-            if len(self.replay_buffer) < self.batch_size:
-                return 0.0
-            transitions = random.sample(self.replay_buffer, self.batch_size)
-        else:
-            # If the provided batch is large enough, use it directly
-            transitions = random.sample(batch, self.batch_size)
-        
-        # Separate batch into components
-        # Assumes buffer stores tuples: (features, embedding, reward)
-        state_features = torch.stack([t[0] for t in transitions])
-        # Handle potential None embeddings gracefully
-        state_embeddings = torch.stack([t[1] if t[1] is not None else torch.zeros(self.embedding_dim) for t in transitions])
-        rewards = torch.tensor([t[2] for t in transitions], dtype=torch.float32).unsqueeze(1)
-        
-        # Move tensors to device (forward pass will also handle this, but good practice)
-        state_features = state_features.to(self.device)
-        state_embeddings = state_embeddings.to(self.device)
-        rewards = rewards.to(self.device)
-        
-        # Compute Q values for current states
-        q_values = self(state_features, state_embeddings)
-        
-        # Compute loss
-        loss = F.mse_loss(q_values, rewards)
-        
-        # Optimize the model
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        return loss.item()
-    
     def predict_i_value(self, node_features, node_embedding=None):
-        """Predict the Q-value for given node features and embedding.
+        """Predict the I-value for given node features and embedding.
 
         Args:
             node_features (torch.Tensor): Tensor of node features.
             node_embedding (torch.Tensor, optional): Tensor of node embedding. Defaults to None.
 
         Returns:
-            torch.Tensor: The predicted Q-value as a tensor.
+            torch.Tensor: The predicted I-value as a tensor.
         """
         self.eval() # Set model to evaluation mode
         with torch.no_grad(): # Disable gradient calculation
@@ -167,7 +183,21 @@ class DQNModel(nn.Module):
 
             # Get Q-value from the model's forward pass
             q_value = self(node_features, node_embedding)
-            
+        
+            # Apply sigmoid to normalize Q-value to (0, 1) range
+            normalized_q_value = torch.sigmoid(q_value)
+
+            # Calculate I-value: I = 1 - Q
+            i_value = 1.0 - normalized_q_value
+
         self.train() # Set model back to training mode
-        # Return the raw Q-value tensor
-        return q_value
+        # Return the calculated I-value tensor
+        return i_value
+
+    def get_attribute_weights(self):
+        """
+        Extract the weights from the first layer as attribute importance.
+        Note: These weights correspond to the concatenation of
+        original features and the *compressed* embedding features.
+        """
+        return self.fc1.weight.data.cpu().numpy()

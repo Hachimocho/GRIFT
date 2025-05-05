@@ -1034,7 +1034,7 @@ These changes ensure that nodes have a unique, hashable identifier, allowing the
 
 ## 2025-04-16: Debugged Bias Loss Calculation in attribute_utils.py
 
-*   **`attribute_utils.py`**: Confirmed `AttributeBiasLoss.forward` is called, keys match, and attribute value variation exists. Found bias calculation details print wasn't reached. Moved the debug print to occur *before* the `if len(values) >= 2:` check within the attribute loop. It now logs `attr_name`, `value_means` (mean error per group), and `len(values)` for the first attribute processed, regardless of group count, to see if the issue is failing the two-group check.
+*   **`attribute_utils.py`**: Confirmed `AttributeBiasLoss.forward` is called, keys match, and attribute value variation exists. Found bias calculation details print wasn't reached. Moved the debug print to occur *before* the inner loop within the attribute loop. It now logs `attr_name`, `value_means` (mean error per group), and `len(values)` for the first attribute processed, regardless of group count, to see if the issue is failing the two-group check.
 
 ## 2025-04-16: Debugged Bias Loss Calculation in attribute_utils.py
 
@@ -1085,97 +1085,24 @@ These changes ensure that nodes have a unique, hashable identifier, allowing the
     *   Added a TODO comment to update `trainer.run` to accept `val_loader`.
 ```
 
-## Evaluation Refactoring (Chunk-Based Loading)
-
-- Removed `NodeEvaluationDataset` class and `evaluation_collate_fn` function from `test_hierarchical.py`.
-- Removed the creation of `DataLoader` instances (`val_loader`, `test_loader`) for validation and testing.
-- Modified the `evaluate_model` function:
-    - Now accepts a list of nodes (`nodes_to_evaluate`) and `batch_size` instead of a `DataLoader`.
-    - Implements chunk-based loading internally, processing nodes in chunks defined by `batch_size`.
-    - Loads image data, converts to tensors, applies transformations, and calculates metrics within a `torch.no_grad()` context.
-- Updated calls to `evaluate_model` within the training loop (for validation) and for final testing to pass the appropriate node lists (`val_nodes_from_graph`, `test_nodes_from_graph`) and `args.batch_size`.
-
-## Standardized Model Checkpointing
-
-- Added `save_checkpoint(self, filepath)` and `load_checkpoint(self, filepath)` methods to `CNNModel` and `DQNModel` classes.
-    - These methods handle saving/loading both the model's `state_dict` and the optimizer's `state_dict` to a single checkpoint file.
-    - `load_checkpoint` ensures the model and loaded states are moved to the correct `device`.
-- Updated `test_hierarchical.py` to use `model.save_checkpoint(filepath)` and `model.load_checkpoint(filepath)` instead of direct `torch.save` and `model.load_state_dict` calls for saving the best model during training and loading it for final evaluation or reloading after validation dip.
-
-## Refactor Trainer Loss Handling (2025-04-24)
-
-*   **`IValueTrainer` & `ExperimentTrainer`**: Modified `__init__` to accept `loss_fn` argument and removed internal `criterion` definition.
-*   **`test_hierarchical.py`**: Defined `criterion` (BCEWithLogitsLoss) and passed it to trainer constructors. Updated `evaluate_model` calls to use `criterion` and conditionally pass `trainer.bias_loss` for `IValueTrainer`.
-*   **Removed `epoch` arg**: Removed `epoch` argument from `train` methods in both trainers; epoch loop is now managed solely in `test_hierarchical.py`.
-*   **Removed val/test traversals**: Removed `val_traversal` and `test_traversal` from trainer `__init__` methods as evaluation is now handled by `evaluate_model` in `test_hierarchical.py` using DataLoaders.
-*   **Corrected Variables**: Fixed variable names in `test_hierarchical.py` trainer instantiation calls (e.g., `train_manager`, `model`, `train_traversal`).
+### Subgroup I-Value Logging and Plotting
+- **`IValueTraversalClusterHop` Modification:**
+    - Removed print statements that output average I-values per subgroup during bias hop calculations.
+    - Added `self.hop_i_value_history` list to store dictionaries of `{subgroup_key: avg_i_value}` calculated during each hop check.
+    - Added `get_hop_i_value_history()` method to retrieve this data.
+- **`test_hierarchical.py` Modification:**
+    - Added `plot_subgroup_i_values(history, output_filename)` function using `pandas` and `matplotlib` to generate a line plot showing the average I-value trend for each subgroup over hop instances.
+    - After the training loop, the script now retrieves the hop history from the `train_traversal` object and calls `plot_subgroup_i_values` to save the plot to the logs directory (e.g., `logs/YYYYMMDD_HHMMSS_subgroup_i_values.png`).
 ```
 
-## Summary of Changes (Bias Metrics - NameError Fix)
-
-Modified `evaluate_model` in `test_hierarchical.py`:
-- **Bug Fix (NameError):** Corrected the placement of the definition and population logic for the `per_attribute_stats` dictionary, which was causing a `NameError`. The definition is now correctly placed before the loop that iterates through subgroup statistics, and the logic to populate the dictionary (parsing subgroup keys and updating counts/corrects) is now correctly placed *inside* that loop, specifically within the `if count > 0` block.
-- Previous changes (still included):
-    - Corrected the initial logic for updating subgroup bias statistics to handle potential node loading failures within a batch.
-    - Added calculation and reporting for various bias metrics: subgroup accuracy, overall bias, average subgroup bias, per-attribute accuracy, per-attribute bias, and average attribute bias.
-    - Included the `bias_metrics` dictionary in the function's return value.
-
-These changes ensure the bias calculation logic runs correctly without the `NameError` and provides comprehensive fairness metrics.
-
-## Summary of Changes (Bias Metrics - Avg Subgroup Bias Fix)
-
-Modified `evaluate_model` in `test_hierarchical.py`:
-- **Bug Fix (Average Subgroup Bias):** Corrected the calculation for `average_subgroup_bias`. Previously, it incorrectly compared the decimal subgroup accuracy (0-1 scale) with the percentage overall accuracy (0-100 scale). The fix involves calculating the overall accuracy as a decimal (dividing the percentage value by 100) and using this decimal value in the absolute difference calculation (`abs(accuracy - overall_accuracy)`).
-- Previous changes (still included):
-    - Fixed a `NameError` related to the `per_attribute_stats` dictionary by correcting the placement of its definition and population logic.
-    - Corrected the initial logic for updating subgroup bias statistics to handle potential node loading failures within a batch.
-    - Added calculation and reporting for various bias metrics: subgroup accuracy, overall bias, average subgroup bias, per-attribute accuracy, per-attribute bias, and average attribute bias.
-    - Included the `bias_metrics` dictionary in the function's return value.
-
-These changes ensure all bias calculations, including average subgroup bias, are performed correctly and consistently using a decimal scale.
-
-## Summary of Changes (Training Attribute Distribution Tracking)
-
-Implemented functionality to track the distribution of categorical attribute values for nodes visited/selected during the training process. This helps in analyzing potential sampling biases of different traversal strategies.
-
-1.  **`trainers/Trainer.py`**:
-    *   Modified `__init__` to accept an optional `attribute_metadata` argument and store it (`self.attribute_metadata`).
-2.  **`trainers/ExperimentTrainer.py`**:
-    *   Modified `__init__` to accept `attribute_metadata`, pass it to the base `Trainer`'s `super().__init__`, and extract a list of categorical attribute names (`self.categorical_attrs_for_tracking`) to monitor.
-    *   Modified `train()` method:
-        *   Initializes `attribute_distribution = defaultdict(lambda: defaultdict(int))` before the training loop.
-        *   Inside the loop, for each `current_node` selected by the traversal, it checks if tracking is enabled and if the node has attributes. If so, it iterates through `self.categorical_attrs_for_tracking` and increments the count for the corresponding attribute value in `attribute_distribution`.
-        *   Returns `metrics, attribute_distribution`.
-3.  **`trainers/IValueTrainer.py`**:
-    *   Modified `__init__` to pass `attribute_metadata` to the base `Trainer`'s `super().__init__` and extract `self.categorical_attrs_for_tracking`.
-    *   Modified `train()` method:
-        *   Initializes `attribute_distribution` similarly.
-        *   Inside the loop, it populates the distribution based on the `chosen_node` selected by the I-Value traversal strategy.
-        *   Returns `metrics, attribute_distribution`.
-4.  **`test_hierarchical.py`**:
-    *   Modified the trainer initialization logic to pass the loaded `attribute_metadata` to both `ExperimentTrainer` and `IValueTrainer`.
-    *   Updated the main training loop:
-        *   Unpacks the return value of `trainer.train()` into `train_metrics, train_distribution`.
-        *   Stores the `train_distribution` for each epoch.
-        *   Adds a print statement after each training epoch to display the collected `train_distribution` using `json.dumps` for readability.
-
-This feature allows for monitoring how often different subgroups (defined by categorical attributes) are encountered during training for different traversal methods.
+## 2025-04-25
+*   **Centralized Image Transforms:** Refactored `IValueTrainer`, `ExperimentTrainer`, and `evaluate_model` in `test_hierarchical.py` to use the `CNNModel`'s built-in `transform` method. The model's `current_mode` attribute ('train' or 'eval') now controls whether training augmentations or common transforms are applied, centralizing the transformation logic.
 ```
 
-Follow these instructions to make the following change to my code document.
-
-Instruction: Add a section summarizing the finalized attribute distribution tracking in IValueTrainer, emphasizing internal storage and original return signature.
-
-Code Edit:
+## 2025-04-25
+*   **Centralized Image Transforms:** Refactored `IValueTrainer`, `ExperimentTrainer`, and `evaluate_model` in `test_hierarchical.py` to use the `CNNModel`'s built-in `transform` method. The model's `current_mode` attribute ('train' or 'eval') now controls whether training augmentations or common transforms are applied, centralizing the transformation logic.
+*   **Fix `_get_cnn_features` Transforms:** Updated the `_get_cnn_features` helper method within `IValueTrainer` to correctly utilize the primary `CNNModel`'s internal `transform` method (using 'eval' mode) instead of its own transform pipeline. This ensures consistency in image preprocessing for the DQN state.
 ```
-{{ ... }}
 
-## Finalized Attribute Distribution Tracking in IValueTrainer
-
-- **Goal**: Track categorical attribute distribution during `IValueTrainer` training without altering the existing training loop or return signature.
-- **`IValueTrainer.__init__`**: Updated to accept `attribute_metadata`, pass it to the base class, store it, and extract `categorical_attrs_for_tracking`.
-- **`IValueTrainer.train`**:
-    - Modified to initialize `self.attribute_distribution = defaultdict(lambda: defaultdict(int))` at the start of each epoch.
-    - Added logic within the training loop to populate `self.attribute_distribution` based on the attributes of nodes processed in each batch.
-    - **Maintained original return signature**: The method continues to return only the `metrics` dictionary. The distribution is tracked internally.
-- **`test_hierarchical.py`**: The main training loop was adjusted to correctly call `trainer.train()` for both `ExperimentTrainer` (returns `metrics, distribution`) and `IValueTrainer` (returns `metrics`), handling the distribution conditionally.
+## 2025-04-25
+*   **Removed Unused Method:** Deleted the `process_node_data` method from `IValueTrainer` as it was no longer being used. The core batch processing logic is handled directly within the `train` method.

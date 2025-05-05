@@ -22,6 +22,9 @@ from tqdm import tqdm
 import logging  # Add missing import for logging module
 import traceback # Add traceback import
 import json # Add json import
+import matplotlib.pyplot as plt # Added
+import random # Add import
+from collections import defaultdict # Add import
 
 # Add a null handler for silencing logging
 class NullHandler(logging.Handler):
@@ -122,22 +125,9 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                         img = node_data.load_data()
                         label = node.get_label()
                         if img is not None and label is not None:
-                            # Apply transformations (ensure model has transform attribute)
-                            if hasattr(model, 'transform') and model.transform:
-                                # Assume load_data gives numpy HWC, BGR - needs conversion
-                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
-                                img_tensor = model.transform(img)
-                            elif isinstance(img, np.ndarray):
-                                # Basic conversion if no transform available
-                                img_tensor = torch.from_numpy(img).float()
-                                if img_tensor.ndim == 3: # Basic HWC to CHW
-                                     img_tensor = img_tensor.permute(2, 0, 1)
-                            elif isinstance(img, torch.Tensor):
-                                img_tensor = img # Already a tensor
-                            else:
-                                print(f"Warning: Unexpected image data type ({type(img)}) for node {node.node_id}")
-                                continue # Skip node
-                                
+                            # Apply transformations using the model's internal method
+                            # (assumes model.current_mode is set to 'eval' correctly)
+                            img_tensor = model.transform(img)
                             batch_images_loaded.append(img_tensor)
                             batch_labels_loaded.append(float(label))
                             batch_nodes_loaded.append(node) # Add node if data loaded
@@ -198,7 +188,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
             # --- Associate predictions/labels with nodes for bias calc ---
             node_results = {}
-            if attribute_metadata and categorical_attrs:
+            if attribute_metadata and categorical_attrs: # Check again in case it was disabled
                  for i, node in enumerate(batch_nodes_loaded):
                       node_results[node.node_id] = {
                            'prediction': predictions[i],
@@ -424,9 +414,9 @@ def parse_args():
                         help='Load the full dataset from cache instead of the subset (use with --use-cached)')
     parser.add_argument('--cached-nodes', type=int, default=1000, 
                         help='Number of nodes to cache per split when not using full cache (default: 1000)')
-    parser.add_argument('--cache-file', type=str, default='cached_nodes.pkl', 
-                        help='Path to cache file for saving/loading nodes')
-    
+    parser.add_argument('--cache-file', type=str, default='node_cache/cached_nodes.pkl', 
+                        help='Filename for caching/loading nodes (relative to script execution dir)')
+
     # Grid search options
     parser.add_argument('--search', action='store_true',
                         help='Run grid search over threshold combinations')
@@ -450,176 +440,165 @@ def parse_args():
                         help='Number of training epochs (default: 50)')
     parser.add_argument('--bias_loss_weight', type=float, default=0.00,
                         help='Weight for bias loss (default: 0.00)')
+    parser.add_argument('--bias_hop_period', type=int, default=100,
+                        help='Period for bias hop (default: 100)')
     parser.add_argument('--load-last-checkpoint', action='store_true',
                         help='Load the last best checkpoint if validation accuracy decreases.')
-    
+    parser.add_argument('--log_dir', type=str, default='logs',
+                        help='Directory to save logs (default: logs)')
+    parser.add_argument('--fair-train', action='store_true', help='Use subgroup-balanced training set for graph construction')
+    parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
+
     return parser.parse_args()
 
-def load_cached_nodes(cache_file, use_full_cache=False):
-    """Load nodes from cache file
-    
-    Args:
-        cache_file: Path to the cache file
-        use_full_cache: If True, load the full dataset; if False, load the subset
-    
-    Returns:
-        Tuple of (train_nodes, val_nodes, test_nodes) or (None, None, None) if error
-    """
-    if not os.path.exists(cache_file):
-        print(f"Cache file {cache_file} does not exist!")
-        return None, None, None
-    
-    print(f"Loading nodes from cache file: {cache_file}")
-    try:
-        with open(cache_file, 'rb') as f:
-            cached_data = dill.load(f)
-            
-        # Check cache format
-        if isinstance(cached_data, dict) and 'full' in cached_data and 'subset' in cached_data:
-            # New dual cache format
-            cache_type = 'full' if use_full_cache else 'subset'
-            train = cached_data[cache_type]['train']
-            val = cached_data[cache_type]['val']
-            test = cached_data[cache_type]['test']
-            
-            # Print cache information
-            if 'metadata' in cached_data:
-                metadata = cached_data['metadata']
-                print(f"Using {'full' if use_full_cache else 'subset'} cache")
-                print(f"Full cache contains: {metadata['full_sizes']['train']} train, "
-                      f"{metadata['full_sizes']['val']} val, "
-                      f"{metadata['full_sizes']['test']} test nodes")
-                print(f"Subset cache contains: {metadata['subset_sizes']['train']} train, "
-                      f"{metadata['subset_sizes']['val']} val, "
-                      f"{metadata['subset_sizes']['test']} test nodes")
-        else:
-            # Legacy cache format - for backwards compatibility
-            print("Using legacy cache format")
-            train = cached_data.get('train', [])
-            val = cached_data.get('val', [])
-            test = cached_data.get('test', [])
-            
-        print(f"Loaded {len(train)} train, {len(val)} val, {len(test)} test nodes from cache")
-        return train, val, test
-    except Exception as e:
-        print(f"Error loading cached nodes: {e}")
-        return None, None, None
+def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['Ground Truth Race', 'Ground Truth Gender']):
+    """Balances nodes across subgroups to reach a target total number.
 
-def cache_nodes(dataloader=None, cache_file="cached_nodes.pkl", nodes_per_split=1000, train_nodes=None, val_nodes=None, test_nodes=None):
-    """Cache nodes to speed up testing
-    
     Args:
-        dataloader: Dataloader instance (only needed if nodes are not provided)
-        cache_file: Path to save the cache file
-        nodes_per_split: Number of nodes per split for subset caching
-        train_nodes: Pre-loaded train nodes (if None, will load from dataloader)
-        val_nodes: Pre-loaded val nodes (if None, will load from dataloader)
-        test_nodes: Pre-loaded test nodes (if None, will load from dataloader)
+        nodes: List of nodes to balance.
+        target_num_nodes: The desired total number of nodes in the balanced list.
+        attributes_to_balance: List of attribute keys to define subgroups.
+
+    Returns:
+        A list of nodes balanced across subgroups, totaling target_num_nodes.
+
+    Raises:
+        ValueError: If balancing is not possible because one or more subgroups
+                    are too small to provide the required number of samples.
     """
-    # Only load nodes if they haven't been provided
-    if train_nodes is None or val_nodes is None or test_nodes is None:
-        print(f"Loading nodes for caching...")
-        start_time = time.time()
-        
-        # Get nodes from all datasets
-        all_nodes = []
-        for dataset in dataloader.datasets:
-            all_nodes.extend(dataset.load())
-            
-        # Create node lists for each split
-        train_nodes = [node for node in all_nodes if node.split == 'train']
-        val_nodes = [node for node in all_nodes if node.split == 'val']
-        test_nodes = [node for node in all_nodes if node.split == 'test']
-    else:
-        print(f"Using pre-loaded nodes for caching...")
-        start_time = time.time()
-    
-    loading_time = time.time() - start_time
-    print(f"Loaded {len(train_nodes)} train, {len(val_nodes)} val, {len(test_nodes)} test nodes in {loading_time:.2f} seconds")
-    
-    # Create subset of nodes for each split
-    subset_train = train_nodes[:min(len(train_nodes), nodes_per_split)]
-    subset_val = val_nodes[:min(len(val_nodes), nodes_per_split)]
-    subset_test = test_nodes[:min(len(test_nodes), nodes_per_split)]
-    
-    # Create both full and subset caches
-    full_data = {
-        'train': train_nodes,
-        'val': val_nodes,
-        'test': test_nodes
-    }
-    
-    subset_data = {
-        'train': subset_train,
-        'val': subset_val,
-        'test': subset_test
-    }
-    
-    # Store both datasets in the cache
-    cached_data = {
-        'full': full_data,
-        'subset': subset_data,
-        'metadata': {
-            'full_sizes': {
-                'train': len(train_nodes),
-                'val': len(val_nodes), 
-                'test': len(test_nodes)
-            },
-            'subset_sizes': {
-                'train': len(subset_train),
-                'val': len(subset_val), 
-                'test': len(subset_test)
-            },
-            'creation_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-    }
-    
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(os.path.abspath(cache_file)), exist_ok=True)
-    
-    print(f"\nCaching nodes to: {cache_file}")
-    print(f"Full cache: {len(train_nodes)} train, {len(val_nodes)} val, {len(test_nodes)} test nodes")
-    print(f"Subset cache: {len(subset_train)} train, {len(subset_val)} val, {len(subset_test)} test nodes")
-    
-    # Debug: count nodes with embeddings before caching
-    embedding_counts = {}
-    for split_name, nodes_list in [("train", train_nodes), ("val", val_nodes), ("test", test_nodes)]:
-        with_embedding = sum(1 for node in nodes_list if 'face_embedding' in node.attributes)
-        valid_embedding = sum(1 for node in nodes_list 
-                             if 'face_embedding' in node.attributes 
-                             and isinstance(node.attributes['face_embedding'], np.ndarray) 
-                             and not np.all(np.isclose(node.attributes['face_embedding'], 0)))
-        embedding_counts[split_name] = (with_embedding, valid_embedding, len(nodes_list))
-    
-    print("\nEmbedding statistics before caching:")
-    for split_name, (with_emb, valid_emb, total) in embedding_counts.items():
-        print(f"  {split_name}: {with_emb}/{total} nodes with embedding attribute ({with_emb/total*100:.2f}%)")
-        if with_emb > 0:
-            print(f"    Valid embeddings: {valid_emb}/{with_emb} ({valid_emb/with_emb*100:.2f}%)")
-    
-    # Use a higher pickle protocol to ensure numpy arrays are properly serialized
+    if not nodes or target_num_nodes <= 0:
+        print(f"Warning: Cannot balance empty node list or with target_num_nodes={target_num_nodes}. Returning empty list.")
+        return []
+
+    subgroups = defaultdict(list)
+    for node in nodes:
+        subgroup_key = tuple(node.attributes.get(attr, 'Unknown') for attr in attributes_to_balance)
+        subgroups[subgroup_key].append(node)
+
+    num_subgroups = len(subgroups)
+    if num_subgroups == 0:
+        print("Warning: No subgroups found for balancing. Returning original list (or empty if target > original size).")
+        # Return original list only if its size matches target, otherwise it's impossible
+        return nodes if len(nodes) == target_num_nodes else []
+
+    nodes_per_subgroup = target_num_nodes // num_subgroups
+    remainder = target_num_nodes % num_subgroups
+
+    print(f"Balancing to {target_num_nodes} nodes across {num_subgroups} subgroups.")
+    print(f"Base nodes per subgroup: {nodes_per_subgroup}, Remainder: {remainder}")
+
+    balanced_nodes = []
+    subgroup_keys = list(subgroups.keys())
+    random.shuffle(subgroup_keys) # Shuffle keys to randomly distribute remainder
+
+    for i, subgroup_key in enumerate(subgroup_keys):
+        group_nodes = subgroups[subgroup_key]
+        required_size = nodes_per_subgroup + (1 if i < remainder else 0)
+
+        if len(group_nodes) < required_size:
+            raise ValueError(
+                f"Cannot balance to {target_num_nodes} nodes. Subgroup {subgroup_key} "
+                f"has only {len(group_nodes)} nodes, but requires {required_size}."
+            )
+
+        if required_size > 0:
+            sampled_nodes = random.sample(group_nodes, required_size)
+            balanced_nodes.extend(sampled_nodes)
+
+    random.shuffle(balanced_nodes) # Shuffle the final list
+    print(f"Total nodes after balancing: {len(balanced_nodes)} (Target: {target_num_nodes})")
+    if len(balanced_nodes) != target_num_nodes:
+         print(f"WARNING: Final balanced node count ({len(balanced_nodes)}) does not match target ({target_num_nodes})!") # Should not happen
+
+    return balanced_nodes
+
+def save_cached_nodes(train_nodes, val_nodes, test_nodes, cache_file, target_num_nodes):
+    """Balances each node list to target_num_nodes and saves full/balanced versions per split."""
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    print(f"Balancing node lists for caching to target size {target_num_nodes}...")
+
+    cache_data = {}
+    for split_name, nodes_list in [('train', train_nodes), ('val', val_nodes), ('test', test_nodes)]:
+        print(f"  Processing {split_name} split ({len(nodes_list)} nodes)")
+        try:
+            balanced_list = balance_nodes_by_subgroup(nodes_list, target_num_nodes=target_num_nodes)
+            cache_data[split_name] = {
+                'full': nodes_list,
+                'balanced': balanced_list
+            }
+            print(f"    Full: {len(nodes_list)}, Balanced: {len(balanced_list)}")
+        except ValueError as e:
+             print(f"    ERROR balancing {split_name} split: {e}. Skipping balancing for this split in cache.")
+             # Store full list as balanced if balancing failed
+             cache_data[split_name] = {
+                 'full': nodes_list,
+                 'balanced': nodes_list # Fallback to full if balancing fails
+             }
+
     with open(cache_file, 'wb') as f:
-        dill.dump(cached_data, f)
-    print("Cache saved successfully!")
-    
-    # Verify cache immediately to ensure embeddings are properly saved
-    print("\nVerifying cache...")
-    with open(cache_file, 'rb') as f:
-        verification_data = dill.load(f)
-    
-    # Count embeddings in cached data
-    print("Embedding statistics after caching:")
-    for data_type in ['subset']:  # Just check subset for speed
-        for split_name, nodes_list in verification_data[data_type].items():
-            with_embedding = sum(1 for node in nodes_list if 'face_embedding' in node.attributes)
-            valid_embedding = sum(1 for node in nodes_list 
-                               if 'face_embedding' in node.attributes 
-                               and isinstance(node.attributes['face_embedding'], np.ndarray) 
-                               and not np.all(np.isclose(node.attributes['face_embedding'], 0)))
-            total = len(nodes_list)
-            print(f"  {data_type}/{split_name}: {with_embedding}/{total} nodes with embedding attribute ({with_embedding/total*100:.2f}%)")
-            if with_embedding > 0:
-                print(f"    Valid embeddings: {valid_embedding}/{with_embedding} ({valid_embedding/with_embedding*100:.2f}%)")
+        dill.dump(cache_data, f)
+
+def load_cached_nodes(cache_file, split_name, balanced=False):
+    """Loads nodes for a specific split from cache, optionally the balanced set."""
+    if os.path.exists(cache_file):
+        print(f"Attempting to load {split_name} nodes from cache: {cache_file}")
+        try:
+            with open(cache_file, 'rb') as f:
+                cache_data = dill.load(f)
+            print(f"  Cache file loaded. Type: {type(cache_data)}. Checking structure...")
+
+            # Check NEW format (dict keyed by split_name, containing dicts with 'full'/'balanced')
+            if isinstance(cache_data, dict) and \
+               split_name in cache_data and \
+               isinstance(cache_data.get(split_name), dict) and \
+               'full' in cache_data[split_name] and \
+               'balanced' in cache_data[split_name]:
+                print(f"  -> Detected NEW cache format for split '{split_name}'.")
+                nodes_to_return = cache_data[split_name]['balanced'] if balanced else cache_data[split_name]['full']
+                load_type = 'Balanced' if balanced else 'Full'
+                print(f"     {load_type} nodes ({len(nodes_to_return)}) loaded successfully.")
+                return nodes_to_return
+            else:
+                print(f"  -> Did not match NEW format for split '{split_name}'. Checking older formats...")
+                # Provide details if it looked like a dict but failed the checks
+                if isinstance(cache_data, dict):
+                    if split_name not in cache_data:
+                        print(f"     Reason: Split key '{split_name}' not found in top-level dict.")
+                    elif not isinstance(cache_data.get(split_name), dict):
+                        print(f"     Reason: Value for key '{split_name}' is not a dict (Type: {type(cache_data.get(split_name))}).")
+                    elif 'full' not in cache_data.get(split_name, {}):
+                        print(f"     Reason: Key 'full' not found within dict for split '{split_name}'.")
+                    elif 'balanced' not in cache_data.get(split_name, {}):
+                        print(f"     Reason: Key 'balanced' not found within dict for split '{split_name}'.")
+
+            # Check intermediate OLD format (dict with 'full'/'balanced' directly)
+            if isinstance(cache_data, dict) and 'full' in cache_data and 'balanced' in cache_data:
+                 print(f"  -> Detected OLD cache format (dict without splits). Loading overall 'full' set as fallback for '{split_name}'.")
+                 nodes_to_return = cache_data['balanced'] if balanced else cache_data['full']
+                 if balanced:
+                      print(f"     Warning: Requested balanced set, returning from overall balanced set ({len(nodes_to_return)} nodes). This might not be split-specific.")
+                 else:
+                      print(f"     Returning overall full set ({len(nodes_to_return)} nodes). This might not be split-specific.")
+                 return nodes_to_return
+
+            # Check very OLD format (just a list)
+            elif isinstance(cache_data, list):
+                 print(f"  -> Detected VERY OLD cache format (list). Loading as full set for '{split_name}'.")
+                 if balanced:
+                     print("     Warning: Cannot load balanced set from list format. Returning full list.")
+                 print(f"     Returning full list ({len(cache_data)} nodes)." )
+                 return cache_data
+
+            # Unrecognized
+            print(f"  -> Cache file structure is unrecognized. Ignoring cache for split '{split_name}'.")
+            return None
+
+        except (dill.UnpicklingError, EOFError, KeyError, AttributeError) as e:
+            print(f"Error loading/parsing cache file {cache_file} for split '{split_name}': {e}. Ignoring cache.")
+            return None
+    else:
+        print(f"Cache file {cache_file} not found for split '{split_name}'.")
+        return None
 
 def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symmetry_steps, embedding_steps):
     """Run grid search over threshold parameters and log results"""
@@ -900,6 +879,54 @@ def visualize_search_results(results_df, output_prefix):
     
     print(f"Visualizations saved to logs/search_plots/{output_prefix}_*.png")
 
+def plot_subgroup_i_values(history, output_filename):
+    """Plots the average I-value for each subgroup over hop instances."""
+    if not history:
+        print("No hop history recorded, skipping I-value plot.")
+        return
+
+    try:
+        # Convert history (list of dicts) to DataFrame
+        records = []
+        for hop_index, hop_data in enumerate(history):
+            for subgroup, avg_ivalue in hop_data.items():
+                # Convert tuple subgroup key to string for easier handling if needed
+                subgroup_str = str(subgroup) 
+                records.append({
+                    'HopInstance': hop_index,
+                    'Subgroup': subgroup_str,
+                    'AvgIValue': avg_ivalue
+                })
+        
+        if not records:
+            print("No valid records found in hop history.")
+            return
+            
+        df = pd.DataFrame(records)
+
+        plt.figure(figsize=(15, 8))
+        
+        # Plot lines for each subgroup
+        for subgroup in df['Subgroup'].unique():
+            subgroup_df = df[df['Subgroup'] == subgroup]
+            plt.plot(subgroup_df['HopInstance'], subgroup_df['AvgIValue'], marker='o', linestyle='-', label=subgroup)
+
+        plt.xlabel('Hop Instance Index')
+        plt.ylabel('Average I-Value')
+        plt.title('Average I-Value per Subgroup Over Bias Hops')
+        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
+        plt.grid(True)
+        plt.tight_layout(rect=[0, 0, 0.85, 1]) # Adjust layout to make space for legend
+        
+        plt.savefig(output_filename)
+        print(f"Saved subgroup I-value plot to {output_filename}")
+        plt.close() # Close the figure to free memory
+
+    except Exception as e:
+        print(f"Error generating subgroup I-value plot: {e}")
+        import traceback
+        traceback.print_exc()
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -914,6 +941,9 @@ def main():
     
     data_root = "/home/brg2890/major/datasets/ai-face"
     args = parse_args()
+    print("Detected arguments:")
+    print(args)
+    print(f"Bias hop period: {args.bias_hop_period}")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
     log_file = f"logs/hierarchical_test_{timestamp}.log"
@@ -1005,24 +1035,38 @@ def main():
     # Set up a dataloader for loading datasets
     edge_class = Edge
     train_nodes, val_nodes, test_nodes = None, None, None
-    
-    # Load nodes (either from cache or directly from datasets)
+    train_nodes_full, val_nodes_full, test_nodes_full = None, None, None # Keep track of full sets for caching
+
+    # --- Node Loading --- 
     node_loading_start = time.time()
     
     if args.use_cached:
-        # Try to load from cache - either full or subset based on args
-        train_nodes, val_nodes, test_nodes = load_cached_nodes(
-            cache_file=args.cache_file,
-            use_full_cache=args.use_full_cache
-        )
-        
+        print(f"Attempting to load nodes from cache: {args.cache_file}")
+        # Load potentially balanced sets based on flags
+        train_nodes = load_cached_nodes(args.cache_file, 'train', balanced=args.fair_train)
+        val_nodes = load_cached_nodes(args.cache_file, 'val', balanced=args.fair_test)
+        test_nodes = load_cached_nodes(args.cache_file, 'test', balanced=args.fair_test)
+
         if train_nodes is None or val_nodes is None or test_nodes is None:
-            print("Error loading from cache, falling back to direct loading")
-            train_nodes, val_nodes, test_nodes = None, None, None
-    
-    if train_nodes is None or val_nodes is None or test_nodes is None:
+            print("Failed to load one or more splits from cache. Will attempt direct loading.")
+            args.use_cached = False # Force direct load if cache failed
+            train_nodes, val_nodes, test_nodes = None, None, None # Reset
+        else:
+            print("Successfully loaded nodes from cache.")
+            # If loaded from cache, we don't necessarily have the 'full' versions unless
+            # we load them separately or the cache format changes. For now, assume the
+            # loaded lists are sufficient for downstream use, but caching below won't work correctly.
+            # If needed, we could add logic here to load the 'full' versions too.
+            # For simplicity, we set the *_full vars to the potentially balanced lists here,
+            # acknowledging that re-caching might not save the original full sets.
+            train_nodes_full = train_nodes
+            val_nodes_full = val_nodes
+            test_nodes_full = test_nodes
+
+
+    if not args.use_cached:
         # Load nodes directly from datasets
-        print("Loading nodes from datasets...")
+        print("Loading nodes directly from dataset...")
         # Initialize the AIFaceDataset with correct parameters (using positional arguments)
         dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": 2})
         
@@ -1037,129 +1081,56 @@ def main():
             
         # Create node lists for each split
         print("Separating nodes by split...")
-        train_nodes = [node for node in all_nodes if node.split == 'train']
-        val_nodes = [node for node in all_nodes if node.split == 'val']
-        test_nodes = [node for node in all_nodes if node.split == 'test']        
-        # Cache nodes if requested
+        train_nodes_full = [node for node in all_nodes if node.split == 'train']
+        val_nodes_full = [node for node in all_nodes if node.split == 'val']
+        test_nodes_full = [node for node in all_nodes if node.split == 'test']
+        print(f"  Train: {len(train_nodes_full)}, Val: {len(val_nodes_full)}, Test: {len(test_nodes_full)}")
+
+        # Cache the full nodes if requested
         if args.cache_nodes:
-            print("Caching nodes...")
-            cache_nodes(
-                cache_file=args.cache_file,
-                nodes_per_split=args.cached_nodes,
-                train_nodes=train_nodes,
-                val_nodes=val_nodes,
-                test_nodes=test_nodes
-            )
-    
-    # Limit the number of nodes in test mode
-    if args.test and not args.use_full_cache:
-        limit = args.cached_nodes
-        train_nodes = train_nodes[:min(len(train_nodes), limit)]
-        val_nodes = val_nodes[:min(len(val_nodes), limit)]
-        test_nodes = test_nodes[:min(len(test_nodes), limit)]
-    
+            print(f"Caching full node lists to {args.cache_file}...")
+            # *** Pass the FULL lists to save_cached_nodes ***
+            save_cached_nodes(train_nodes_full, val_nodes_full, test_nodes_full, args.cache_file, target_num_nodes=args.cached_nodes)
+
+        # Apply balancing based on flags to get the lists used for graph building
+        print("Applying balancing based on flags for graph construction...")
+        train_nodes = balance_nodes_by_subgroup(train_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_train else train_nodes_full
+        val_nodes = balance_nodes_by_subgroup(val_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else val_nodes_full
+        test_nodes = balance_nodes_by_subgroup(test_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else test_nodes_full
+        print(f"  Final Train Nodes used for graph: {len(train_nodes)} ({'Balanced' if args.fair_train else 'Full'})")
+        print(f"  Final Val Nodes used for graph: {len(val_nodes)} ({'Balanced' if args.fair_test else 'Full'})")
+        print(f"  Final Test Nodes used for graph: {len(test_nodes)} ({'Balanced' if args.fair_test else 'Full'})")
+
     node_loading_time = time.time() - node_loading_start
-    print(f"Node loading time: {node_loading_time:.2f} seconds")
-
-    # If in search mode, run grid search
-    if args.search:
-        # Select nodes for the specified split
-        if args.search_split == 'train':
-            search_nodes = train_nodes
-        elif args.search_split == 'val':
-            search_nodes = val_nodes
-        else:  # test
-            search_nodes = test_nodes
-            
-        print(f"\nRunning threshold grid search on {args.search_split} split with {len(search_nodes)} nodes")
-        results_df = run_threshold_grid_search(
-            nodes=search_nodes,
-            edge_class=Edge,
-            split_name=args.search_split,
-            quality_steps=args.quality_steps,
-            symmetry_steps=args.symmetry_steps,
-            embedding_steps=args.embedding_steps
-        )
-        
-        # Save full results to CSV
-        output_file = f"logs/{args.search_results}"
-        results_df.to_csv(output_file, index=False)
-        print(f"\nSearch results saved to {output_file}")
-        
-        # Create visualizations
-        output_prefix = f"{args.search_split}_{timestamp}"
-        visualize_search_results(results_df, output_prefix)
-        
-        # Print top 5 configurations by average degree
-        print("\nTop 5 threshold configurations by average degree:")
-        top_configs = results_df.sort_values('average_degree', ascending=False).head(5)
-        for _, row in top_configs.iterrows():
-            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0):.1f}% nodes]"
-            edges_after_filter = row.get('num_edges_after_filter', 'unknown')
-            
-            print(f"Quality: {row['quality_threshold']:.2f}, "
-                  f"Symmetry: {row['symmetry_threshold']:.2f}, "
-                  f"Embedding: {row['embedding_threshold']:.2f}, "
-                  f"Avg Degree: {row['average_degree']:.2f}, "
-                  f"Total Edges: {row['total_edges']}, "
-                  f"Edges After Filter: {edges_after_filter}, "
-                  f"{fallback_info}")
-
-        # Print bottom 5 configurations by average degree
-        print("\nBottom 5 threshold configurations by average degree:")
-        bottom_configs = results_df.sort_values('average_degree').head(5)
-        for _, row in bottom_configs.iterrows():
-            fallback_info = "" if not row.get('fallback_triggered', False) else f"[FALLBACK USED - {row.get('fallback_pct', 0):.1f}% nodes]"
-            edges_after_filter = row.get('num_edges_after_filter', 'unknown')
-            
-            print(f"Quality: {row['quality_threshold']:.2f}, "
-                  f"Symmetry: {row['symmetry_threshold']:.2f}, "
-                  f"Embedding: {row['embedding_threshold']:.2f}, "
-                  f"Avg Degree: {row['average_degree']:.2f}, "
-                  f"Total Edges: {row['total_edges']}, "
-                  f"Edges After Filter: {edges_after_filter}, "
-                  f"{fallback_info}")
-        
-        return
+    print(f"Node loading/balancing time: {node_loading_time:.2f} seconds")
     
-    # Regular mode: Create dataloader and build graphs
     graph_cache_dir = "graph_cache"
     os.makedirs(graph_cache_dir, exist_ok=True)
+
+    # Use the potentially balanced node lists (train_nodes, val_nodes, test_nodes)
+    # for graph construction below.
+
+    # Determine cache filename suffix based on whether balanced nodes were used for graph construction
+    train_suffix = "balanced" if args.fair_train else "full"
+    val_suffix = "balanced" if args.fair_test else "full"
+    test_suffix = "balanced" if args.fair_test else "full"
+
     q_thresh_str = f"{args.quality_threshold:.3f}"
     s_thresh_str = f"{args.symmetry_threshold:.3f}"
     e_thresh_str = f"{args.embedding_threshold:.3f}"
-    
-    graph_construction_start = time.time()
-    train_graph, val_graph, test_graph = None, None, None
 
-    for split_name in ['train', 'val', 'test']:
+    for split_name, nodes_to_use, suffix in [
+        ('train', train_nodes, train_suffix),
+        ('val', val_nodes, val_suffix),
+        ('test', test_nodes, test_suffix)
+    ]:
         # Extract dataset name from data_root path (Corrected)
         dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
-        # Determine subset identifier (Corrected)
-        subset_id = f"subset" if args.use_cached and not args.use_full_cache else "full"
         
-        dataloader = HierarchicalDeepfakeDataloader(
-            datasets=[],  # Empty since we're providing nodes directly
-            edge_class=Edge,
-            test_mode=args.test,
-            visualize=args.visualize,
-            show_viz=args.show,
-            quality_threshold=args.quality_threshold,
-            symmetry_threshold=args.symmetry_threshold,
-            embedding_threshold=args.embedding_threshold
-        )
-        
-        # Determine subset identifier (robust to full/subset cache usage)
-        if args.use_full_cache:
-            subset_id = "full"
-        elif args.cached_nodes:
-            subset_id = f"subset{args.cached_nodes}"
-        else:
-            subset_id = "full"
-        # Create Specific Cache Filename
         cache_filename = os.path.join(
             graph_cache_dir,
-            f"{dataset_name}_{split_name}_{subset_id}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_edges.pkl"
+            # Include the balancing status in the cache filename
+            f"{dataset_name}_{split_name}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_graph.pkl"
         )
 
         # Check/Load Graph Cache
@@ -1170,7 +1141,7 @@ def main():
             try:
                 print(f"\nFound edge cache file: {cache_filename}. Attempting to load.")
                 # 1. Load Nodes (ensure nodes are loaded for the split)
-                split_nodes = train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes
+                split_nodes = train_nodes_full if split_name == 'train' else val_nodes_full if split_name == 'val' else test_nodes_full
                 if not split_nodes:
                     raise ValueError(f"Nodes for split '{split_name}' not found or loaded.")
                 
@@ -1193,7 +1164,7 @@ def main():
         # --- Build Graph if not loaded from cache --- 
         if not loaded_from_cache:
             # Ensure nodes are available
-            split_nodes = train_nodes if split_name == 'train' else val_nodes if split_name == 'val' else test_nodes
+            split_nodes = train_nodes_full if split_name == 'train' else val_nodes_full if split_name == 'val' else test_nodes_full
             if not split_nodes:
                  print(f"Error: Nodes for split '{split_name}' not available for building graph.")
                  continue # Or handle error appropriately
@@ -1202,7 +1173,7 @@ def main():
             # Use the dataloader to build the graph
             # Assuming dataloader.build_graph returns the graph object directly now
             # If it still returns a tuple, adjust accordingly (e.g., graph = dataloader.build_graph(...)[0] )
-            graph_build_result = dataloader._build_graph_standard(split_nodes, split_name) if split_name == 'train' else HyperGraph(split_nodes)
+            graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name) if split_name == 'train' else HyperGraph(nodes_to_use)
             
             # Handle potential tuple return from build_graph_standard
             if isinstance(graph_build_result, tuple):
@@ -1248,14 +1219,13 @@ def main():
         print("\nError: One or more graphs could not be loaded or built. Exiting.")
         sys.exit(1)
         
-    graph_construction_time = time.time() - graph_construction_start
-    total_time = time.time() - node_loading_start
+    graph_construction_time = time.time() - node_loading_start
 
     # Performance Reporting & Validation
     print("\nPerformance:")
-    print(f"Total time: {total_time:.2f} seconds")
-    print(f"  - Node loading: {node_loading_time:.2f} seconds ({node_loading_time/total_time*100:.1f}%)")
-    print(f"  - Graph construction: {graph_construction_time:.2f} seconds ({graph_construction_time/total_time*100:.1f}%)")
+    print(f"Total time: {graph_construction_time:.2f} seconds")
+    print(f"  - Node loading: {node_loading_time:.2f} seconds ({node_loading_time/graph_construction_time*100:.1f}%)")
+    print(f"  - Graph construction: {(graph_construction_time - node_loading_time):.2f} seconds ({(graph_construction_time - node_loading_time)/graph_construction_time*100:.1f}%)")
 
     # Validate graph objects
     if not train_graph or not val_graph or not test_graph:
@@ -1270,8 +1240,8 @@ def main():
                    len(test_graph.get_nodes()))
     
     print(f"Processed {total_nodes} nodes")
-    print(f"Overall processing speed: {total_nodes / total_time:.2f} nodes/second")
-    print(f"Graph construction speed: {total_nodes / graph_construction_time:.2f} nodes/second")
+    print(f"Overall processing speed: {total_nodes / graph_construction_time:.2f} nodes/second")
+    print(f"Graph construction speed: {total_nodes / (graph_construction_time - node_loading_time):.2f} nodes/second")
     
     # Count total edges
     train_edges = sum(len(node.edges) for node in train_graph.get_nodes()) // 2
@@ -1280,7 +1250,7 @@ def main():
     total_edges = train_edges + val_edges + test_edges
     
     print(f"Created {total_edges} total edges")
-    print(f"Edge creation speed: {total_edges / graph_construction_time:.2f} edges/second")
+    print(f"Edge creation speed: {total_edges / (graph_construction_time - node_loading_time):.2f} edges/second")
     
     # Print average degree (edges per node)
     print(f"Average degree: {(total_edges * 2) / len(train_graph.get_nodes()):.2f}")
@@ -1308,7 +1278,7 @@ def main():
         cnn_architectures = [
             "swintransformdf",
             "resnestdf", 
-            #"effnetdf",
+            "effnetdf",
             #"mesonetdf",
             #"squeezenetdf",
             #"vistransformdf",
@@ -1318,8 +1288,10 @@ def main():
         random.seed(13247987501)
         
         # Define traversal types to compare
-        traversal_types = ["i-value", "comprehensive", "random", "i-value-cluster-hop"] # Added 'i-value-cluster-hop'
-        #traversal_types = ["i-value"]
+        #traversal_types = ["i-value-cluster-hop", "i-value", "comprehensive", "random"] # Added 'i-value-cluster-hop'
+        traversal_types = ["comprehensive", "i-value-cluster-hop"]
+        #traversal_types = ["comprehensive"]
+
         
         # Test each architecture with both traversal types
         for arch in cnn_architectures:
@@ -1346,8 +1318,8 @@ def main():
                     print(f"Test: {test_size} nodes")
                     
                     # Calculate appropriate number of steps
-                    train_steps = 1000
-                    val_steps = 1000 
+                    train_steps = 5000
+                    val_steps = 5000
                     test_steps = None  # Use None to visit all test nodes
                     
                     # Create Traversal instances
@@ -1364,11 +1336,14 @@ def main():
                         )
                     elif traversal_type == "i-value-cluster-hop":
                         # Instantiate the cluster hop traversal, passing the trainer
+                        print(f"Bias hop period: {args.bias_hop_period}")
                         train_traversal = IValueTraversalClusterHop(
                              graph=train_manager.graph, 
                              num_pointers=1, 
-                             num_steps=train_steps
+                             num_steps=train_steps,
+                             bias_hop_period=args.bias_hop_period
                         )
+                        print(f"train_traversal.bias_hop_period: {train_traversal.bias_hop_period}")
                     else:
                         raise ValueError(f"Unsupported traversal type for training: {traversal_type}")
 
@@ -1376,7 +1351,7 @@ def main():
                     model = CNNModel(
                         f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
                         arch,
-                        0.001, 
+                        1e-4, # WAS: 0.001 - Reduced LR for debugging
                         True,
                         device=device  # Pass the device
                     )
@@ -1396,10 +1371,10 @@ def main():
                             models=[model], # Use model
                             device=device,
                             attribute_metadata=attribute_metadata,
-                            use_bias_loss_in_training=True, # Example
+                            use_bias_loss_in_training=False, # Example
                             bias_loss_weight=args.bias_loss_weight,
                             loss_fn=criterion,
-                            train_traversal=None # Explicitly pass None
+                            train_traversal=train_traversal # Explicitly pass None
                         )
                     
                         # 2. Create the specific IValueTraversal needed
@@ -1418,7 +1393,8 @@ def main():
                                 graph=train_manager.graph,
                                 num_pointers=1,
                                 num_steps=train_steps,
-                                trainer=trainer # Pass the trainer instance
+                                trainer=trainer, # Pass the trainer instance
+                                bias_hop_period=args.bias_hop_period
                             )
                     
                         # 3. Set the traversal back on the trainer
@@ -1481,7 +1457,7 @@ def main():
                                 model.eval() # Set model to evaluation mode
                                 val_metrics = evaluate_model(
                                     model=model,
-                                    nodes_to_evaluate=val_nodes_from_graph,
+                                    nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
                                     loss_fn=criterion,
                                     batch_size=args.batch_size,
                                     bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
@@ -1523,7 +1499,7 @@ def main():
  
                         # Load best model for final testing
                         if args.num_epochs > 0:
-                            print(f"\nLoading best model from epoch {best_epoch} for final testing (Val Acc: {best_val_accuracy:.4f}) from {best_model_checkpoint_path}")
+                            #print(f"\nLoading best model from epoch {best_epoch} for final testing (Val Acc: {best_val_accuracy:.4f}) from {best_model_checkpoint_path}")
                             if os.path.exists(best_model_checkpoint_path):
                                 try:
                                     # Load primary model checkpoint
@@ -1558,7 +1534,7 @@ def main():
                                     nodes_to_evaluate=test_nodes_from_graph,
                                     loss_fn=criterion,
                                     batch_size=args.batch_size,
-                                    bias_loss_fn=trainer.bias_loss,
+                                    bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
                                     device=device,
                                     desc="Final Test Set (Last State)",
                                     attribute_metadata=attribute_metadata
@@ -1620,7 +1596,17 @@ def main():
                     print(f"\nOuter Error setting up {arch} with {traversal_type}: {str(e)}")
                     continue  # Continue with next configuration
 
-
+                # --- Plotting Subgroup I-Values (After Training Loop) --- 
+                if hasattr(trainer, 'train_traversal') and hasattr(trainer.train_traversal, 'get_hop_i_value_history'):
+                    hop_history = trainer.train_traversal.get_hop_i_value_history()
+                    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    plot_filename = os.path.join(args.log_dir, f"{run_timestamp}_subgroup_i_values.png")
+                    plot_subgroup_i_values(hop_history, plot_filename)
+                else:
+                    print("Trainer or traversal does not support hop history retrieval.")
+                # ----------------------------------------------------------
+            
+            
     print("\nDone!")
     
     if logpath:

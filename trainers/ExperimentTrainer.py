@@ -208,7 +208,11 @@ class ExperimentTrainer(Trainer):
                                     if data is not None:
                                         img_data = data.load_data()
                                         if img_data is not None:
-                                            chunk_data.append(img_data)
+                                            # Set model to training mode for transforms
+                                            model.current_mode = "train"
+                                            # Use the model's internal transform
+                                            img_tensor = model.transform(img_data)
+                                            chunk_data.append(img_tensor) 
                                             chunk_labels.append(node.label)
                                         else:
                                             print(f"Warning: Could not load image data for node")
@@ -221,8 +225,8 @@ class ExperimentTrainer(Trainer):
                             if not chunk_data:  # Skip if no valid images in chunk
                                 continue
                                 
-                            # Convert chunk to tensors
-                            chunk_tensor = torch.stack([model.transform(cv2.cvtColor(d, cv2.COLOR_BGR2RGB)) for d in chunk_data]).to(self.device)
+                            # Convert chunk to tensors (already transformed)
+                            chunk_tensor = torch.stack(chunk_data).to(self.device)
                             chunk_labels_tensor = torch.tensor(chunk_labels, dtype=torch.float32).to(self.device)
                             chunk_labels_tensor = chunk_labels_tensor.view(-1, 1)  # Reshape to [batch_size, 1]
                             

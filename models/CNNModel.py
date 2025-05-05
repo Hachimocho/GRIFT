@@ -32,7 +32,7 @@ class CNNModel(Model):
         self.optim = torch.optim.AdamW(
             self.model.model.parameters(), 
             lr=lr,
-            weight_decay=0.001,  
+            weight_decay=1e-5,  
             amsgrad=amsgrad
         )
         

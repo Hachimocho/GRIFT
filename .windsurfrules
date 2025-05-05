@@ -1,2 +1,5 @@
-If you have made any code updates during this response, summarize them in updates.md. If no code updates have been made, do not update updates.md.
+When passing new arguments to a function or object, always check the function/object to ensure it can handle the new arguments.
+There is a strict limitation on how large your code edits can be. If you need to make a large edit, break it up into smaller edits.
+Do not make any changes to the code that are not directly related to the task at hand.
+Do not remove any code that is not directly related to the task at hand.
 If you have learned any significant new information about the code architecture or implementation, save it as a memory.
