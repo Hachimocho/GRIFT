@@ -58,3 +58,12 @@ This is a test build. To run the test:
 6p. --symmetry-steps: Number of steps for symmetry threshold grid search (default: 5)
 6q. --embedding-steps: Number of steps for embedding threshold grid search (default: 5)
 6r. --search-results: File to save search results to (default: threshold_search_results.csv)
+
+Example command: python test_hierarchical.py --cache-nodes --cached-nodes 10000--use-cached --quality-threshold .7 --symmetry-threshold .5 --embedding-threshold .9 --num-epochs 15 --bias_hop_period 2 --fair-train --fair-test
+Expected outputs:
+1. Cached node file in node_cache folder
+2. Cached edge file in graph_cache folder
+3. Best model checkpoint in saved_models folder
+4. Training, validation, and testing logs in logs folder
+5. Any requested visualization csvs in the base directory
+6. Any requested threshold search results csv in the logs directory + plots in logs/search_plots
