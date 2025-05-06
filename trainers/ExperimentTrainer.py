@@ -132,7 +132,7 @@ class ExperimentTrainer(Trainer):
         else:
             return np.random.random()  # Random value for random traversal
 
-    def train(self):
+    def train(self, epoch):
         """Train for one epoch."""
         for model_idx, model in enumerate(self.models):
             model.model.train()
@@ -182,7 +182,7 @@ class ExperimentTrainer(Trainer):
             
             # Process in batches with memory management
             chunk_size = 16  # Process at most 16 images at once
-            for i in range(0, len(nodes), self.batch_size):
+            for i in tqdm(range(0, len(nodes), self.batch_size), desc=f"Epoch {epoch} Model {model_idx}", unit="batch"):
                 try:
                     # Clear GPU cache before each batch
                     torch.cuda.empty_cache()

@@ -432,8 +432,8 @@ def parse_args():
                         help='File to save search results to (default: threshold_search_results.csv)')
     
     # Training options
-    parser.add_argument('--batch-size', type=int, default=96,
-                        help='Batch size for training and evaluation (default: 96)')
+    parser.add_argument('--batch-size', type=int, default=100,
+                        help='Batch size for training and evaluation (default: 100)')
     parser.add_argument('--num-workers', type=int, default=4,
                         help='Number of worker processes for DataLoader (default: 4)')
     parser.add_argument('--num-epochs', type=int, default=50,
@@ -448,6 +448,7 @@ def parse_args():
                         help='Directory to save logs (default: logs)')
     parser.add_argument('--fair-train', action='store_true', help='Use subgroup-balanced training set for graph construction')
     parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility') # Add seed argument
 
     return parser.parse_args()
 
@@ -927,7 +928,33 @@ def plot_subgroup_i_values(history, output_filename):
         import traceback
         traceback.print_exc()
 
+def set_seed(seed):
+    """Sets the seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+        # Configure CUDA for deterministic behavior
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True) # Enforce deterministic algorithms
+    print(f"Random seed set to {seed}")
+
 def main():
+    args = parse_args() # Parse args first
+
+    # --- Check for PYTHONHASHSEED --- 
+    if 'PYTHONHASHSEED' not in os.environ:
+        print("\nWarning: PYTHONHASHSEED environment variable not set.")
+        print("         For full reproducibility, set it before running the script, e.g.:")
+        print("         export PYTHONHASHSEED=42")
+        print("         Or prefix the command: PYTHONHASHSEED=42 python ...\n")
+    else:
+        print(f"Using PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
+
+    set_seed(args.seed) # Use args.seed
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -935,12 +962,17 @@ def main():
     criterion = nn.BCEWithLogitsLoss().to(device)
     print(f"Primary loss function defined: {criterion.__class__.__name__}")
 
-    # Run with output capture
+    # --- Force num_workers=0 for reproducibility --- 
+    if args.num_workers != 0:
+        print(f"Warning: Forcing num_workers=0 (was {args.num_workers}) for reproducibility.")
+        args.num_workers = 0
+
+    # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     logfile = Path("logs") / f"test_run_{timestamp}.log"
+
     
     data_root = "/home/brg2890/major/datasets/ai-face"
-    args = parse_args()
     print("Detected arguments:")
     print(args)
     print(f"Bias hop period: {args.bias_hop_period}")
@@ -1070,11 +1102,6 @@ def main():
         # Initialize the AIFaceDataset with correct parameters (using positional arguments)
         dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": 2})
         
-        dataloader = HierarchicalDeepfakeDataloader(
-            datasets=[dataset],
-            edge_class=Edge
-        )
-        
         # Load all nodes directly from the dataset (avoid using dataloader.load() which would load again)
         print("Loading nodes from dataset...")
         all_nodes = dataset.load()
@@ -1173,6 +1200,17 @@ def main():
             # Use the dataloader to build the graph
             # Assuming dataloader.build_graph returns the graph object directly now
             # If it still returns a tuple, adjust accordingly (e.g., graph = dataloader.build_graph(...)[0] )
+            dataloader = HierarchicalDeepfakeDataloader(
+                datasets=[], 
+                edge_class=edge_class,
+                test_mode=False,  # Don't limit nodes
+                visualize=False,  # Don't create visualizations during search
+                show_viz=False,
+                quality_threshold=args.quality_threshold,
+                symmetry_threshold=args.symmetry_threshold,
+                embedding_threshold=args.embedding_threshold,
+                silent_mode=True  # Disable internal progress bars and logging during grid search
+            )
             graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name) if split_name == 'train' else HyperGraph(nodes_to_use)
             
             # Handle potential tuple return from build_graph_standard
@@ -1318,8 +1356,8 @@ def main():
                     print(f"Test: {test_size} nodes")
                     
                     # Calculate appropriate number of steps
-                    train_steps = 5000
-                    val_steps = 5000
+                    train_steps = 1000
+                    val_steps = 1000
                     test_steps = None  # Use None to visit all test nodes
                     
                     # Create Traversal instances
@@ -1433,9 +1471,8 @@ def main():
                             print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
                             train_start_time = time.time()
                             train_distribution = None # Initialize distribution as None
-                            train_metrics, train_distribution = trainer.train()
-                            
-                            
+                            train_metrics, train_distribution = trainer.train(epoch) if isinstance(trainer, ExperimentTrainer) else trainer.train() # Pass epoch
+
                             print(f"  Train Metrics: {train_metrics}")
                             
                             # --- Print Training Attribute Distribution --- 
