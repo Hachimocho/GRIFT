@@ -7,29 +7,27 @@ This script tests the new hierarchical graph construction approach which:
 3. Applies threshold-based filtering for quality metrics, symmetry, embeddings, etc.
 """
 import time
-import argparse
 import os
 import cv2
 from collections import defaultdict
 import sys
-import dill
-import numpy as np
-import pandas as pd
+import logging  
+import traceback 
+import json 
+import random 
+import torch
+import torch.nn as nn
 from datetime import datetime
-import matplotlib.pyplot as plt
-from itertools import product
-from tqdm import tqdm
-import logging  # Add missing import for logging module
-import traceback # Add traceback import
-import json # Add json import
-import matplotlib.pyplot as plt # Added
-import random # Add import
-from collections import defaultdict # Add import
+import dill
 
-# Add a null handler for silencing logging
-class NullHandler(logging.Handler):
-    def emit(self, record):
-        pass
+# Import utilities from the new helper module
+from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
+from test_helpers.args_utils import parse_args
+from test_helpers.data_graph_utils import (
+    balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
+    run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
+    load_and_prepare_data_splits # Added import for the new function
+)
 
 # Add the project root to the path if needed
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -44,7 +42,6 @@ from data.ImageFileData import ImageFileData
 # Imports for model training/testing
 import sys
 import traceback
-from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 from trainers.ExperimentTrainer import ExperimentTrainer
@@ -57,7 +54,7 @@ from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.IValueTraversal import IValueTraversal
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop # Added Import
+from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop 
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from edges.Edge import Edge
@@ -69,12 +66,9 @@ import random
 import torch
 import torch.nn as nn
 import numpy as np
-import traceback
+import traceback 
 from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader # Make sure DataLoader is imported
-import os # Added for path operations
-import sys # Added for exception logging
-from contextlib import contextmanager
+from torch.utils.data import Dataset, DataLoader 
 import io
 
 def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None): 
@@ -343,605 +337,6 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     final_metrics['bias_metrics'] = bias_metrics # Include bias metrics
     return final_metrics
 
-@contextmanager
-def capture_output(filename):
-    """Capture all stdout and stderr output to a file while still printing to terminal"""
-    class TeeStream:
-        def __init__(self, stdout, logfile):
-            self.stdout = stdout
-            self.logfile = logfile
-            
-        def write(self, message):
-            self.stdout.write(message)
-            self.logfile.write(message)
-            
-        def flush(self):
-            self.stdout.flush()
-            self.logfile.flush()
-    
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    logpath = log_dir / filename
-    old_stdout = sys.stdout
-    old_stderr = sys.stderr
-    
-    try:
-        with open(logpath, 'w') as logfile:
-            tee_stdout = TeeStream(old_stdout, logfile)
-            tee_stderr = TeeStream(old_stderr, logfile)
-            sys.stdout = tee_stdout
-            sys.stderr = tee_stderr
-            yield logpath
-    finally:
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-
-def log_exception(logfile, exc_type, exc_value, exc_traceback):
-    """Log an exception with its traceback to both stdout and the log file"""
-    exc_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    print('\n' + '=' * 80)
-    print('Exception occurred:')
-    print(exc_text)
-    print('=' * 80)
-    
-    with open(logfile, 'a') as f:
-        f.write('\n' + '=' * 80 + '\n')
-        f.write('Exception occurred:\n')
-        f.write(exc_text)
-        f.write('=' * 80 + '\n')
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Test the hierarchical graph construction approach')
-    parser.add_argument('--test', action='store_true', help='Run in test mode with limited nodes')
-    parser.add_argument('--visualize', action='store_true', help='Generate graph visualizations')
-    parser.add_argument('--show', action='store_true', help='Show visualizations (requires --visualize)')
-    parser.add_argument('--quality-threshold', type=float, default=0.8, 
-                        help='Similarity threshold for quality metrics (default: 0.8)')
-    parser.add_argument('--symmetry-threshold', type=float, default=0.75, 
-                        help='Similarity threshold for facial symmetry (default: 0.75)')
-    parser.add_argument('--embedding-threshold', type=float, default=0.7, 
-                        help='Similarity threshold for face embeddings (default: 0.7)')
-    
-    # Node caching options
-    parser.add_argument('--cache-nodes', action='store_true', 
-                        help='Save loaded nodes to cache file for faster testing')
-    parser.add_argument('--cache-full', action='store_true',
-                        help='Cache the entire dataset instead of just a subset (use with --cache-nodes)')
-    parser.add_argument('--use-cached', action='store_true', 
-                        help='Use previously cached nodes instead of loading from dataset')
-    parser.add_argument('--use-full-cache', action='store_true',
-                        help='Load the full dataset from cache instead of the subset (use with --use-cached)')
-    parser.add_argument('--cached-nodes', type=int, default=1000, 
-                        help='Number of nodes to cache per split when not using full cache (default: 1000)')
-    parser.add_argument('--cache-file', type=str, default='node_cache/cached_nodes.pkl', 
-                        help='Filename for caching/loading nodes (relative to script execution dir)')
-
-    # Grid search options
-    parser.add_argument('--search', action='store_true',
-                        help='Run grid search over threshold combinations')
-    parser.add_argument('--search-split', type=str, default='train', choices=['train', 'val', 'test'],
-                        help='Split to use for grid search (default: train)')
-    parser.add_argument('--quality-steps', type=int, default=5,
-                        help='Number of steps for quality threshold grid search (default: 5)')
-    parser.add_argument('--symmetry-steps', type=int, default=5,
-                        help='Number of steps for symmetry threshold grid search (default: 5)')
-    parser.add_argument('--embedding-steps', type=int, default=5,
-                        help='Number of steps for embedding threshold grid search (default: 5)')
-    parser.add_argument('--search-results', type=str, default='threshold_search_results.csv',
-                        help='File to save search results to (default: threshold_search_results.csv)')
-    
-    # Training options
-    parser.add_argument('--batch-size', type=int, default=100,
-                        help='Batch size for training and evaluation (default: 100)')
-    parser.add_argument('--num-workers', type=int, default=4,
-                        help='Number of worker processes for DataLoader (default: 4)')
-    parser.add_argument('--num-epochs', type=int, default=50,
-                        help='Number of training epochs (default: 50)')
-    parser.add_argument('--bias_loss_weight', type=float, default=0.00,
-                        help='Weight for bias loss (default: 0.00)')
-    parser.add_argument('--bias_hop_period', type=int, default=100,
-                        help='Period for bias hop (default: 100)')
-    parser.add_argument('--load-last-checkpoint', action='store_true',
-                        help='Load the last best checkpoint if validation accuracy decreases.')
-    parser.add_argument('--log_dir', type=str, default='logs',
-                        help='Directory to save logs (default: logs)')
-    parser.add_argument('--fair-train', action='store_true', help='Use subgroup-balanced training set for graph construction')
-    parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility') # Add seed argument
-
-    return parser.parse_args()
-
-def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['Ground Truth Race', 'Ground Truth Gender']):
-    """Balances nodes across subgroups to reach a target total number.
-
-    Args:
-        nodes: List of nodes to balance.
-        target_num_nodes: The desired total number of nodes in the balanced list.
-        attributes_to_balance: List of attribute keys to define subgroups.
-
-    Returns:
-        A list of nodes balanced across subgroups, totaling target_num_nodes.
-
-    Raises:
-        ValueError: If balancing is not possible because one or more subgroups
-                    are too small to provide the required number of samples.
-    """
-    if not nodes or target_num_nodes <= 0:
-        print(f"Warning: Cannot balance empty node list or with target_num_nodes={target_num_nodes}. Returning empty list.")
-        return []
-
-    subgroups = defaultdict(list)
-    for node in nodes:
-        subgroup_key = tuple(node.attributes.get(attr, 'Unknown') for attr in attributes_to_balance)
-        subgroups[subgroup_key].append(node)
-
-    num_subgroups = len(subgroups)
-    if num_subgroups == 0:
-        print("Warning: No subgroups found for balancing. Returning original list (or empty if target > original size).")
-        # Return original list only if its size matches target, otherwise it's impossible
-        return nodes if len(nodes) == target_num_nodes else []
-
-    nodes_per_subgroup = target_num_nodes // num_subgroups
-    remainder = target_num_nodes % num_subgroups
-
-    print(f"Balancing to {target_num_nodes} nodes across {num_subgroups} subgroups.")
-    print(f"Base nodes per subgroup: {nodes_per_subgroup}, Remainder: {remainder}")
-
-    balanced_nodes = []
-    subgroup_keys = list(subgroups.keys())
-    random.shuffle(subgroup_keys) # Shuffle keys to randomly distribute remainder
-
-    for i, subgroup_key in enumerate(subgroup_keys):
-        group_nodes = subgroups[subgroup_key]
-        required_size = nodes_per_subgroup + (1 if i < remainder else 0)
-
-        if len(group_nodes) < required_size:
-            raise ValueError(
-                f"Cannot balance to {target_num_nodes} nodes. Subgroup {subgroup_key} "
-                f"has only {len(group_nodes)} nodes, but requires {required_size}."
-            )
-
-        if required_size > 0:
-            sampled_nodes = random.sample(group_nodes, required_size)
-            balanced_nodes.extend(sampled_nodes)
-
-    random.shuffle(balanced_nodes) # Shuffle the final list
-    print(f"Total nodes after balancing: {len(balanced_nodes)} (Target: {target_num_nodes})")
-    if len(balanced_nodes) != target_num_nodes:
-         print(f"WARNING: Final balanced node count ({len(balanced_nodes)}) does not match target ({target_num_nodes})!") # Should not happen
-
-    return balanced_nodes
-
-def save_cached_nodes(train_nodes, val_nodes, test_nodes, cache_file, target_num_nodes):
-    """Balances each node list to target_num_nodes and saves full/balanced versions per split."""
-    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-    print(f"Balancing node lists for caching to target size {target_num_nodes}...")
-
-    cache_data = {}
-    for split_name, nodes_list in [('train', train_nodes), ('val', val_nodes), ('test', test_nodes)]:
-        print(f"  Processing {split_name} split ({len(nodes_list)} nodes)")
-        try:
-            balanced_list = balance_nodes_by_subgroup(nodes_list, target_num_nodes=target_num_nodes)
-            cache_data[split_name] = {
-                'full': nodes_list,
-                'balanced': balanced_list
-            }
-            print(f"    Full: {len(nodes_list)}, Balanced: {len(balanced_list)}")
-        except ValueError as e:
-             print(f"    ERROR balancing {split_name} split: {e}. Skipping balancing for this split in cache.")
-             # Store full list as balanced if balancing failed
-             cache_data[split_name] = {
-                 'full': nodes_list,
-                 'balanced': nodes_list # Fallback to full if balancing fails
-             }
-
-    with open(cache_file, 'wb') as f:
-        dill.dump(cache_data, f)
-
-def load_cached_nodes(cache_file, split_name, balanced=False):
-    """Loads nodes for a specific split from cache, optionally the balanced set."""
-    if os.path.exists(cache_file):
-        print(f"Attempting to load {split_name} nodes from cache: {cache_file}")
-        try:
-            with open(cache_file, 'rb') as f:
-                cache_data = dill.load(f)
-            print(f"  Cache file loaded. Type: {type(cache_data)}. Checking structure...")
-
-            # Check NEW format (dict keyed by split_name, containing dicts with 'full'/'balanced')
-            if isinstance(cache_data, dict) and \
-               split_name in cache_data and \
-               isinstance(cache_data.get(split_name), dict) and \
-               'full' in cache_data[split_name] and \
-               'balanced' in cache_data[split_name]:
-                print(f"  -> Detected NEW cache format for split '{split_name}'.")
-                nodes_to_return = cache_data[split_name]['balanced'] if balanced else cache_data[split_name]['full']
-                load_type = 'Balanced' if balanced else 'Full'
-                print(f"     {load_type} nodes ({len(nodes_to_return)}) loaded successfully.")
-                return nodes_to_return
-            else:
-                print(f"  -> Did not match NEW format for split '{split_name}'. Checking older formats...")
-                # Provide details if it looked like a dict but failed the checks
-                if isinstance(cache_data, dict):
-                    if split_name not in cache_data:
-                        print(f"     Reason: Split key '{split_name}' not found in top-level dict.")
-                    elif not isinstance(cache_data.get(split_name), dict):
-                        print(f"     Reason: Value for key '{split_name}' is not a dict (Type: {type(cache_data.get(split_name))}).")
-                    elif 'full' not in cache_data.get(split_name, {}):
-                        print(f"     Reason: Key 'full' not found within dict for split '{split_name}'.")
-                    elif 'balanced' not in cache_data.get(split_name, {}):
-                        print(f"     Reason: Key 'balanced' not found within dict for split '{split_name}'.")
-
-            # Check intermediate OLD format (dict with 'full'/'balanced' directly)
-            if isinstance(cache_data, dict) and 'full' in cache_data and 'balanced' in cache_data:
-                 print(f"  -> Detected OLD cache format (dict without splits). Loading overall 'full' set as fallback for '{split_name}'.")
-                 nodes_to_return = cache_data['balanced'] if balanced else cache_data['full']
-                 if balanced:
-                      print(f"     Warning: Requested balanced set, returning from overall balanced set ({len(nodes_to_return)} nodes). This might not be split-specific.")
-                 else:
-                      print(f"     Returning overall full set ({len(nodes_to_return)} nodes). This might not be split-specific.")
-                 return nodes_to_return
-
-            # Check very OLD format (just a list)
-            elif isinstance(cache_data, list):
-                 print(f"  -> Detected VERY OLD cache format (list). Loading as full set for '{split_name}'.")
-                 if balanced:
-                     print("     Warning: Cannot load balanced set from list format. Returning full list.")
-                 print(f"     Returning full list ({len(cache_data)} nodes)." )
-                 return cache_data
-
-            # Unrecognized
-            print(f"  -> Cache file structure is unrecognized. Ignoring cache for split '{split_name}'.")
-            return None
-
-        except (dill.UnpicklingError, EOFError, KeyError, AttributeError) as e:
-            print(f"Error loading/parsing cache file {cache_file} for split '{split_name}': {e}. Ignoring cache.")
-            return None
-    else:
-        print(f"Cache file {cache_file} not found for split '{split_name}'.")
-        return None
-
-def run_threshold_grid_search(nodes, edge_class, split_name, quality_steps, symmetry_steps, embedding_steps):
-    """Run grid search over threshold parameters and log results"""
-    # Create search grid
-    quality_thresholds = np.linspace(.5, .9, quality_steps)
-    symmetry_thresholds = np.linspace(.5, .9, symmetry_steps)
-    embedding_thresholds = np.linspace(.9, .999, embedding_steps)
-    
-    # Create results dataframe
-    results = []
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = f"logs/threshold_search_{timestamp}.csv"
-    
-    total_combinations = len(quality_thresholds) * len(symmetry_thresholds) * len(embedding_thresholds)
-    print(f"\nRunning grid search with {total_combinations} threshold combinations...")
-    
-    # Create a single progress bar for all combinations
-    combinations = list(product(quality_thresholds, symmetry_thresholds, embedding_thresholds))
-    progress_bar = tqdm(total=len(combinations), desc="Running grid search")
-
-    for q_thresh, s_thresh, e_thresh in combinations:
-        # Round thresholds for cleaner reporting
-        q_thresh_str = round(q_thresh, 2)
-        s_thresh_str = round(s_thresh, 2)
-        e_thresh_str = round(e_thresh, 2)
-        
-        # Update progress bar with detailed description
-        progress_bar.set_description(
-            f"Combination {progress_bar.n+1}/{len(combinations)} - Testing Q:{q_thresh_str} S:{s_thresh_str} E:{e_thresh_str}"
-        )
-        progress_bar.update(0)  # Force refresh without incrementing
-        
-        # Create dataloader with current thresholds
-        dataloader = HierarchicalDeepfakeDataloader(
-            datasets=[], 
-            edge_class=edge_class,
-            test_mode=False,  # Don't limit nodes
-            visualize=False,  # Don't create visualizations during search
-            show_viz=False,
-            quality_threshold=q_thresh_str,
-            symmetry_threshold=s_thresh_str,
-            embedding_threshold=e_thresh_str,
-            silent_mode=True  # Disable internal progress bars and logging during grid search
-        )
-        
-        # Capture and silence ALL output (stdout, stderr, and logging)
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        null_output = open(os.devnull, 'w')
-        sys.stdout = null_output
-        sys.stderr = null_output
-
-        # Save the original handlers for ALL loggers
-        original_handlers = {}
-        for logger_name in logging.root.manager.loggerDict:
-            logger = logging.getLogger(logger_name)
-            original_handlers[logger_name] = list(logger.handlers)
-            logger.handlers = [NullHandler()]
-            
-        # Also handle the root logger
-        root_logger = logging.getLogger()
-        original_root_handlers = list(root_logger.handlers)
-        root_logger.handlers = [NullHandler()]
-        
-        # Disable tqdm progress bars
-        original_tqdm = tqdm.__init__
-        def silent_tqdm__init__(*args, **kwargs):
-            kwargs['disable'] = True
-            return original_tqdm(*args, **kwargs)
-        tqdm.__init__ = silent_tqdm__init__
-        
-        try:
-            # Call _build_graph_standard directly to get the count
-            graph, num_edges_after_filter = dataloader._build_graph_standard(nodes, split_name)
-
-            # Check if fallback was triggered (using the info stored on the graph)
-            fallback_triggered = getattr(graph, 'fallback_triggered', False)
-            fallback_nodes_count = getattr(graph, 'fallback_nodes_count', 0)
-            fallback_pct = (fallback_nodes_count / len(nodes) * 100) if len(nodes) > 0 else 0
-            
-            # Calculate metrics on the graph after construction (including fallback connections)
-            all_nodes_in_graph = graph.get_nodes()
-            total_edges = 0
-            node_degrees = [0] * len(all_nodes_in_graph)
-            
-            # Count degrees using the graph's adjacency list
-            for i, node in enumerate(all_nodes_in_graph):
-                node_degrees[i] = len(node.get_adjacent_nodes())
-
-            total_edges = sum(node_degrees) // 2  # Divide by 2 since each edge is counted twice
-            avg_degree = sum(node_degrees) / len(all_nodes_in_graph) if all_nodes_in_graph else 0
-            
-            # Store the node count for this test
-            node_count = len(all_nodes_in_graph)
-            
-            # Save results with detailed information about the filtering and fallback
-            results.append({
-                'quality_threshold': q_thresh_str,
-                'symmetry_threshold': s_thresh_str,
-                'embedding_threshold': e_thresh_str,
-                'average_degree': avg_degree,
-                'total_edges': total_edges,
-                'num_edges_after_filter': num_edges_after_filter, # Use direct count
-                'fallback_triggered': fallback_triggered,
-                'fallback_pct': fallback_pct
-            })
-            
-            # Write current result to CSV file (append mode)
-            if len(results) == 1:
-                # Create header if this is the first result
-                pd.DataFrame([results[0]]).to_csv(log_file, index=False)
-            else:
-                # Append without header for subsequent results
-                pd.DataFrame([results[-1]]).to_csv(log_file, mode='a', header=False, index=False)
-                
-            # Update progress bar with result
-            progress_bar.set_postfix(avg_degree=f"{avg_degree:.2f}", total_edges=total_edges)
-            
-        except Exception as e:
-            # Restore output streams TEMPORARILY to print the error
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-            print(f"\n--- ERROR ENCOUNTERED during grid search for thresholds: Q={q_thresh_str}, S={s_thresh_str}, E={e_thresh_str} ---")
-            traceback.print_exc() # Print the full traceback
-            print("--------------------------------------------------------------------------------")
-            print("Stopping grid search due to error.")
-            # Restore suppressors just in case, although we will exit
-            sys.stdout = null_output
-            sys.stderr = null_output
-            # Re-raise the exception to halt the script
-            raise e 
-            # Optionally, append error and continue:
-            # results.append({
-            #     'quality_threshold': q_thresh_str,
-            #     'symmetry_threshold': s_thresh_str,
-            #     'embedding_threshold': e_thresh_str,
-            #     'average_degree': 0,
-            #     'total_edges': 0,
-            #     'fallback_triggered': False,
-            #     'fallback_pct': 0,
-            #     'num_edges_after_filter': 0,
-            #     'error': f"{e.__class__.__name__}: {e}"
-            # })
-            # # Suppress output again before continuing loop
-            # sys.stdout = null_output
-            # sys.stderr = null_output
-
-        finally:
-            # Ensure output streams and loggers are restored
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-            
-            # Restore all logger handlers
-            for logger_name, handlers in original_handlers.items():
-                logging.getLogger(logger_name).handlers = handlers
-            logging.getLogger().handlers = original_root_handlers
-            
-            # Restore tqdm
-            tqdm.__init__ = original_tqdm
-            
-            # Make sure to close the null output file
-            null_output.close()
-            
-        # Update progress bar
-        progress_bar.update(1)
-    
-    progress_bar.close()
-    
-    # Convert results to DataFrame
-    results_df = pd.DataFrame(results)
-    return results_df
-
-def visualize_search_results(results_df, output_prefix):
-    """Create visualizations of search results"""
-    os.makedirs('logs/search_plots', exist_ok=True)
-    
-    # 1. 3D scatter plot of all parameters
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    scatter = ax.scatter(
-        results_df['quality_threshold'],
-        results_df['symmetry_threshold'],
-        results_df['embedding_threshold'],
-        c=results_df['average_degree'],
-        cmap='viridis',
-        s=50,
-        alpha=0.7
-    )
-    
-    ax.set_xlabel('Quality Threshold')
-    ax.set_ylabel('Symmetry Threshold')
-    ax.set_zlabel('Embedding Threshold')
-    ax.set_title('Impact of Thresholds on Average Degree')
-    
-    cbar = plt.colorbar(scatter)
-    cbar.set_label('Average Degree')
-    
-    plt.tight_layout()
-    plt.savefig(f'logs/search_plots/{output_prefix}_3d_plot.png')
-    plt.close()
-    
-    # 2. Heat maps for each pair of thresholds
-    param_pairs = [
-        ('quality_threshold', 'symmetry_threshold', 'embedding_threshold'),
-        ('quality_threshold', 'embedding_threshold', 'symmetry_threshold'),
-        ('symmetry_threshold', 'embedding_threshold', 'quality_threshold')
-    ]
-    
-    for x_param, y_param, z_param in param_pairs:
-        # Create pivot table
-        unique_z_values = sorted(results_df[z_param].unique())
-        
-        # Create subplots for each value of z_param
-        fig, axes = plt.subplots(
-            nrows=1, 
-            ncols=len(unique_z_values), 
-            figsize=(5 * len(unique_z_values), 5),
-            sharey=True
-        )
-        
-        if len(unique_z_values) == 1:
-            axes = [axes]  # Ensure axes is iterable
-            
-        for i, z_value in enumerate(unique_z_values):
-            # Filter data for this z value
-            filtered_data = results_df[results_df[z_param] == z_value]
-            
-            # Create pivot table
-            pivot_data = filtered_data.pivot_table(
-                index=y_param,
-                columns=x_param,
-                values='average_degree',
-                aggfunc='mean'
-            )
-            
-            # Plot heatmap
-            im = axes[i].imshow(pivot_data, cmap='viridis', aspect='auto', origin='lower')
-            
-            # Configure axes
-            axes[i].set_title(f'{z_param}={z_value}')
-            axes[i].set_xlabel(x_param)
-            if i == 0:
-                axes[i].set_ylabel(y_param)
-            
-            # Add colorbar
-            plt.colorbar(im, ax=axes[i], label='Average Degree')
-        
-        plt.tight_layout()
-        plt.savefig(f'logs/search_plots/{output_prefix}_{x_param}_{y_param}_heatmap.png')
-        plt.close()
-    
-    # 3. Line plots showing individual parameter effects
-    params = ['quality_threshold', 'symmetry_threshold', 'embedding_threshold']
-    
-    for param in params:
-        # Group by current parameter and calculate mean degree
-        grouped_data = results_df.groupby(param)['average_degree'].agg(['mean', 'std']).reset_index()
-        
-        plt.figure(figsize=(10, 6))
-        plt.errorbar(
-            grouped_data[param],
-            grouped_data['mean'],
-            yerr=grouped_data['std'],
-            marker='o',
-            linestyle='-',
-            capsize=5
-        )
-        
-        plt.xlabel(param)
-        plt.ylabel('Average Degree')
-        plt.title(f'Effect of {param} on Average Degree')
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(f'logs/search_plots/{output_prefix}_{param}_effect.png')
-        plt.close()
-    
-    print(f"Visualizations saved to logs/search_plots/{output_prefix}_*.png")
-
-def plot_subgroup_i_values(history, output_filename):
-    """Plots the average I-value for each subgroup over hop instances."""
-    if not history:
-        print("No hop history recorded, skipping I-value plot.")
-        return
-
-    try:
-        # Convert history (list of dicts) to DataFrame
-        records = []
-        for hop_index, hop_data in enumerate(history):
-            for subgroup, avg_ivalue in hop_data.items():
-                # Convert tuple subgroup key to string for easier handling if needed
-                subgroup_str = str(subgroup) 
-                records.append({
-                    'HopInstance': hop_index,
-                    'Subgroup': subgroup_str,
-                    'AvgIValue': avg_ivalue
-                })
-        
-        if not records:
-            print("No valid records found in hop history.")
-            return
-            
-        df = pd.DataFrame(records)
-
-        plt.figure(figsize=(15, 8))
-        
-        # Plot lines for each subgroup
-        for subgroup in df['Subgroup'].unique():
-            subgroup_df = df[df['Subgroup'] == subgroup]
-            plt.plot(subgroup_df['HopInstance'], subgroup_df['AvgIValue'], marker='o', linestyle='-', label=subgroup)
-
-        plt.xlabel('Hop Instance Index')
-        plt.ylabel('Average I-Value')
-        plt.title('Average I-Value per Subgroup Over Bias Hops')
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
-        plt.grid(True)
-        plt.tight_layout(rect=[0, 0, 0.85, 1]) # Adjust layout to make space for legend
-        
-        plt.savefig(output_filename)
-        print(f"Saved subgroup I-value plot to {output_filename}")
-        plt.close() # Close the figure to free memory
-
-    except Exception as e:
-        print(f"Error generating subgroup I-value plot: {e}")
-        import traceback
-        traceback.print_exc()
-
-def set_seed(seed):
-    """Sets the seed for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-        # Configure CUDA for deterministic behavior
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True) # Enforce deterministic algorithms
-    print(f"Random seed set to {seed}")
-
 def main():
     args = parse_args() # Parse args first
 
@@ -961,6 +356,9 @@ def main():
     # Define the primary loss function
     criterion = nn.BCEWithLogitsLoss().to(device)
     print(f"Primary loss function defined: {criterion.__class__.__name__}")
+
+    # Define the Edge class to be used for graph construction
+    edge_class = Edge
 
     # --- Force num_workers=0 for reproducibility --- 
     if args.num_workers != 0:
@@ -1064,72 +462,10 @@ def main():
             }
         ]
     
-    # Set up a dataloader for loading datasets
-    edge_class = Edge
-    train_nodes, val_nodes, test_nodes = None, None, None
-    train_nodes_full, val_nodes_full, test_nodes_full = None, None, None # Keep track of full sets for caching
-
-    # --- Node Loading --- 
-    node_loading_start = time.time()
-    
-    if args.use_cached:
-        print(f"Attempting to load nodes from cache: {args.cache_file}")
-        # Load potentially balanced sets based on flags
-        train_nodes = load_cached_nodes(args.cache_file, 'train', balanced=args.fair_train)
-        val_nodes = load_cached_nodes(args.cache_file, 'val', balanced=args.fair_test)
-        test_nodes = load_cached_nodes(args.cache_file, 'test', balanced=args.fair_test)
-
-        if train_nodes is None or val_nodes is None or test_nodes is None:
-            print("Failed to load one or more splits from cache. Will attempt direct loading.")
-            args.use_cached = False # Force direct load if cache failed
-            train_nodes, val_nodes, test_nodes = None, None, None # Reset
-        else:
-            print("Successfully loaded nodes from cache.")
-            # If loaded from cache, we don't necessarily have the 'full' versions unless
-            # we load them separately or the cache format changes. For now, assume the
-            # loaded lists are sufficient for downstream use, but caching below won't work correctly.
-            # If needed, we could add logic here to load the 'full' versions too.
-            # For simplicity, we set the *_full vars to the potentially balanced lists here,
-            # acknowledging that re-caching might not save the original full sets.
-            train_nodes_full = train_nodes
-            val_nodes_full = val_nodes
-            test_nodes_full = test_nodes
-
-
-    if not args.use_cached:
-        # Load nodes directly from datasets
-        print("Loading nodes directly from dataset...")
-        # Initialize the AIFaceDataset with correct parameters (using positional arguments)
-        dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": 2})
-        
-        # Load all nodes directly from the dataset (avoid using dataloader.load() which would load again)
-        print("Loading nodes from dataset...")
-        all_nodes = dataset.load()
-            
-        # Create node lists for each split
-        print("Separating nodes by split...")
-        train_nodes_full = [node for node in all_nodes if node.split == 'train']
-        val_nodes_full = [node for node in all_nodes if node.split == 'val']
-        test_nodes_full = [node for node in all_nodes if node.split == 'test']
-        print(f"  Train: {len(train_nodes_full)}, Val: {len(val_nodes_full)}, Test: {len(test_nodes_full)}")
-
-        # Cache the full nodes if requested
-        if args.cache_nodes:
-            print(f"Caching full node lists to {args.cache_file}...")
-            # *** Pass the FULL lists to save_cached_nodes ***
-            save_cached_nodes(train_nodes_full, val_nodes_full, test_nodes_full, args.cache_file, target_num_nodes=args.cached_nodes)
-
-        # Apply balancing based on flags to get the lists used for graph building
-        print("Applying balancing based on flags for graph construction...")
-        train_nodes = balance_nodes_by_subgroup(train_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_train else train_nodes_full
-        val_nodes = balance_nodes_by_subgroup(val_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else val_nodes_full
-        test_nodes = balance_nodes_by_subgroup(test_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else test_nodes_full
-        print(f"  Final Train Nodes used for graph: {len(train_nodes)} ({'Balanced' if args.fair_train else 'Full'})")
-        print(f"  Final Val Nodes used for graph: {len(val_nodes)} ({'Balanced' if args.fair_test else 'Full'})")
-        print(f"  Final Test Nodes used for graph: {len(test_nodes)} ({'Balanced' if args.fair_test else 'Full'})")
-
-    node_loading_time = time.time() - node_loading_start
-    print(f"Node loading/balancing time: {node_loading_time:.2f} seconds")
+    # Call the new helper function to load and prepare data splits
+    train_nodes, val_nodes, test_nodes, \
+    train_nodes_full, val_nodes_full, test_nodes_full, \
+    node_loading_time = load_and_prepare_data_splits(args, data_root)
     
     graph_cache_dir = "graph_cache"
     os.makedirs(graph_cache_dir, exist_ok=True)
@@ -1257,7 +593,7 @@ def main():
         print("\nError: One or more graphs could not be loaded or built. Exiting.")
         sys.exit(1)
         
-    graph_construction_time = time.time() - node_loading_start
+    graph_construction_time = time.time() - node_loading_time
 
     # Performance Reporting & Validation
     print("\nPerformance:")
