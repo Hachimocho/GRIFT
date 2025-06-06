@@ -33,7 +33,7 @@ def capture_output(filename):
     log_dir = Path("logs") 
     log_dir.mkdir(exist_ok=True)
     
-    logpath = log_dir / filename
+    logpath = log_dir / filename if not filename.startswith("logs/") else filename
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     

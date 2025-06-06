@@ -1,0 +1,51 @@
+@startuml audio
+Object Dataset {
+    Loads a specific dataset into a graph format.
+}
+Object AudioData {
+    Audio data from dataset.
+}
+Object SpeechSeparator {
+    Separates audio into different vocal streams.
+}
+Object DeNoiser {
+    Removes noise from audio.
+}
+Object FeatureExtractor {
+    Extracts non-image features from audio.
+}
+Object SpectrogramExtractor {
+    Extracts spectrograms from audio.
+}
+Object ChromagramExtractor {
+    Extracts chromagrams from audio.
+}
+Object Embedder {
+    Embeds audio into a vector space.
+}
+Object AudioEmbeddings {
+    Audio embeddings from embedding.
+}
+Object AudioFeatures {
+    Audio features from feature extractor.
+}
+Object AudioSpectrograms {
+    Audio spectrograms from spectrogram extractor.
+}
+Object AudioChromagrams {
+    Audio chromagrams from chromagram extractor.
+}
+Dataset-down->AudioData
+AudioData-right->SpeechSeparator
+SpeechSeparator-right->DeNoiser
+DeNoiser-up->FeatureExtractor
+DeNoiser-right->SpectrogramExtractor
+DeNoiser-down->ChromagramExtractor
+DeNoiser-down->Embedder
+FeatureExtractor->AudioFeatures
+SpectrogramExtractor->AudioSpectrograms
+ChromagramExtractor->AudioChromagrams
+Embedder->AudioEmbeddings
+
+
+@enduml

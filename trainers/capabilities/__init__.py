@@ -1,0 +1,1 @@
+# Capability management components for AdaptiveTrainer 

@@ -60,8 +60,8 @@ class ExperimentTrainer(Trainer):
         # Setup DQN only for I-value traversal
         if self.traversal_type == "i-value" and attribute_metadata is not None:
             sample_node = next(iter(self.graphmanager.get_graph().get_nodes()))
-            input_dim = len(self._get_node_features(sample_node))
-            self.dqns = [DQNModel(input_dim, device=self.device) for _ in self.models]
+            feature_dim = len(self._get_node_features(sample_node))
+            self.dqns = [DQNModel(feature_dim, device=self.device) for _ in self.models]
         else:
             self.dqns = None
             

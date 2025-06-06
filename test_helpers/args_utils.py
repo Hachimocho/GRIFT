@@ -59,4 +59,40 @@ def parse_args():
     parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility') # Add seed argument
 
+    # NEW: Trainer and traversal configuration options
+    parser.add_argument('--trainer-mode', type=str, default='adaptive', 
+                        choices=['adaptive', 'legacy'],
+                        help='Trainer mode: adaptive (new AdaptiveTrainer) or legacy (old trainer classes) (default: adaptive)')
+    
+    # Single traversal mode options
+    parser.add_argument('--traversal-type', type=str, default='comprehensive',
+                        choices=['comprehensive', 'random', 'i-value', 'i-value-cluster-hop'],
+                        help='Single traversal type to use throughout training (default: comprehensive)')
+    
+    # Switch traversal mode options  
+    parser.add_argument('--enable-traversal-switching', action='store_true',
+                        help='Enable dynamic traversal switching during training')
+    parser.add_argument('--traversal-sequence', type=str, default='comprehensive,i-value-cluster-hop',
+                        help='Comma-separated sequence of traversals for switching mode (default: comprehensive,i-value-cluster-hop)')
+    parser.add_argument('--switch-epochs', type=str, default='10',
+                        help='Comma-separated epochs at which to switch traversals (default: 10)')
+    
+    # Architecture testing options
+    parser.add_argument('--architectures', type=str, default='vistransformdf',
+                        help='Comma-separated list of CNN architectures to test (default: vistransformdf)')
+    parser.add_argument('--test-all-traversals', action='store_true',
+                        help='Test all traversal types with each architecture (for comparison)')
+    
+    # I-value visualization options
+    parser.add_argument('--enable-ivalue-viz', action='store_true',
+                        help='Enable I-value visualization tracking during training')
+    parser.add_argument('--viz-sample-size', type=int, default=1000,
+                        help='Number of nodes to sample per epoch for I-value statistics (default: 1000)')
+    parser.add_argument('--viz-track-nodes', type=int, default=50,
+                        help='Number of specific nodes to track throughout training (default: 50)')
+    parser.add_argument('--viz-step-frequency', type=int, default=10,
+                        help='Log I-value statistics every N training steps (default: 10)')
+    parser.add_argument('--viz-save-dir', type=str, default='ivalue_visualizations',
+                        help='Directory to save I-value visualization plots (default: ivalue_visualizations)')
+    
     return parser.parse_args()

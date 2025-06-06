@@ -145,10 +145,6 @@ class DQNModel(nn.Module):
 
     def load_checkpoint(self, filepath):
         """Loads the DQN model and optimizer state dictionaries."""
-        if not os.path.exists(filepath):
-            print(f"Warning: DQN Checkpoint file not found at {filepath}. Skipping load.")
-            return
-            
         checkpoint = torch.load(filepath, map_location=self.device)
         self.load_state_dict(checkpoint['model_state_dict']) # Load directly into self
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

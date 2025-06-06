@@ -33,33 +33,99 @@ We also use a novel method called I-value estimation to monitor and reduce model
 6. Use DQN weights and prediction patterns to measure and correct both
    inter-attribute and intra-attribute bias
 
+## NEW: Adaptive Trainer Architecture
+
+The framework now includes a refactored AdaptiveTrainer that supports:
+- **Dynamic traversal switching** during training
+- **Unified trainer interface** that works with all traversal types
+- **Automatic capability management** for DQN and bias features
+- **State transfer** between different traversal methods
+
+### Usage Examples
+
+#### Single Traversal Mode (Default)
+```bash
+# Use comprehensive traversal throughout training
+python test_hierarchical.py --traversal-type comprehensive --num-epochs 20
+
+# Use I-value traversal with cluster hopping
+python test_hierarchical.py --traversal-type i-value-cluster-hop --bias_hop_period 2 --num-epochs 20
+```
+
+#### Dynamic Traversal Switching
+```bash
+# Switch from comprehensive -> i-value -> i-value-cluster-hop at epochs 10 and 20
+python test_hierarchical.py --enable-traversal-switching \
+    --traversal-sequence "comprehensive,i-value,i-value-cluster-hop" \
+    --switch-epochs "10,20" --num-epochs 30 --bias_hop_period 2
+
+# Custom switching sequence
+python test_hierarchical.py --enable-traversal-switching \
+    --traversal-sequence "random,comprehensive,i-value" \
+    --switch-epochs "5,15" --num-epochs 25
+```
+
+#### Architecture Testing
+```bash
+# Test multiple architectures with single traversal
+python test_hierarchical.py --architectures "vistransformdf,effnetdf" \
+    --traversal-type comprehensive
+
+# Test all traversal types for comparison
+python test_hierarchical.py --test-all-traversals \
+    --architectures "vistransformdf" --num-epochs 10
+```
+
+#### Legacy Mode (Backward Compatibility)
+```bash
+# Use original trainer classes for comparison
+python test_hierarchical.py --trainer-mode legacy \
+    --traversal-type i-value-cluster-hop --bias_hop_period 2
+```
+
+### Command Line Options
+
+**Trainer Configuration:**
+- `--trainer-mode`: Choose 'adaptive' (new) or 'legacy' (original) trainer architecture
+- `--traversal-type`: Single traversal method (comprehensive, random, i-value, i-value-cluster-hop)
+- `--enable-traversal-switching`: Enable dynamic traversal switching during training
+- `--traversal-sequence`: Comma-separated sequence of traversals for switching
+- `--switch-epochs`: Comma-separated epochs at which to switch traversals
+- `--architectures`: Comma-separated list of CNN architectures to test
+- `--test-all-traversals`: Test all traversal types individually for comparison
+
+**Original Options:**
+- `--test`: Run in test mode with limited nodes, good for low-compute machines
+- `--visualize`: Generate graph visualization csvs for use in cosmograph
+- `--quality-threshold`: Set the quality threshold edge construction in the graph
+- `--symmetry-threshold`: Set the symmetry threshold edge construction in the graph
+- `--embedding-threshold`: Set the embedding threshold edge construction in the graph
+- `--cache-nodes`: Cache nodes so node loading can be skipped next time
+- `--use-cached`: Use previously cached nodes instead of loading from dataset
+- `--num-epochs`: Number of training epochs
+- `--bias_hop_period`: Period for bias hop in cluster hop traversals
+- `--fair-train`: Use subgroup-balanced training set for graph construction
+- `--fair-test`: Use subgroup-balanced validation/test sets for graph construction
+
+## Setup and Running
+
 This is a test build. To run the test:
 1. Get the anaconda or mamba package managers running on your system
 2. Build the environment using the environment.yml file
 3. Get the AI-face dataset unpacked on your system (https://github.com/Purdue-M2/AI-Face-FairnessBench)
 4. Update the dataset path to your AI-face dataset root
 5. Generate quality csvs using the regenerate_quality_csvs.sh script, or request them from me (they're too large for the git repo)
-6. Run the current test build at test_hierarchical.py. The test script supports several options:
-6a. --test: Run in test mode with limited nodes, good for low-compute machines
-6b. --visualize: Generate graph visualization csvs for use in cosmograph
-6c. --show: Deprecated due to switching to cosmograph
-6d. --quality-threshold: Set the quality threshold edge construction in the graph
-6e. --symmetry-threshold: Set the symmetry threshold edge construction in the graph
-6f. --embedding-threshold: Set the embedding threshold edge construction in the graph
-6g. --cache-nodes: Cache nodes so node loading can be skipped next time
-6h. --cache-full: Deprecated due to node caching changes
-6i. --use-cached: Use previously cached nodes instead of loading from dataset
-6j. --use-full-cache: Load the full dataset from cache instead of the subset
-6k. --cached-nodes: Number of nodes to cache per split when not using full cache
-6l. --cache-file: Path to cache file for saving/loading nodes
-6m. --search: Run grid search over threshold combinations
-6n. --search-split: Split to use for grid search (default: train)
-6o. --quality-steps: Number of steps for quality threshold grid search (default: 5)
-6p. --symmetry-steps: Number of steps for symmetry threshold grid search (default: 5)
-6q. --embedding-steps: Number of steps for embedding threshold grid search (default: 5)
-6r. --search-results: File to save search results to (default: threshold_search_results.csv)
+6. Run the current test build at test_hierarchical.py with desired options
 
-Example command: python test_hierarchical.py --cache-nodes --cached-nodes 10000--use-cached --quality-threshold .7 --symmetry-threshold .5 --embedding-threshold .9 --num-epochs 15 --bias_hop_period 2 --fair-train --fair-test
+Example command: 
+```bash
+python test_hierarchical.py --cache-nodes --cached-nodes 10000 --use-cached \
+    --quality-threshold .7 --symmetry-threshold .5 --embedding-threshold .9 \
+    --num-epochs 15 --bias_hop_period 2 --fair-train --fair-test \
+    --enable-traversal-switching --traversal-sequence "comprehensive,i-value-cluster-hop" \
+    --switch-epochs "10" --architectures "vistransformdf"
+```
+
 Expected outputs:
 1. Cached node file in node_cache folder
 2. Cached edge file in graph_cache folder
@@ -67,3 +133,17 @@ Expected outputs:
 4. Training, validation, and testing logs in logs folder
 5. Any requested visualization csvs in the base directory
 6. Any requested threshold search results csv in the logs directory + plots in logs/search_plots
+
+## Testing the Refactored Architecture
+
+To test the new architecture:
+```bash
+# Quick component test
+python test_refactoring.py
+
+# Full demonstration with switching
+python test_adaptive_trainer.py
+
+# Production usage with new options
+python test_hierarchical.py --enable-traversal-switching --num-epochs 20
+```

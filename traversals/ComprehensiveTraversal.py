@@ -43,6 +43,7 @@ class ComprehensiveTraversal(Traversal):
             num_pointers (int): The number of pointers to move around the graph.
             num_steps (int, optional): Maximum number of nodes to visit. If None, visits all nodes.
         """
+        super().__init__()  # Call parent constructor
         self.num_pointers = num_pointers
         self.graph = graph
         self.num_steps = num_steps if num_steps is not None else len(graph.get_nodes())

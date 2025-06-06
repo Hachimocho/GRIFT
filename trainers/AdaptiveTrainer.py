@@ -1,0 +1,193 @@
+import torch
+import torch.nn as nn
+import numpy as np
+from tqdm.auto import tqdm
+from datetime import datetime
+from pathlib import Path
+import json
+import random
+from collections import defaultdict
+from torch.cuda.amp import GradScaler
+
+from trainers.Trainer import Trainer
+from trainers.capabilities.CapabilityManager import CapabilityManager
+from traversals.ComprehensiveTraversal import ComprehensiveTraversal
+from traversals.RandomTraversal import RandomTraversal
+from traversals.IValueTraversal import IValueTraversal
+from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop
+
+
+class AdaptiveTrainer(Trainer):
+    """
+    Unified trainer that can adapt to different traversal requirements.
+    Uses composition and strategy patterns to support dynamic capability switching.
+    """
+    tags = ["adaptive"]
+    
+    def __init__(self, graphmanager, models, device, attribute_metadata=None, 
+                 loss_fn=None, **kwargs):
+        """Initialize the adaptive trainer with capability management."""
+        super().__init__(graphmanager, None, models, attribute_metadata=attribute_metadata)
+        
+        self.device = device
+        if loss_fn is None:
+            raise ValueError("loss_fn must be provided to AdaptiveTrainer")
+        self.criterion = loss_fn
+        self.attribute_metadata = attribute_metadata
+        
+        # Initialize capability components
+        self.capabilities = CapabilityManager(self)
+        
+        # Training state
+        self.current_traversal = None
+        self.current_traversal_type = None
+        
+        # Training settings
+        self.batch_size = 32
+        self.max_nodes_per_epoch = 10000
+        self.scaler = GradScaler()
+        
+        # Setup logging
+        self.log_dir = Path("logs")
+        self.log_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = self.log_dir / f"adaptive_trainer_{timestamp}.json"
+        self.metrics_history = []
+        
+        # Extract categorical attributes for tracking if metadata is provided
+        self.categorical_attrs_for_tracking = []
+        if self.attribute_metadata:
+            self.categorical_attrs_for_tracking = [
+                attr['name'] for attr in self.attribute_metadata if attr.get('type') == 'categorical'
+            ]
+            if not self.categorical_attrs_for_tracking:
+                print("AdaptiveTrainer: No categorical attributes found in metadata for tracking.")
+            else:
+                print(f"AdaptiveTrainer: Will track distribution for attributes: {self.categorical_attrs_for_tracking}")
+        
+    def set_traversal(self, traversal_instance, traversal_type):
+        """Dynamically set traversal and enable required capabilities."""
+        self.current_traversal = traversal_instance
+        self.current_traversal_type = traversal_type
+        
+        # Enable required capabilities based on traversal type
+        self.capabilities.configure_for_traversal(traversal_type)
+        
+        # Set trainer reference in traversal if needed
+        if hasattr(traversal_instance, 'trainer'):
+            traversal_instance.trainer = self
+        elif hasattr(traversal_instance, 'set_trainer'):
+            traversal_instance.set_trainer(self)
+            
+        print(f"AdaptiveTrainer: Set traversal to {traversal_type} ({type(traversal_instance).__name__})")
+            
+    def switch_traversal(self, new_traversal_type, **traversal_kwargs):
+        """Switch to a different traversal method during training."""
+        old_type = self.current_traversal_type
+        print(f"Switching traversal from {old_type} to {new_traversal_type}")
+        
+        # Create new traversal instance
+        new_traversal = self._create_traversal(new_traversal_type, **traversal_kwargs)
+        
+        # Transfer state if possible
+        if self.current_traversal and hasattr(self.current_traversal, 'get_state'):
+            try:
+                state = self.current_traversal.get_state()
+                if hasattr(new_traversal, 'set_state'):
+                    new_traversal.set_state(state)
+                    print(f"Successfully transferred state from {old_type} to {new_traversal_type}")
+            except Exception as e:
+                print(f"Warning: Could not transfer state from {old_type} to {new_traversal_type}: {e}")
+        
+        # Set new traversal
+        self.set_traversal(new_traversal, new_traversal_type)
+        
+    def _create_traversal(self, traversal_type, **kwargs):
+        """Factory method to create traversal instances."""
+        graph = kwargs.get('graph', self.graphmanager.get_graph())
+        num_pointers = kwargs.get('num_pointers', 1)
+        num_steps = kwargs.get('num_steps', 1000)
+        
+        if traversal_type == "comprehensive":
+            return ComprehensiveTraversal(graph, num_pointers, num_steps)
+        elif traversal_type == "random":
+            return RandomTraversal(graph, num_pointers, num_steps)
+        elif traversal_type == "i-value":
+            return IValueTraversal(graph, num_pointers, num_steps, trainer=self)
+        elif traversal_type == "i-value-cluster-hop":
+            bias_hop_period = kwargs.get('bias_hop_period', 2)
+            return IValueTraversalClusterHop(
+                graph, num_pointers, num_steps, trainer=self, 
+                bias_hop_period=bias_hop_period
+            )
+        else:
+            raise ValueError(f"Unknown traversal type: {traversal_type}")
+        
+    def get_i_value(self, node, model_idx=0):
+        """Get I-value using appropriate capability."""
+        return self.capabilities.get_i_value(node, model_idx)
+        
+    def train(self, epoch=None):
+        """Train using current traversal method."""
+        if not self.current_traversal:
+            raise ValueError("No traversal method set")
+            
+        return self.capabilities.train_with_traversal(self.current_traversal, epoch)
+    
+    def log_metrics(self, metrics):
+        """Log training metrics to file."""
+        metrics_dict = {}
+        for key, value in metrics.items():
+            # Convert tensors to float/int
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            metrics_dict[key] = value
+        
+        # Add timestamp and traversal type
+        metrics_dict['timestamp'] = datetime.now().isoformat()
+        metrics_dict['traversal_type'] = self.current_traversal_type
+        self.metrics_history.append(metrics_dict)
+        
+        # Write to file
+        with open(self.log_file, 'w') as f:
+            json.dump(self.metrics_history, f, indent=2)
+        
+        # Also print to console
+        print(f"Metrics: {metrics_dict}")
+    
+    def save_capability_checkpoints(self, base_path):
+        """Save checkpoints for all enabled capabilities."""
+        try:
+            self.capabilities.save_checkpoints(base_path)
+            print(f"Capability checkpoints saved with base path: {base_path}")
+        except Exception as e:
+            print(f"Warning: Could not save capability checkpoints: {e}")
+    
+    def load_capability_checkpoints(self, base_path):
+        """Load checkpoints for all enabled capabilities."""
+        try:
+            self.capabilities.load_checkpoints(base_path)
+            print(f"Capability checkpoints loaded from base path: {base_path}")
+        except Exception as e:
+            print(f"Warning: Could not load capability checkpoints: {e}")
+    
+    def get_current_traversal_info(self):
+        """Get information about the current traversal configuration."""
+        if not self.current_traversal:
+            return "No traversal set"
+        
+        info = {
+            'type': self.current_traversal_type,
+            'class': type(self.current_traversal).__name__,
+            'enabled_capabilities': list(self.capabilities.enabled_capabilities)
+        }
+        
+        # Add traversal-specific info
+        if hasattr(self.current_traversal, 'num_pointers'):
+            info['num_pointers'] = self.current_traversal.num_pointers
+        if hasattr(self.current_traversal, 'num_steps'):
+            info['num_steps'] = self.current_traversal.num_steps
+        if hasattr(self.current_traversal, 'bias_hop_period'):
+            info['bias_hop_period'] = self.current_traversal.bias_hop_period
+            
+        return info 

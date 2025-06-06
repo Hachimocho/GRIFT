@@ -52,6 +52,14 @@ def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['r
         print(f"Warning: Cannot balance empty node list or with target_num_nodes={target_num_nodes}. Returning empty list.")
         return []
 
+    # Create deterministic random state based on node IDs for reproducible balancing
+    import hashlib
+    import random as rand_module
+    node_ids = sorted([node.node_id for node in nodes])
+    balance_seed = int(hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8], 16) % (2**32)
+    balance_rng = rand_module.Random(balance_seed)
+    print(f"Using deterministic seed {balance_seed} for node balancing (based on {len(node_ids)} node IDs)")
+
     subgroups = defaultdict(list)
     for node in nodes:
         subgroup_key = tuple(node.attributes.get(attr, 'Unknown') for attr in attributes_to_balance)
@@ -70,7 +78,7 @@ def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['r
 
     balanced_nodes = []
     subgroup_keys = list(subgroups.keys())
-    random.shuffle(subgroup_keys) # Shuffle keys to randomly distribute remainder
+    balance_rng.shuffle(subgroup_keys) # Shuffle keys to randomly distribute remainder (deterministic)
 
     for i, subgroup_key in enumerate(subgroup_keys):
         group_nodes = subgroups[subgroup_key]
@@ -83,10 +91,10 @@ def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['r
             )
 
         if required_size > 0:
-            sampled_nodes = random.sample(group_nodes, required_size)
+            sampled_nodes = balance_rng.sample(group_nodes, required_size)
             balanced_nodes.extend(sampled_nodes)
 
-    random.shuffle(balanced_nodes) # Shuffle the final list
+    balance_rng.shuffle(balanced_nodes) # Shuffle the final list (deterministic)
     print(f"Total nodes after balancing: {len(balanced_nodes)} (Target: {target_num_nodes})")
     if len(balanced_nodes) != target_num_nodes:
          print(f"WARNING: Final balanced node count ({len(balanced_nodes)}) does not match target ({target_num_nodes})!") # Should not happen

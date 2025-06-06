@@ -11,8 +11,8 @@ class ModelOut(nn.Module):
         super(ModelOut, self).__init__()
         # self.model = models.vit_b_16(
         #     image_size=256, patch_size=64, hidden_dim=512, mlp_dim=512, num_classes=2)
-        self.model = models.vit_b_16(
-            image_size=256, num_classes=output_classes if classification_strategy == 'categorical' else 1)
+        self.model = models.VisionTransformer(
+            image_size=255, patch_size=51, num_layers=12, num_heads=12, hidden_dim=256*3, mlp_dim=256*3*4, num_classes=output_classes if classification_strategy == 'categorical' else 1)
         # resnest50_base = load('zhanghang1989/ResNeSt', 'resnest50', pretrained=pretrained)
         # self.model = resnest50_base
         # self.in_features = resnest50_base.fc.in_features

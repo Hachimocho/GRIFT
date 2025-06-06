@@ -267,6 +267,23 @@ class HyperGraph():
              self._node_data_map = {node.node_id: node for node in self.nodes} # Use node_id
              
         edges_added_count = 0
+        edges_skipped_count = 0
+        
+        # Pre-calculate missing nodes for better performance
+        if len(edge_list) > 100:  # Only do pre-check for large edge lists
+            print("Pre-validating edge compatibility...")
+            all_edge_node_ids = set()
+            for id1, id2 in edge_list:
+                all_edge_node_ids.add(id1)
+                all_edge_node_ids.add(id2)
+            
+            available_node_ids = set(self._node_data_map.keys())
+            missing_node_ids = all_edge_node_ids - available_node_ids
+            
+            if missing_node_ids:
+                print(f"Pre-validation: {len(missing_node_ids)} unique node IDs from edges are missing from graph")
+                print(f"This will result in skipping edges that reference these missing nodes")
+        
         for id1, id2 in edge_list: # Assume these are node_ids
             node1 = self._node_data_map.get(id1)
             node2 = self._node_data_map.get(id2)
@@ -283,9 +300,17 @@ class HyperGraph():
                     edges_added_count += 1
                 else:
                     print(f"Warning: Nodes {id1} or {id2} missing 'add_edge' method.")
+                    edges_skipped_count += 1
             else:
-                print(f"Warning: Could not find nodes for edge ({id1}, {id2}). Skipping.")
-        print(f"Added {edges_added_count} edges from the list.")
+                edges_skipped_count += 1
+                # Only print individual warnings for small edge lists
+                if len(edge_list) <= 100:
+                    print(f"Warning: Could not find nodes for edge ({id1}, {id2}). Skipping.")
+        
+        print(f"Edge loading complete: {edges_added_count} edges added, {edges_skipped_count} edges skipped")
+        if edges_skipped_count > 0:
+            success_rate = (edges_added_count / (edges_added_count + edges_skipped_count)) * 100
+            print(f"Edge loading success rate: {success_rate:.1f}%")
 
     def num_edges(self):
         return len(self.get_edge_list())

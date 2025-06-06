@@ -17,6 +17,7 @@ class RandomTraversal(Traversal):
             num_pointers (int): The number of pointers to move around the graph.
             num_steps (int): The number of steps to take each pointer. If negative, will move pointers indefinitely.
         """
+        super().__init__()  # Call parent constructor
         self.num_pointers = num_pointers
         self.num_steps = num_steps
         self.graph = graph

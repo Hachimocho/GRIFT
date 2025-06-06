@@ -164,7 +164,9 @@ cython_debug/
 #.idea/
 !others/attributes/.gitkeep
 others/attributes/*
-
+bias_visualizations/
+ivalue_visualizations/
+*.log
 other/attributes/A-Celeb-DF.csv
 other/attributes/A-DF1.0.csv
 models/detectors/face_extraction/mmod_human_face_detector.dat

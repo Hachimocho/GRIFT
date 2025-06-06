@@ -5,6 +5,10 @@ This script tests the new hierarchical graph construction approach which:
 1. Groups nodes by categorical attributes (race-gender combinations)
 2. Creates fully-connected subgraphs within each group
 3. Applies threshold-based filtering for quality metrics, symmetry, embeddings, etc.
+
+Updated to support the new AdaptiveTrainer architecture with:
+- Single-traversal mode: Use one traversal method throughout training
+- Switch-traversal mode: Switch between different traversal methods during training
 """
 import time
 import os
@@ -19,6 +23,7 @@ import torch
 import torch.nn as nn
 from datetime import datetime
 import dill
+import numpy as np
 
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
@@ -28,6 +33,11 @@ from test_helpers.data_graph_utils import (
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
     load_and_prepare_data_splits # Added import for the new function
 )
+
+# Import visualization modules
+from trainers.IValueVisualizationTracker import IValueVisualizationTracker
+from trainers.BiasHopVisualizer import BiasHopVisualizer
+from trainers.BiasMetricsTracker import BiasMetricsTracker
 
 # Add the project root to the path if needed
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -44,8 +54,12 @@ import sys
 import traceback
 from pathlib import Path
 from contextlib import contextmanager
-from trainers.ExperimentTrainer import ExperimentTrainer
-from trainers.IValueTrainer import IValueTrainer
+
+# Import new AdaptiveTrainer (primary) and keep legacy trainers for comparison
+from trainers.AdaptiveTrainer import AdaptiveTrainer
+from trainers.ExperimentTrainer import ExperimentTrainer  # Keep for comparison mode
+from trainers.IValueTrainer import IValueTrainer  # Keep for comparison mode
+
 from dataloaders.UnclusteredDeepfakeDataloader import UnclusteredDeepfakeDataloader
 from datasets.AIFaceDataset import AIFaceDataset
 from data.ImageFileData import ImageFileData
@@ -200,7 +214,11 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                     try:
                         subgroup_key_parts = []
                         valid_node = True
-                        for cat_attr in categorical_attrs:
+                        # Filter categorical attributes to only include race and gender for subgroup construction
+                        race_gender_attrs = [attr for attr in categorical_attrs 
+                                           if attr['name'] in ['Ground Truth Gender', 'Ground Truth Race']]
+                        
+                        for cat_attr in race_gender_attrs:
                             attr_name = cat_attr['name']
                             # Check if node has attributes and the specific attribute
                             if not hasattr(node, 'attributes') or node.attributes is None or attr_name not in node.attributes:
@@ -249,7 +267,9 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     # --- Bias Calculation Setup --- 
     bias_metrics = {}
     if attribute_metadata and categorical_attrs: # Check again in case it was disabled
-        print(f"Bias calculation enabled for attributes: {[attr['name'] for attr in categorical_attrs]}")
+        race_gender_attrs = [attr['name'] for attr in categorical_attrs 
+                           if attr['name'] in ['Ground Truth Gender', 'Ground Truth Race']]
+        print(f"Bias calculation enabled for race-gender subgroups using attributes: {race_gender_attrs}")
 
     # --- Calculate Bias Metrics --- (Only if enabled and stats collected)
     if attribute_metadata and categorical_attrs and subgroup_stats:
@@ -259,7 +279,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
         total_subgroup_abs_diff = 0.0
         num_subgroups = 0
 
-        print("\n--- Bias Analysis --- ")
+        print("\n--- Race-Gender Subgroup Bias Analysis ---")
         per_attribute_stats = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'correct': 0})) # Define BEFORE subgroup loop
         overall_accuracy = final_metrics['accuracy'] / 100 # Convert to decimal
         for key, stats in sorted(subgroup_stats.items()):
@@ -288,12 +308,12 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
         overall_bias = max_subgroup_acc - min_subgroup_acc if num_subgroups > 0 else 0
         average_subgroup_bias = (total_subgroup_abs_diff / num_subgroups) if num_subgroups > 0 else 0
-        bias_metrics['subgroup_accuracies'] = subgroup_accuracies
-        bias_metrics['overall_bias'] = overall_bias
-        bias_metrics['average_subgroup_bias'] = average_subgroup_bias # Add average subgroup bias
+        bias_metrics['race_gender_subgroup_accuracies'] = subgroup_accuracies
+        bias_metrics['race_gender_overall_bias'] = overall_bias
+        bias_metrics['race_gender_average_subgroup_bias'] = average_subgroup_bias # Add average subgroup bias
 
-        print(f"Overall Bias (Max Acc Diff across subgroups): {overall_bias:.4f}")
-        print(f"Average Subgroup Bias (Avg Abs Diff from Overall Acc): {average_subgroup_bias:.4f}") # Print average subgroup bias
+        print(f"Race-Gender Overall Bias (Max Acc Diff across subgroups): {overall_bias:.4f}")
+        print(f"Race-Gender Average Subgroup Bias (Avg Abs Diff from Overall Acc): {average_subgroup_bias:.4f}") # Print average subgroup bias
 
         # Calculate per-attribute bias
         per_attribute_accuracies = defaultdict(dict)
@@ -337,6 +357,95 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     final_metrics['bias_metrics'] = bias_metrics # Include bias metrics
     return final_metrics
 
+def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trainer=None, **kwargs):
+    """Create a traversal instance based on type and parameters."""
+    if traversal_type == "comprehensive":
+        return ComprehensiveTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
+    elif traversal_type == "random":
+        return RandomTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
+    elif traversal_type == "i-value":
+        return IValueTraversal(
+            graph=graph,
+            num_pointers=num_pointers,
+            num_steps=num_steps,
+            trainer=trainer
+        )
+    elif traversal_type == "i-value-cluster-hop":
+        bias_hop_period = kwargs.get('bias_hop_period', 100)
+        return IValueTraversalClusterHop(
+            graph=graph,
+            num_pointers=num_pointers,
+            num_steps=num_steps,
+            trainer=trainer,
+            bias_hop_period=bias_hop_period
+        )
+    else:
+        raise ValueError(f"Unsupported traversal type: {traversal_type}")
+
+def parse_traversal_config(args):
+    """Parse traversal configuration from command line arguments."""
+    config = {
+        'trainer_mode': args.trainer_mode,
+        'single_traversal': args.traversal_type,
+        'enable_switching': args.enable_traversal_switching,
+        'architectures': [arch.strip() for arch in args.architectures.split(',')],
+        'test_all_traversals': args.test_all_traversals
+    }
+    
+    if args.enable_traversal_switching:
+        # Parse traversal sequence
+        config['traversal_sequence'] = [t.strip() for t in args.traversal_sequence.split(',')]
+        
+        # Parse switch epochs
+        try:
+            config['switch_epochs'] = [int(e.strip()) for e in args.switch_epochs.split(',')]
+        except ValueError:
+            raise ValueError(f"Invalid switch epochs format: {args.switch_epochs}. Expected comma-separated integers.")
+            
+        # Validate sequence and epochs match
+        if len(config['switch_epochs']) != len(config['traversal_sequence']) - 1:
+            raise ValueError(f"Number of switch epochs ({len(config['switch_epochs'])}) must be one less than traversal sequence length ({len(config['traversal_sequence'])})")
+    
+    return config
+
+def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args):
+    """Create and configure an AdaptiveTrainer instance."""
+    trainer = AdaptiveTrainer(
+        graphmanager=train_manager,
+        models=[model],
+        device=device,
+        attribute_metadata=attribute_metadata,
+        loss_fn=criterion,
+        bias_loss_weight=args.bias_loss_weight
+    )
+    return trainer
+
+def create_legacy_trainer(traversal_type, train_manager, train_traversal, model, device, attribute_metadata, criterion, args):
+    """Create a legacy trainer for comparison purposes."""
+    if traversal_type in ["i-value", "i-value-cluster-hop"]:
+        trainer = IValueTrainer(
+            graphmanager=train_manager,
+            models=[model],
+            device=device,
+            attribute_metadata=attribute_metadata,
+            use_bias_loss_in_training=False,
+            bias_loss_weight=args.bias_loss_weight,
+            loss_fn=criterion,
+            train_traversal=train_traversal
+        )
+        trainer.set_train_traversal(train_traversal)
+    else:
+        trainer = ExperimentTrainer(
+            graphmanager=train_manager,
+            train_traversal=train_traversal,
+            models=[model],
+            device=device,
+            traversal_type=traversal_type,
+            attribute_metadata=attribute_metadata,
+            loss_fn=criterion
+        )
+    return trainer
+
 def main():
     args = parse_args() # Parse args first
 
@@ -367,17 +476,9 @@ def main():
 
     # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logfile = Path("logs") / f"test_run_{timestamp}.log"
-
-    
-    data_root = "/home/brg2890/major/datasets/ai-face"
-    print("Detected arguments:")
-    print(args)
-    print(f"Bias hop period: {args.bias_hop_period}")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
-    log_file = f"logs/hierarchical_test_{timestamp}.log"
-    print(f"Starting test run, logging to: {log_file}")
+    logfile = f"hierarchical_test_{timestamp}.log"   
+    data_root = "/home/brg2890/major/datasets/ai-face"
 
     # Set up attribute metadata for I-value traversal
     attribute_metadata = [
@@ -490,10 +591,15 @@ def main():
         # Extract dataset name from data_root path (Corrected)
         dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
         
+        # Create hash of node IDs for cache consistency
+        import hashlib
+        node_ids = sorted([node.node_id for node in nodes_to_use])
+        node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
+        
         cache_filename = os.path.join(
             graph_cache_dir,
-            # Include the balancing status in the cache filename
-            f"{dataset_name}_{split_name}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_graph.pkl"
+            # Include the balancing status and node hash in the cache filename
+            f"{dataset_name}_{split_name}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_graph.pkl"
         )
 
         # Check/Load Graph Cache
@@ -512,14 +618,33 @@ def main():
                 with open(cache_filename, 'rb') as f:
                     edge_list = dill.load(f)
                     
-                # 3. Reconstruct Graph
-                print(f"Creating graph shell for {split_name} with {len(split_nodes)} nodes.")
-                graph = HyperGraph(split_nodes) 
-                print(f"Adding {len(edge_list)} edges from cache...")
-                graph.add_edges_from_list(edge_list)
+                # 3. Create node ID set for validation
+                nodes_to_use_ids = set(node.node_id for node in nodes_to_use)
+                print(f"Nodes to use for {split_name}: {len(nodes_to_use_ids)} unique node IDs")
                 
-                print(f"Successfully loaded and reconstructed {split_name} graph from edge cache.")
-                loaded_from_cache = True
+                # 4. Validate edge compatibility
+                edge_node_ids = set()
+                for id1, id2 in edge_list:
+                    edge_node_ids.add(id1)
+                    edge_node_ids.add(id2)
+                
+                missing_nodes = edge_node_ids - nodes_to_use_ids
+                print(f"Edge cache contains {len(edge_list)} edges referencing {len(edge_node_ids)} unique nodes")
+                print(f"Missing nodes in current node set: {len(missing_nodes)} ({len(missing_nodes)/len(edge_node_ids)*100:.1f}% of edge nodes)")
+                
+                if len(missing_nodes) > len(edge_node_ids) * 0.1:  # More than 10% missing
+                    print(f"WARNING: Cache incompatible - too many missing nodes ({len(missing_nodes)}). Regenerating graph.")
+                    graph = None  # Force regeneration
+                else:
+                    # 5. Reconstruct Graph - Use nodes_to_use to match cache creation
+                    print(f"Creating graph shell for {split_name} with {len(nodes_to_use)} nodes.")
+                    graph = HyperGraph(nodes_to_use)
+                    print(f"Adding {len(edge_list)} edges from cache...")
+                    graph.add_edges_from_list(edge_list)
+                    
+                    print(f"Successfully loaded and reconstructed {split_name} graph from edge cache.")
+                    loaded_from_cache = True
+                
             except Exception as e:
                 print(f"\nError loading/reconstructing {split_name} graph from edge cache {cache_filename}: {e}. Regenerating.")
                 graph = None # Ensure regeneration if loading fails
@@ -632,7 +757,7 @@ def main():
     #print(f"Node example: {list(train_graph.get_nodes())[0]}")
     #sys.exit()
 
-    with capture_output(logfile.name) as logpath:
+    with capture_output(logfile) as logpath:
         print(f"Starting test run, logging to: {logfile}")
     
         # Create graph managers for each split
@@ -646,340 +771,438 @@ def main():
         print(f"Retrieved {len(val_nodes_from_graph)} validation nodes and {len(test_nodes_from_graph)} test nodes from graph managers.")
 
         # ===============================
-        # Model/Trainer Setup
+        # NEW: Adaptive Trainer Setup
         # ===============================
-        # Define architectures to test
-        cnn_architectures = [
-            "swintransformdf",
-            "resnestdf", 
-            "effnetdf",
-            #"mesonetdf",
-            #"squeezenetdf",
-            #"vistransformdf",
-            
-        ]
-
-        random.seed(13247987501)
         
-        # Define traversal types to compare
-        #traversal_types = ["i-value-cluster-hop", "i-value", "comprehensive", "random"] # Added 'i-value-cluster-hop'
-        traversal_types = ["comprehensive", "i-value-cluster-hop"]
-        #traversal_types = ["comprehensive"]
+        # Parse traversal configuration from command line arguments
+        traversal_config = parse_traversal_config(args)
+        print(f"\nTraversal Configuration:")
+        print(f"  Trainer mode: {traversal_config['trainer_mode']}")
+        print(f"  Architectures: {traversal_config['architectures']}")
+        
+        if traversal_config['enable_switching']:
+            print(f"  Traversal switching enabled")
+            print(f"  Sequence: {traversal_config['traversal_sequence']}")
+            print(f"  Switch epochs: {traversal_config['switch_epochs']}")
+        else:
+            print(f"  Single traversal: {traversal_config['single_traversal']}")
+        
+        if traversal_config['test_all_traversals']:
+            print(f"  Testing all traversal types for comparison")
 
         
-        # Test each architecture with both traversal types
-        for arch in cnn_architectures:
+        # Determine test configurations
+        if traversal_config['test_all_traversals']:
+            # Test all traversal types individually
+            traversal_types = ["comprehensive", "random", "i-value", "i-value-cluster-hop"]
+            test_configs = []
+            for arch in traversal_config['architectures']:
+                for traversal_type in traversal_types:
+                    test_configs.append({
+                        'arch': arch,
+                        'mode': 'single',
+                        'traversal': traversal_type,
+                        'description': f"{arch}_{traversal_type}"
+                    })
+        else:
+            # Test configured mode only
+            test_configs = []
+            for arch in traversal_config['architectures']:
+                if traversal_config['enable_switching']:
+                    test_configs.append({
+                        'arch': arch,
+                        'mode': 'switching',
+                        'traversal_sequence': traversal_config['traversal_sequence'],
+                        'switch_epochs': traversal_config['switch_epochs'],
+                        'description': f"{arch}_switching"
+                    })
+                else:
+                    test_configs.append({
+                        'arch': arch,
+                        'mode': 'single',
+                        'traversal': traversal_config['single_traversal'],
+                        'description': f"{arch}_{traversal_config['single_traversal']}"
+                    })
+        
+        # Calculate graph sizes and training steps
+        train_size = len(train_manager.graph.get_nodes())
+        val_size = len(val_manager.graph.get_nodes())
+        test_size = len(test_manager.graph.get_nodes())
+        
+        print(f"\nGraph sizes:")
+        print(f"Train: {train_size} nodes")
+        print(f"Val: {val_size} nodes") 
+        print(f"Test: {test_size} nodes")
+        
+        train_steps = 1000
+        val_steps = 1000
+        
+        # Test each configuration
+        for config in test_configs:
             print(f"\n{'='*80}")
-            print(f"Testing {arch} architecture")
+            print(f"Testing configuration: {config['description']}")
             print(f"{'='*80}\n")
             
-            for traversal_type in traversal_types:
-                print(f"\n{'-'*40}")
-                print(f"Using {traversal_type} traversal")
-                print(f"{'-'*40}\n")
+            try:
+                # Create model
+                arch = config['arch']
+                model = CNNModel(
+                    f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
+                    arch,
+                    1e-4,
+                    True,
+                    device=device
+                )
                 
-                try:
-
-                    # Create traversals for training
-                    # Use more pointers and adjust steps based on graph sizes
-                    train_size = len(train_manager.graph.get_nodes())
-                    val_size = len(val_manager.graph.get_nodes())
-                    test_size = len(test_manager.graph.get_nodes())
+                # Create trainer based on mode
+                if traversal_config['trainer_mode'] == 'adaptive':
+                    trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
                     
-                    print(f"\nGraph sizes:")
-                    print(f"Train: {train_size} nodes")
-                    print(f"Val: {val_size} nodes")
-                    print(f"Test: {test_size} nodes")
-                    
-                    # Calculate appropriate number of steps
-                    train_steps = 1000
-                    val_steps = 1000
-                    test_steps = None  # Use None to visit all test nodes
-                    
-                    # Create Traversal instances
-                    if traversal_type == "comprehensive":
-                        train_traversal = ComprehensiveTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
-                    elif traversal_type == "random":
-                        train_traversal = RandomTraversal(train_manager.graph, num_pointers=1, num_steps=train_steps)
-                    elif traversal_type == "i-value":
-                        # Use the trainer's method to get the configured IValueTraversal
-                        train_traversal = IValueTraversal(
-                            graph=train_manager.graph,
+                    # Set initial traversal
+                    if config['mode'] == 'single':
+                        initial_traversal = create_traversal(
+                            config['traversal'], 
+                            train_manager.graph, 
+                            num_pointers=1, 
+                            num_steps=train_steps,
+                            trainer=trainer,
+                            bias_hop_period=args.bias_hop_period
+                        )
+                        trainer.set_traversal(initial_traversal, config['traversal'])
+                        print(f"Set single traversal: {config['traversal']}")
+                    else:  # switching mode
+                        initial_traversal_type = config['traversal_sequence'][0]
+                        initial_traversal = create_traversal(
+                            initial_traversal_type,
+                            train_manager.graph,
                             num_pointers=1,
-                            num_steps=train_steps
+                            num_steps=train_steps,
+                            trainer=trainer,
+                            bias_hop_period=args.bias_hop_period
                         )
-                    elif traversal_type == "i-value-cluster-hop":
-                        # Instantiate the cluster hop traversal, passing the trainer
-                        print(f"Bias hop period: {args.bias_hop_period}")
-                        train_traversal = IValueTraversalClusterHop(
-                             graph=train_manager.graph, 
-                             num_pointers=1, 
-                             num_steps=train_steps,
-                             bias_hop_period=args.bias_hop_period
-                        )
-                        print(f"train_traversal.bias_hop_period: {train_traversal.bias_hop_period}")
+                        trainer.set_traversal(initial_traversal, initial_traversal_type)
+                        print(f"Set initial traversal for switching: {initial_traversal_type}")
+                        
+                else:  # legacy mode
+                    if config['mode'] == 'switching':
+                        raise ValueError("Legacy trainer mode does not support traversal switching")
+                    
+                    traversal_type = config['traversal']
+                    train_traversal = create_traversal(
+                        traversal_type,
+                        train_manager.graph,
+                        num_pointers=1,
+                        num_steps=train_steps,
+                        bias_hop_period=args.bias_hop_period
+                    )
+                    trainer = create_legacy_trainer(
+                        traversal_type, train_manager, train_traversal, model, 
+                        device, attribute_metadata, criterion, args
+                    )
+                    print(f"Created legacy trainer for {traversal_type}")
+                
+                # Training setup
+                best_val_accuracy = 0.0
+                best_epoch = 0
+                best_model_checkpoint_path = f"checkpoints/{config['description']}_best.pth"
+                os.makedirs(os.path.dirname(best_model_checkpoint_path), exist_ok=True)
+                
+                # Initialize I-value visualization tracking if enabled
+                viz_tracker = None
+                bias_hop_viz = None
+                # Check if any of the traversals used will be I-value based
+                uses_ivalue_traversal = False
+                if config['mode'] == 'single':
+                    uses_ivalue_traversal = config['traversal'] in ['i-value', 'i-value-cluster-hop']
+                else:  # switching mode
+                    uses_ivalue_traversal = any(t in ['i-value', 'i-value-cluster-hop'] for t in config.get('traversal_sequence', []))
+                
+                if args.enable_ivalue_viz and uses_ivalue_traversal:
+                    print(f"\n📊 Initializing I-value visualization tracking...")
+                    
+                    viz_save_dir = f"{args.viz_save_dir}/{config['description']}"
+                    viz_tracker = IValueVisualizationTracker(save_dir=viz_save_dir)
+                    
+                    # Set up bias hop visualizer for cluster hop traversal
+                    if (config['mode'] == 'single' and config['traversal'] == 'i-value-cluster-hop') or \
+                       (config['mode'] == 'switching' and 'i-value-cluster-hop' in config.get('traversal_sequence', [])):
+                        bias_hop_viz = BiasHopVisualizer(save_dir=f"{viz_save_dir}/bias_hops")
+                    
+                    # Track specific nodes for detailed analysis
+                    sample_nodes = random.sample(list(train_manager.graph.get_nodes()), 
+                                                min(args.viz_track_nodes, len(train_manager.graph.get_nodes())))
+                    viz_tracker.track_specific_nodes(trainer, sample_nodes, max_nodes=args.viz_track_nodes)
+                    
+                    print(f"   Visualization directory: {viz_save_dir}")
+                    print(f"   Tracking {len(sample_nodes)} nodes for detailed analysis")
+                    if bias_hop_viz:
+                        print(f"   Bias hop visualization enabled")
+                
+                # Initialize bias metrics tracking
+                print(f"\n🎯 Initializing bias metrics tracking...")
+                bias_save_dir = f"bias_visualizations/{config['description']}"
+                bias_tracker = BiasMetricsTracker(save_dir=bias_save_dir)
+                
+                print(f"\nTraversal settings:")
+                print(f"Train: {train_steps} steps with 1 pointer")
+                print(f"Val: {val_steps} steps with 1 pointer") 
+                print(f"Test: All nodes")
+                
+                # Training loop
+                print(f"\nTraining {config['description']}...")
+                for epoch in range(args.num_epochs):
+                    print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
+                    
+                    # Start epoch tracking for visualization
+                    if viz_tracker:
+                        viz_tracker.start_epoch(epoch)
+                    
+                    # Handle traversal switching for adaptive trainer
+                    if (traversal_config['trainer_mode'] == 'adaptive' and 
+                        config['mode'] == 'switching' and 
+                        epoch in config['switch_epochs']):
+                        
+                        switch_idx = config['switch_epochs'].index(epoch)
+                        new_traversal_type = config['traversal_sequence'][switch_idx + 1]
+                        
+                        print(f"🔄 Switching to {new_traversal_type} traversal at epoch {epoch+1}")
+                        trainer.switch_traversal(new_traversal_type, bias_hop_period=args.bias_hop_period)
+                    
+                    # Training step
+                    train_start_time = time.time()
+                    train_distribution = None
+                    
+                    if traversal_config['trainer_mode'] == 'adaptive':
+                        train_metrics = trainer.train()
+                        # Get current traversal info
+                        current_traversal_info = trainer.get_current_traversal_info()
+                        print(f"  Current traversal: {current_traversal_info}")
                     else:
-                        raise ValueError(f"Unsupported traversal type for training: {traversal_type}")
-
-                    # Create model with adjusted learning rate
-                    model = CNNModel(
-                        f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{arch}_{traversal_type}_{timestamp}.pt",
-                        arch,
-                        1e-4, # WAS: 0.001 - Reduced LR for debugging
-                        True,
-                        device=device  # Pass the device
+                        if isinstance(trainer, ExperimentTrainer):
+                            train_metrics, train_distribution = trainer.train(epoch)
+                        else:
+                            train_metrics = trainer.train()
+                    
+                    print(f"  Train Metrics: {train_metrics}")
+                    
+                    # Log I-value visualization data at the end of each epoch
+                    if viz_tracker:
+                        # Update tracked nodes
+                        viz_tracker.update_tracked_nodes(trainer)
+                        
+                        # Log epoch summary statistics
+                        viz_tracker.log_epoch_summary(trainer, sample_size=args.viz_sample_size)
+                        
+                        # Get current traversal for additional data
+                        current_traversal = None
+                        if traversal_config['trainer_mode'] == 'adaptive':
+                            current_traversal = trainer.current_traversal
+                        elif hasattr(trainer, 'train_traversal'):
+                            current_traversal = trainer.train_traversal
+                        
+                        # Track bias hop data if available
+                        if bias_hop_viz and current_traversal and hasattr(current_traversal, 'get_hop_i_value_history'):
+                            hop_history = current_traversal.get_hop_i_value_history()
+                            if hop_history:
+                                viz_tracker.bias_hop_history.extend(hop_history)
+                    
+                    # Print training distribution if available
+                    if train_distribution:
+                        print("  Training Attribute Distribution for this Epoch:")
+                        print(json.dumps(train_distribution, indent=4))
+                    
+                    # Evaluate training bias metrics periodically
+                    train_metrics_full = None
+                    if epoch % 5 == 0 or epoch == args.num_epochs - 1:  # Every 5 epochs and last epoch
+                        print(f"  Evaluating training bias metrics...")
+                        model_to_eval = trainer.models[0] if trainer.models else None
+                        if model_to_eval:
+                            model_to_eval.eval()
+                            train_sample_nodes = random.sample(
+                                list(train_manager.graph.get_nodes()), 
+                                min(len(train_manager.graph.get_nodes()), train_steps)
+                            )
+                            train_metrics_full = evaluate_model(
+                                model=model_to_eval,
+                                nodes_to_evaluate=train_sample_nodes,
+                                loss_fn=criterion,
+                                batch_size=args.batch_size,
+                                bias_loss_fn=getattr(trainer, 'bias_loss', None),
+                                device=device,
+                                desc="Training Bias Eval",
+                                attribute_metadata=attribute_metadata
+                            )
+                    
+                    # Validation step
+                    if val_nodes_from_graph:
+                        model_to_eval = trainer.models[0] if trainer.models else None
+                        if not model_to_eval:
+                            print(f"ERROR: No model found in trainer. Skipping validation.")
+                            continue
+                        
+                        model_to_eval.eval()
+                        val_metrics = evaluate_model(
+                            model=model_to_eval,
+                            nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
+                            loss_fn=criterion,
+                            batch_size=args.batch_size,
+                            bias_loss_fn=getattr(trainer, 'bias_loss', None),
+                            device=device,
+                            desc="Validation",
+                            attribute_metadata=attribute_metadata
+                        )
+                        
+                        # Log bias metrics for this epoch
+                        bias_tracker.log_bias_metrics(epoch=epoch, train_metrics=train_metrics_full, val_metrics=val_metrics)
+                        
+                        # Log validation bias metrics to bias hop visualizer if it exists
+                        if bias_hop_viz and val_metrics and 'bias_metrics' in val_metrics:
+                            # Calculate subgroup I-values for correlation analysis
+                            subgroup_i_values = {}
+                            if hasattr(trainer, 'attribute_metadata') and trainer.attribute_metadata:
+                                # Get a sample of validation nodes for I-value calculation
+                                val_sample = random.sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
+                                try:
+                                    for node in val_sample:
+                                        if hasattr(node, 'attributes') and node.attributes:
+                                            # Create race-gender subgroup key
+                                            gender = node.attributes.get('Ground Truth Gender')
+                                            race = node.attributes.get('Ground Truth Race')
+                                            if gender is not None and race is not None:
+                                                subgroup_key = f"Ground Truth Gender_{gender}_Ground Truth Race_{race}"
+                                                if subgroup_key not in subgroup_i_values:
+                                                    subgroup_i_values[subgroup_key] = []
+                                                i_value = trainer.get_i_value(node, 0) if hasattr(trainer, 'get_i_value') else 0
+                                                subgroup_i_values[subgroup_key].append(i_value)
+                                except Exception as e:
+                                    print(f"Warning: Error calculating subgroup I-values: {e}")
+                            
+                            # Average the I-values for each subgroup
+                            avg_subgroup_i_values = {}
+                            for subgroup, i_vals in subgroup_i_values.items():
+                                if i_vals:
+                                    avg_subgroup_i_values[subgroup] = np.mean(i_vals)
+                            
+                            bias_hop_viz.log_validation_bias_metrics(
+                                epoch=epoch, 
+                                bias_metrics=val_metrics['bias_metrics'],
+                                subgroup_i_values=avg_subgroup_i_values
+                            )
+                        
+                        current_val_accuracy = val_metrics.get('accuracy', 0.0)
+                        
+                        # Save best model
+                        if current_val_accuracy > best_val_accuracy:
+                            best_val_accuracy = current_val_accuracy
+                            best_epoch = epoch + 1
+                            model_to_eval.save_checkpoint(best_model_checkpoint_path)
+                            
+                            # Save additional checkpoints for AdaptiveTrainer capabilities
+                            if traversal_config['trainer_mode'] == 'adaptive':
+                                trainer.save_capability_checkpoints(best_model_checkpoint_path)
+                            
+                            print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
+                        else:
+                            print(f"Validation accuracy: {current_val_accuracy:.4f} (best: {best_val_accuracy:.4f} at epoch {best_epoch})")
+                
+                # Final testing
+                if args.num_epochs > 0 and os.path.exists(best_model_checkpoint_path):
+                    print(f"\n🔍 Loading best model from epoch {best_epoch} for final testing...")
+                    
+                    model_to_eval = trainer.models[0]
+                    model_to_eval.load_checkpoint(best_model_checkpoint_path)
+                    
+                    # Load additional checkpoints for AdaptiveTrainer
+                    if traversal_config['trainer_mode'] == 'adaptive':
+                        trainer.load_capability_checkpoints(best_model_checkpoint_path)
+                    
+                    model_to_eval.eval()
+                    
+                    test_metrics = evaluate_model(
+                        model=model_to_eval,
+                        nodes_to_evaluate=test_nodes_from_graph,
+                        loss_fn=criterion,
+                        batch_size=args.batch_size,
+                        bias_loss_fn=getattr(trainer, 'bias_loss', None),
+                        device=device,
+                        desc="Final Test",
+                        attribute_metadata=attribute_metadata
                     )
                     
-                    # --- Early Stopping & Best Model Checkpoint --- 
-                    best_val_accuracy = 0.0
-                    epochs_no_improve = 0
-                    patience = 10 # Example patience
-                    best_model_checkpoint_path = f"checkpoints/{arch}_{traversal_type}_best.pth"
-                    os.makedirs(os.path.dirname(best_model_checkpoint_path), exist_ok=True) # Ensure dir exists
-
-                    # Find the section starting around line 1311
-                    if traversal_type == "i-value" or traversal_type == "i-value-cluster-hop":
-                        # 1. Create IValueTrainer *without* train_traversal
-                        trainer = IValueTrainer(
-                            graphmanager=train_manager,
-                            models=[model], # Use model
-                            device=device,
-                            attribute_metadata=attribute_metadata,
-                            use_bias_loss_in_training=False, # Example
-                            bias_loss_weight=args.bias_loss_weight,
-                            loss_fn=criterion,
-                            train_traversal=train_traversal # Explicitly pass None
-                        )
+                    print("\n--- Final Test Results ---")
+                    print(json.dumps(test_metrics, indent=2))
                     
-                        # 2. Create the specific IValueTraversal needed
-                        if traversal_type == "i-value":
-                            # This assumes IValueTraversal also needs the trainer or its components
-                            # If IValueTraversal doesn't need the trainer, adjust its __init__ and this call
-                            # For now, assuming it might need the trainer similar to cluster hop
-                            train_traversal = IValueTraversal( # Replace with actual IValueTraversal class if different
-                                graph=train_manager.graph,
-                                num_pointers=1,
-                                num_steps=train_steps,
-                                trainer=trainer # Pass the trainer instance
-                            )
-                        elif traversal_type == "i-value-cluster-hop":
-                            train_traversal = IValueTraversalClusterHop(
-                                graph=train_manager.graph,
-                                num_pointers=1,
-                                num_steps=train_steps,
-                                trainer=trainer, # Pass the trainer instance
-                                bias_hop_period=args.bias_hop_period
-                            )
-                    
-                        # 3. Set the traversal back on the trainer
-                        trainer.set_train_traversal(train_traversal)
-
-                    else:  # random or comprehensive traversal
-                        # Example ExperimentTrainer call:
-                            trainer = ExperimentTrainer(
-                            graphmanager=train_manager,
-                            train_traversal=train_traversal,
-                            models=[model], # Wrap the primary CNN model in a list
-                            device=device,
-                            traversal_type=traversal_type,
-                            attribute_metadata=attribute_metadata, # Pass metadata if needed by init
-                            loss_fn=criterion # <-- ADD THIS
-                        )
-                    
-                    
-                        
-                    # val_traversal = ComprehensiveTraversal(val_manager.graph, num_pointers=1, num_steps=val_steps)
-                    # test_traversal = ComprehensiveTraversal(test_manager.graph, num_pointers=1, num_steps=test_steps)
-                    
-                    print(f"\nTraversal settings:")
-                    print(f"Train: {train_steps} steps with 1 pointers")
-                    print(f"Val: {val_steps} steps with 1 pointers")
-                    print(f"Test: All nodes with 1 pointers")
-                    
-                    # Update trainer with correct traversals
-                    trainer.train_traversal = train_traversal
-                    # trainer.val_traversal = val_traversal # Removed: Using val_loader now
-                    # trainer.test_traversal = test_traversal # Removed: Using test_loader now
+                    # Log final test bias metrics
+                    bias_tracker.log_bias_metrics(epoch=best_epoch-1, test_metrics=test_metrics)
+                
+                # Generate I-value visualization plots and reports if tracking was enabled
+                if viz_tracker:
+                    print(f"\n📊 Generating I-value visualization plots...")
                     
                     try:
-                        print(f"Training {arch} with {traversal_type} traversal...")
-                        for epoch in range(args.num_epochs):
-                            print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
-                            train_start_time = time.time()
-                            train_distribution = None # Initialize distribution as None
-                            train_metrics, train_distribution = trainer.train(epoch) if isinstance(trainer, ExperimentTrainer) else trainer.train() # Pass epoch
-
-                            print(f"  Train Metrics: {train_metrics}")
-                            
-                            # --- Print Training Attribute Distribution --- 
-                            if train_distribution: # Check if distribution was returned and is not None
-                                print("  Training Attribute Distribution for this Epoch:")
-                                # Use json.dumps for pretty printing the nested defaultdict
-                                print(json.dumps(train_distribution, indent=4))
-                            else:
-                                print("  No attribute distribution tracked or returned for this trainer type.")
-                            # ---------------------------------------------
-
-                            # --- Validation Step --- 
-                            if val_nodes_from_graph:
-                                model = trainer.models[0] if trainer.models else None
-                                if not model:
-                                    print(f"ERROR: No model found in trainer for {arch} with {traversal_type}. Skipping.")
-                                    continue
-
-                                model.eval() # Set model to evaluation mode
-                                val_metrics = evaluate_model(
-                                    model=model,
-                                    nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
-                                    loss_fn=criterion,
-                                    batch_size=args.batch_size,
-                                    bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
-                                    device=device,
-                                    desc="Validation",
-                                    attribute_metadata=attribute_metadata
-                                )
-                                
-                                current_val_accuracy = val_metrics.get('accuracy', 0.0)
-
-                                if current_val_accuracy > best_val_accuracy:
-                                    best_val_accuracy = current_val_accuracy
-                                    best_epoch = epoch + 1
-                                    # Save primary model checkpoint
-                                    model.save_checkpoint(best_model_checkpoint_path)
-                                    # Save DQN checkpoint(s) if using IValueTrainer
-                                    if isinstance(trainer, IValueTrainer) and trainer.dqns:
-                                        for i, dqn_model in enumerate(trainer.dqns):
-                                            dqn_checkpoint_path = best_model_checkpoint_path.replace('.pt', f'_dqn{i}.pt')
-                                            dqn_model.save_checkpoint(dqn_checkpoint_path)
-                                    print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}. Model(s) saved to {best_model_checkpoint_path} (and DQN paths if applicable)")
-                                elif args.load_last_checkpoint and epoch > 0: # Check if we need to load the previous best
-                                    print(f"Validation accuracy did not improve. Current: {val_metrics['accuracy']:.4f}, Best: {best_val_accuracy:.4f}. Loading checkpoint from epoch {best_epoch}.")
-                                    if os.path.exists(best_model_checkpoint_path):
-                                        # Load primary model checkpoint
-                                        model.load_checkpoint(best_model_checkpoint_path)
-                                        # Load DQN checkpoint(s) if using IValueTrainer
-                                        if isinstance(trainer, IValueTrainer) and trainer.dqns:
-                                            for i, dqn_model in enumerate(trainer.dqns):
-                                                dqn_checkpoint_path = best_model_checkpoint_path.replace('.pt', f'_dqn{i}.pt')
-                                                if os.path.exists(dqn_checkpoint_path):
-                                                    dqn_model.load_checkpoint(dqn_checkpoint_path)
-                                                else:
-                                                    print(f"Warning: DQN Checkpoint {dqn_checkpoint_path} not found, cannot reload DQN {i}.")
-                                    else:
-                                        print(f"Warning: Checkpoint {best_model_checkpoint_path} not found, cannot reload primary model.")
-                                else:
-                                    print(f"Validation accuracy did not improve from {best_val_accuracy:.4f} (best epoch {best_epoch})")
- 
-                        # Load best model for final testing
-                        if args.num_epochs > 0:
-                            #print(f"\nLoading best model from epoch {best_epoch} for final testing (Val Acc: {best_val_accuracy:.4f}) from {best_model_checkpoint_path}")
-                            if os.path.exists(best_model_checkpoint_path):
-                                try:
-                                    # Load primary model checkpoint
-                                    model.load_checkpoint(best_model_checkpoint_path)
-                                    model.eval() # Ensure model is in eval mode for testing
-                                    print("Best model loaded successfully.")
-                                    
-                                    print(f"\nRunning final evaluation on Test Set...")
-                                    test_metrics = evaluate_model(
-                                        model=model,
-                                        nodes_to_evaluate=test_nodes_from_graph,
-                                        loss_fn=criterion,
-                                        batch_size=args.batch_size,
-                                        bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
-                                        device=device,
-                                        desc="Final Test Evaluation",
-                                        attribute_metadata=attribute_metadata
-                                    )
-                                    print("\n--- Final Test Results --- ")
-                                    print(json.dumps(test_metrics, indent=2))
-                                    # Optional: Save test_metrics to a results file
-                                
-                                except Exception as e_load:
-                                     print(f"ERROR loading best model checkpoint: {e_load}")
-                                     log_exception(logfile, *sys.exc_info())
-                                     test_metrics = {"error": "Failed to load best model"}
-                            else:
-                                print(f"ERROR: Best model checkpoint not found at {best_model_checkpoint_path}. Testing with the last state model.")
-                                model.eval()
-                                test_metrics = evaluate_model(
-                                    model=model,
-                                    nodes_to_evaluate=test_nodes_from_graph,
-                                    loss_fn=criterion,
-                                    batch_size=args.batch_size,
-                                    bias_loss_fn=trainer.bias_loss if isinstance(trainer, IValueTrainer) else None,
-                                    device=device,
-                                    desc="Final Test Set (Last State)",
-                                    attribute_metadata=attribute_metadata
-                                )
-                                print("\n--- Final Test Results (Last State Model) --- ")
-                                print(json.dumps(test_metrics, indent=2))
-
-                    except Exception as e_inner_loop:
-                        print(f"\nError during training/evaluation loop for {arch} with {traversal_type}: {str(e_inner_loop)}")
-                        log_exception(logfile, *sys.exc_info())
-                        continue # Continue with the next configuration
-
-                    # --- Cleanup Old Test Call --- 
-                    # print(f"Testing {arch} with {traversal_type} traversal...")
-                    # test_metrics = trainer.test() # Removed
-
-                    # --- Calculate and Save Final I-Values (Keep or remove based on needs) --- 
-                        final_i_values = {}
-                        node_data_list = []
-                        test_graph_nodes = test_manager.graph.get_nodes() # Get test nodes
+                        # Generate training progression plots
+                        viz_tracker.plot_training_progression()
                         
-                        if isinstance(trainer, IValueTrainer):
-                            print("Calculating final I-values for test nodes...")
-                        # This assumes get_all_final_i_values exists and works correctly
-                        # final_i_values = trainer.get_all_final_i_values(graph_split='test') 
-                        # Placeholder: 
-                        final_i_values = {}
-                        print(f"Placeholder: Calculated I-values for {len(final_i_values)} nodes.")
-                            
-                        # Gather data for all test nodes
-                        print("Gathering node data for output CSV...")
-                        for node in tqdm(test_graph_nodes, desc="Processing test nodes for CSV"): 
-                            node_info = {'node_id': node.node_id}
-                            # Add attributes if they exist
-                            if hasattr(node, 'attributes') and isinstance(node.attributes, dict):
-                                node_info.update(node.attributes)
-                            # Add ground truth if available
-                            node_info['ground_truth'] = node.label if hasattr(node, 'label') else 'N/A'
-                            # Add predicted label if available from test_metrics? Requires mapping node_id to prediction
-                            # node_info['predicted_label'] = ... # This needs linking test_metrics output to nodes
-                            # Add I-value if available
-                            node_info['i_value'] = final_i_values.get(node.node_id, 'N/A')
-                            node_data_list.append(node_info)
-                            
-                    # Save detailed results to CSV
-                        if node_data_list:
-                            output_csv_path = os.path.join(args.log_dir if args.log_dir else '.', f"detailed_results_{arch}_{traversal_type}.csv")
+                        # Generate subgroup analysis plots
+                        viz_tracker.plot_subgroup_analysis()
+                        
+                        # Generate tracked nodes plots
+                        viz_tracker.plot_tracked_nodes()
+                        
+                        # Save raw data
+                        viz_tracker.save_data()
+                        
+                        # Generate summary report
+                        viz_tracker.generate_summary_report()
+                        
+                        # Generate bias hop visualizations if available
+                        if bias_hop_viz and viz_tracker.bias_hop_history:
+                            print(f"\n📊 Generating bias hop visualization plots...")
                             try:
-                                df_results = pd.DataFrame(node_data_list)
-                                df_results.to_csv(output_csv_path, index=False)
-                                print(f"Detailed node results saved to {output_csv_path}")
-                            except Exception as e_csv:
-                                print(f"Error saving detailed results CSV: {e_csv}")
-                        else:
-                            print("No node data collected for CSV output.")
+                                # Keep the I-value statistics per hop (as requested)
+                                bias_hop_viz.plot_i_value_statistics_per_hop(viz_tracker.bias_hop_history)
+                                
+                                # Fixed subgroup targeting analysis (shorter x-axis labels)
+                                bias_hop_viz.plot_subgroup_targeting_analysis(viz_tracker.bias_hop_history)
+                                
+                                # New: subgroup bias metrics per validation epoch 
+                                bias_hop_viz.plot_subgroup_bias_per_validation_epoch()
+                                
+                                # New: I-value vs bias correlation (replaces unclear bias reduction)
+                                bias_hop_viz.plot_i_value_bias_correlation()
+                                
+                                # Generate summary report
+                                bias_hop_viz.generate_hop_summary_report(viz_tracker.bias_hop_history)
+                                
+                                print(f"✅ Bias hop visualization complete")
+                            except Exception as bias_hop_error:
+                                print(f"⚠️  Error generating bias hop visualizations: {bias_hop_error}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        print(f"✅ I-value visualization complete for {config['description']}")
+                        
+                    except Exception as viz_error:
+                        print(f"⚠️  Error generating visualizations: {viz_error}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Generate bias metrics visualization plots
+                print(f"\n🎯 Generating bias metrics visualization plots...")
+                try:
+                    bias_tracker.generate_all_plots()
+                    print(f"✅ Bias metrics visualization complete for {config['description']}")
+                    
+                except Exception as bias_viz_error:
+                    print(f"⚠️  Error generating bias visualizations: {bias_viz_error}")
+                    import traceback
+                    traceback.print_exc()
+                
+            except Exception as e:
+                log_exception(logfile, *sys.exc_info())
+                print(f"\nError in configuration {config['description']}: {str(e)}")
+                continue
 
-                except Exception as e:
-                    log_exception(logfile, *sys.exc_info())
-                    print(f"\nOuter Error setting up {arch} with {traversal_type}: {str(e)}")
-                    continue  # Continue with next configuration
-
-                # --- Plotting Subgroup I-Values (After Training Loop) --- 
-                if hasattr(trainer, 'train_traversal') and hasattr(trainer.train_traversal, 'get_hop_i_value_history'):
-                    hop_history = trainer.train_traversal.get_hop_i_value_history()
-                    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    plot_filename = os.path.join(args.log_dir, f"{run_timestamp}_subgroup_i_values.png")
-                    plot_subgroup_i_values(hop_history, plot_filename)
-                else:
-                    print("Trainer or traversal does not support hop history retrieval.")
-                # ----------------------------------------------------------
-            
-            
     print("\nDone!")
     
     if logpath:
