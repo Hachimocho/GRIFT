@@ -1,0 +1,405 @@
+{% extends "base.html" %}
+
+{% block title %}Run {{ run.run_id }} - HyperGraph Test UI{% endblock %}
+
+{% block page_title %}Test Run Details{% endblock %}
+
+{% block page_description %}{{ run.config_name }} - {{ run.status|title }}{% endblock %}
+
+{% block header_actions %}
+{% if run.status == 'running' %}
+<button type="button" class="btn btn-outline-danger" onclick="stopRun('{{ run.run_id }}')">
+    <i class="fas fa-stop me-2"></i>Stop Run
+</button>
+{% endif %}
+<button type="button" class="btn btn-outline-secondary" onclick="refreshLogs()">
+    <i class="fas fa-sync me-2"></i>Refresh
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Run Information -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-info-circle text-primary me-2"></i>Run Information
+                </h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless">
+                    <tr>
+                        <td><strong>Run ID:</strong></td>
+                        <td><code>{{ run.run_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Configuration:</strong></td>
+                        <td>{{ run.config_name }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Status:</strong></td>
+                        <td>
+                            {% if run.status == 'completed' %}
+                                <span class="badge bg-success">
+                                    <i class="fas fa-check-circle me-1"></i>Completed
+                                </span>
+                            {% elif run.status == 'running' %}
+                                <span class="badge bg-primary">
+                                    <i class="fas fa-play me-1"></i>Running
+                                </span>
+                            {% elif run.status == 'failed' %}
+                                <span class="badge bg-danger">
+                                    <i class="fas fa-exclamation-triangle me-1"></i>Failed
+                                </span>
+                            {% elif run.status == 'stopped' %}
+                                <span class="badge bg-secondary">
+                                    <i class="fas fa-stop me-1"></i>Stopped
+                                </span>
+                            {% else %}
+                                <span class="badge bg-warning">{{ run.status|title }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Started:</strong></td>
+                        <td>{{ run.start_time[:19] if run.start_time != 'Unknown' else 'Unknown' }}</td>
+                    </tr>
+                    {% if run.end_time %}
+                    <tr>
+                        <td><strong>Ended:</strong></td>
+                        <td>{{ run.end_time[:19] }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if run.pid %}
+                    <tr>
+                        <td><strong>Process ID:</strong></td>
+                        <td><code>{{ run.pid }}</code></td>
+                    </tr>
+                    {% endif %}
+                    {% if run.memory_mb %}
+                    <tr>
+                        <td><strong>Memory Usage:</strong></td>
+                        <td>{{ "%.1f MB"|format(run.memory_mb) }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if run.cpu_percent %}
+                    <tr>
+                        <td><strong>CPU Usage:</strong></td>
+                        <td>{{ "%.1f%%"|format(run.cpu_percent) }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Results -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-chart-line text-success me-2"></i>Results
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if run.results %}
+                    <table class="table table-borderless">
+                        {% if run.results.final_accuracy %}
+                        <tr>
+                            <td><strong>Final Accuracy:</strong></td>
+                            <td>
+                                <span class="badge bg-info fs-6">{{ "%.2f%%"|format(run.results.final_accuracy) }}</span>
+                            </td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if run.results.bias_plots %}
+                        <tr>
+                            <td><strong>Bias Plots:</strong></td>
+                            <td>{{ run.results.bias_plots|length }} files generated</td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if run.results.ivalue_plots %}
+                        <tr>
+                            <td><strong>I-Value Plots:</strong></td>
+                            <td>{{ run.results.ivalue_plots|length }} files generated</td>
+                        </tr>
+                        {% endif %}
+                    </table>
+                    
+                    {% if run.results.bias_metrics %}
+                    <div class="mt-3">
+                        <h6>Bias Metrics Summary:</h6>
+                        <small class="text-muted">
+                            Detailed bias analysis available in generated plots
+                        </small>
+                    </div>
+                    {% endif %}
+                {% else %}
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-hourglass-half fa-2x mb-3 opacity-50"></i>
+                        <p>
+                            {% if run.status == 'running' %}
+                                Results will appear when run completes
+                            {% else %}
+                                No results available
+                            {% endif %}
+                        </p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration Details -->
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-cog text-secondary me-2"></i>Configuration
+                </h5>
+            </div>
+            <div class="card-body">
+                <pre class="bg-light p-3 rounded" style="font-size: 0.85em; max-height: 300px; overflow-y: auto;">{{ run.config | tojson(indent=2) }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Visualizations -->
+{% if run.status == 'completed' and run.results and (run.results.ivalue_plots or run.results.bias_plots) %}
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-chart-area text-info me-2"></i>Generated Visualizations
+                </h5>
+            </div>
+            <div class="card-body">
+                <!-- Visualization Tabs -->
+                <ul class="nav nav-tabs" id="vizTabs" role="tablist">
+                    {% if run.results.ivalue_plots %}
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="ivalue-tab" data-bs-toggle="tab" data-bs-target="#ivalue-plots" type="button" role="tab">
+                            <i class="fas fa-brain me-2"></i>I-Value Visualizations ({{ run.results.ivalue_plots|length }})
+                        </button>
+                    </li>
+                    {% endif %}
+                    {% if run.results.bias_plots %}
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link {% if not run.results.ivalue_plots %}active{% endif %}" id="bias-tab" data-bs-toggle="tab" data-bs-target="#bias-plots" type="button" role="tab">
+                            <i class="fas fa-balance-scale me-2"></i>Bias Analysis ({{ run.results.bias_plots|length }})
+                        </button>
+                    </li>
+                    {% endif %}
+                </ul>
+                
+                <!-- Visualization Content -->
+                <div class="tab-content mt-3" id="vizTabContent">
+                    {% if run.results.ivalue_plots %}
+                    <div class="tab-pane fade show active" id="ivalue-plots" role="tabpanel">
+                        <div class="row">
+                            {% for plot in run.results.ivalue_plots %}
+                            <div class="col-md-6 col-lg-4 mb-3">
+                                <div class="card">
+                                    <div class="card-header py-2">
+                                        <h6 class="card-title mb-0 text-truncate" title="{{ plot.name }}">
+                                            {{ plot.name }}
+                                        </h6>
+                                    </div>
+                                    <div class="card-body p-2">
+                                        <img src="{{ url_for('static', filename='visualizations/' + plot.path) }}" 
+                                             class="img-fluid" 
+                                             alt="{{ plot.name }}"
+                                             onclick="showImageModal('{{ plot.path }}', '{{ plot.name }}')"
+                                             style="cursor: pointer;">
+                                    </div>
+                                    <div class="card-footer py-1">
+                                        <small class="text-muted">{{ plot.description or 'I-Value analysis visualization' }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    {% if run.results.bias_plots %}
+                    <div class="tab-pane fade {% if not run.results.ivalue_plots %}show active{% endif %}" id="bias-plots" role="tabpanel">
+                        <div class="row">
+                            {% for plot in run.results.bias_plots %}
+                            <div class="col-md-6 col-lg-4 mb-3">
+                                <div class="card">
+                                    <div class="card-header py-2">
+                                        <h6 class="card-title mb-0 text-truncate" title="{{ plot.name }}">
+                                            {{ plot.name }}
+                                        </h6>
+                                    </div>
+                                    <div class="card-body p-2">
+                                        <img src="{{ url_for('static', filename='visualizations/' + plot.path) }}" 
+                                             class="img-fluid" 
+                                             alt="{{ plot.name }}"
+                                             onclick="showImageModal('{{ plot.path }}', '{{ plot.name }}')"
+                                             style="cursor: pointer;">
+                                    </div>
+                                    <div class="card-footer py-1">
+                                        <small class="text-muted">{{ plot.description or 'Bias analysis visualization' }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Logs -->
+<div class="row">
+    <div class="col-12 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-terminal text-dark me-2"></i>Logs
+                </h5>
+                <div>
+                    {% if run.status == 'running' %}
+                        <span class="badge bg-success me-2">Live</span>
+                    {% endif %}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="refreshLogs()">
+                        <i class="fas fa-sync"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="logContainer" style="max-height: 500px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.8em; background: #f8f9fa; padding: 15px; border-radius: 5px;">
+                    {% if logs %}
+                        {% for line in logs %}
+                            <div>{{ line }}</div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-muted">No logs available</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Image Modal for Visualizations -->
+<div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="imageModalLabel">Visualization</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="modalImage" src="" class="img-fluid" alt="Visualization">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="downloadImage()">
+                    <i class="fas fa-download me-2"></i>Download
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function stopRun(runId) {
+    if (confirm('Are you sure you want to stop this test run?')) {
+        $.ajax({
+            url: `/api/test-runs/${runId}/stop`,
+            method: 'POST',
+            success: function(response) {
+                alert('Test run stopped successfully');
+                location.reload();
+            },
+            error: function(xhr) {
+                const response = JSON.parse(xhr.responseText);
+                alert('Error stopping test run: ' + response.error);
+            }
+        });
+    }
+}
+
+function refreshLogs() {
+    const runId = '{{ run.run_id }}';
+    $.ajax({
+        url: `/api/test-runs/${runId}/logs`,
+        method: 'GET',
+        success: function(response) {
+            const logContainer = $('#logContainer');
+            logContainer.empty();
+            
+            if (response.logs && response.logs.length > 0) {
+                response.logs.forEach(function(line) {
+                    logContainer.append('<div>' + escapeHtml(line) + '</div>');
+                });
+            } else {
+                logContainer.html('<div class="text-muted">No logs available</div>');
+            }
+            
+            // Scroll to bottom
+            logContainer.scrollTop(logContainer[0].scrollHeight);
+        },
+        error: function() {
+            $('#logContainer').html('<div class="text-danger">Error loading logs</div>');
+        }
+    });
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function showImageModal(imagePath, imageName) {
+    const modal = new bootstrap.Modal(document.getElementById('imageModal'));
+    const modalImage = document.getElementById('modalImage');
+    const modalTitle = document.getElementById('imageModalLabel');
+    
+    modalImage.src = "{{ url_for('static', filename='visualizations/') }}" + imagePath;
+    modalTitle.textContent = imageName;
+    
+    // Store current image path for download
+    window.currentImagePath = imagePath;
+    
+    modal.show();
+}
+
+function downloadImage() {
+    if (window.currentImagePath) {
+        const link = document.createElement('a');
+        link.href = "{{ url_for('static', filename='visualizations/') }}" + window.currentImagePath;
+        link.download = window.currentImagePath.split('/').pop();
+        link.click();
+    }
+}
+
+// Auto-refresh for running tests
+{% if run.status == 'running' %}
+setInterval(function() {
+    refreshLogs();
+    
+    // Also refresh page to update status/metrics
+    setTimeout(function() {
+        location.reload();
+    }, 30000);
+}, 10000);
+{% endif %}
+</script>
+{% endblock %} 

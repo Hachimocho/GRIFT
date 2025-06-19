@@ -24,6 +24,7 @@ import torch.nn as nn
 from datetime import datetime
 import dill
 import numpy as np
+import argparse
 
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
@@ -446,6 +447,36 @@ def create_legacy_trainer(traversal_type, train_manager, train_traversal, model,
         )
     return trainer
 
+def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwargs):
+    """Create a DQN model instance based on type and parameters."""
+    if model_type == "basic":
+        from models.DQNModel import DQNModel
+        return DQNModel(feature_dim, device, embedding_dim=embedding_dim)
+    elif model_type == "residual":
+        from models.EnhancedDQNModels import ResidualDQNModel
+        return ResidualDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
+    elif model_type == "attention":
+        from models.EnhancedDQNModels import AttentionDQNModel
+        return AttentionDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
+    elif model_type == "conv_embedding":
+        from models.EnhancedDQNModels import ConvEmbeddingDQN
+        return ConvEmbeddingDQN(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
+    elif model_type == "ensemble":
+        from models.EnhancedDQNModels import EnsembleDQNModel
+        return EnsembleDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
+    else:
+        raise ValueError(f"Unsupported DQN model type: {model_type}")
+
+def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
+    """Create either a CNN model or DQN model based on architecture."""
+    if arch.startswith("dqn_"):
+        # Extract feature dimension from kwargs or use default
+        feature_dim = kwargs.get('feature_dim', 128)  # Default feature dimension
+        return create_dqn_model(dqn_model_type, feature_dim, device, **kwargs)
+    else:
+        # Create CNN model as before
+        return CNNModel(save_path, arch, 1e-4, True, device)
+
 def main():
     args = parse_args() # Parse args first
 
@@ -846,12 +877,13 @@ def main():
             try:
                 # Create model
                 arch = config['arch']
-                model = CNNModel(
-                    f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
+                model = create_model(
                     arch,
-                    1e-4,
-                    True,
-                    device=device
+                    f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
+                    device,
+                    dqn_model_type=args.dqn_model,  # Pass DQN model type from args
+                    feature_dim=128,  # Default feature dimension for DQN models
+                    embedding_dim=512  # Default embedding dimension
                 )
                 
                 # Create trainer based on mode

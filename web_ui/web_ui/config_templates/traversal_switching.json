@@ -1,0 +1,24 @@
+{
+  "name": "Traversal Switching",
+  "description": "Multi-traversal configuration with switching between methods",
+  "config": {
+    "trainer_mode": "adaptive",
+    "traversal_type": "comprehensive",
+    "enable_traversal_switching": true,
+    "traversal_sequence": "comprehensive,i-value,i-value-cluster-hop",
+    "switch_epochs": "10,20",
+    "architectures": "resnestdf",
+    "num_epochs": 35,
+    "batch_size": 32,
+    "seed": 42,
+    "quality_threshold": 0.5,
+    "symmetry_threshold": 0.3,
+    "embedding_threshold": 0.7,
+    "fair_train": false,
+    "fair_test": false,
+    "enable_ivalue_viz": true,
+    "bias_hop_period": 100,
+    "bias_loss_weight": 0.1,
+    "num_workers": 0
+  }
+}

@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - HyperGraph Test UI{% endblock %}
+
+{% block header_actions %}
+<a href="{{ url_for('configure') }}" class="btn btn-primary">
+    <i class="fas fa-plus me-2"></i>New Configuration
+</a>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Statistics Cards -->
+    <div class="col-md-3 mb-4">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h4 class="card-title">{{ configs|length }}</h4>
+                        <p class="card-text">Configurations</p>
+                    </div>
+                    <div>
+                        <i class="fas fa-cog fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h4 class="card-title">{{ active_runs|length }}</h4>
+                        <p class="card-text">Active Runs</p>
+                    </div>
+                    <div>
+                        <i class="fas fa-play fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h4 class="card-title">{{ recent_runs|length }}</h4>
+                        <p class="card-text">Total Runs</p>
+                    </div>
+                    <div>
+                        <i class="fas fa-chart-line fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-4">
+        <div class="card bg-warning text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h4 class="card-title">
+                            {% set completed_runs = recent_runs|selectattr('status', 'equalto', 'completed')|list %}
+                            {{ completed_runs|length }}
+                        </h4>
+                        <p class="card-text">Completed</p>
+                    </div>
+                    <div>
+                        <i class="fas fa-check-circle fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Active Runs -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-play-circle text-success me-2"></i>Active Runs
+                </h5>
+                <span class="badge bg-success">{{ active_runs|length }}</span>
+            </div>
+            <div class="card-body">
+                {% if active_runs %}
+                    <div class="table-responsive">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Configuration</th>
+                                    <th>Started</th>
+                                    <th>PID</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for run in active_runs %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ run.config_name }}</strong>
+                                    </td>
+                                    <td>
+                                        <small class="text-muted">{{ run.start_time[:16] }}</small>
+                                    </td>
+                                    <td>
+                                        <code>{{ run.pid }}</code>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('view_run', run_id=run.run_id) }}" class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                        <button class="btn btn-sm btn-outline-danger" onclick="stopRun('{{ run.run_id }}')">
+                                            <i class="fas fa-stop"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-bed fa-3x mb-3 opacity-50"></i>
+                        <p>No active runs</p>
+                        <a href="{{ url_for('configure') }}" class="btn btn-sm btn-primary">Start a new run</a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Configurations -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-cog text-primary me-2"></i>Recent Configurations
+                </h5>
+                <a href="{{ url_for('configure') }}" class="btn btn-sm btn-outline-primary">
+                    <i class="fas fa-plus me-1"></i>New
+                </a>
+            </div>
+            <div class="card-body">
+                {% if configs %}
+                    <div class="list-group list-group-flush">
+                        {% for config in configs[:5] %}
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <div>
+                                <strong>{{ config.name }}</strong>
+                                <br>
+                                <small class="text-muted">Modified: {{ config.modified[:16] }}</small>
+                            </div>
+                            <div>
+                                <a href="{{ url_for('edit_config', config_name=config.name) }}" class="btn btn-sm btn-outline-secondary me-1">
+                                    <i class="fas fa-edit"></i>
+                                </a>
+                                <button class="btn btn-sm btn-outline-success" onclick="runConfiguration('{{ config.name }}')">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    {% if configs|length > 5 %}
+                        <div class="text-center mt-3">
+                            <a href="{{ url_for('configure') }}" class="btn btn-sm btn-link">
+                                View all {{ configs|length }} configurations
+                            </a>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-folder-open fa-3x mb-3 opacity-50"></i>
+                        <p>No configurations saved</p>
+                        <a href="{{ url_for('configure') }}" class="btn btn-sm btn-primary">Create your first configuration</a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Recent Runs -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-history text-info me-2"></i>Recent Test Runs
+                </h5>
+                <a href="{{ url_for('runs') }}" class="btn btn-sm btn-outline-info">
+                    View All Runs
+                </a>
+            </div>
+            <div class="card-body">
+                {% if recent_runs %}
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Configuration</th>
+                                    <th>Status</th>
+                                    <th>Started</th>
+                                    <th>Duration</th>
+                                    <th>Accuracy</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for run in recent_runs[:10] %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ run.config_name }}</strong>
+                                        <br>
+                                        <small class="text-muted">{{ run.run_id }}</small>
+                                    </td>
+                                    <td>
+                                        {% if run.status == 'completed' %}
+                                            <span class="badge bg-success status-badge">
+                                                <i class="fas fa-check-circle me-1"></i>Completed
+                                            </span>
+                                        {% elif run.status == 'running' %}
+                                            <span class="badge bg-primary status-badge">
+                                                <i class="fas fa-play me-1"></i>Running
+                                            </span>
+                                        {% elif run.status == 'failed' %}
+                                            <span class="badge bg-danger status-badge">
+                                                <i class="fas fa-exclamation-triangle me-1"></i>Failed
+                                            </span>
+                                        {% elif run.status == 'stopped' %}
+                                            <span class="badge bg-secondary status-badge">
+                                                <i class="fas fa-stop me-1"></i>Stopped
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-warning status-badge">{{ run.status }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small>{{ run.start_time[:16] if run.start_time != 'Unknown' else 'Unknown' }}</small>
+                                    </td>
+                                    <td>
+                                        <small>{{ run.duration or 'N/A' }}</small>
+                                    </td>
+                                    <td>
+                                        {% if run.final_accuracy %}
+                                            <span class="badge bg-info">{{ "%.2f%%"|format(run.final_accuracy) }}</span>
+                                        {% else %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('view_run', run_id=run.run_id) }}" class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                        {% if run.status == 'running' %}
+                                            <button class="btn btn-sm btn-outline-danger" onclick="stopRun('{{ run.run_id }}')">
+                                                <i class="fas fa-stop"></i>
+                                            </button>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-chart-line fa-3x mb-3 opacity-50"></i>
+                        <p>No test runs yet</p>
+                        <a href="{{ url_for('configure') }}" class="btn btn-sm btn-primary">Create and run your first configuration</a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function runConfiguration(configName) {
+    if (confirm(`Start a new test run with configuration "${configName}"?`)) {
+        $.ajax({
+            url: '/api/test-runs',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                config_name: configName
+            }),
+            success: function(response) {
+                alert('Test run started successfully! Run ID: ' + response.run_id);
+                location.reload();
+            },
+            error: function(xhr) {
+                const response = JSON.parse(xhr.responseText);
+                alert('Error starting test run: ' + response.error);
+            }
+        });
+    }
+}
+
+function stopRun(runId) {
+    if (confirm('Are you sure you want to stop this test run?')) {
+        $.ajax({
+            url: `/api/test-runs/${runId}/stop`,
+            method: 'POST',
+            success: function(response) {
+                alert('Test run stopped successfully');
+                location.reload();
+            },
+            error: function(xhr) {
+                const response = JSON.parse(xhr.responseText);
+                alert('Error stopping test run: ' + response.error);
+            }
+        });
+    }
+}
+
+// Auto-refresh every 30 seconds for active runs
+{% if active_runs|length > 0 %}
+setInterval(function() {
+    location.reload();
+}, 30000);
+{% endif %}
+</script>
+{% endblock %} 

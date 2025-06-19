@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}HyperGraph Test Configuration UI{% endblock %}</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <style>
+        .sidebar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 0;
+        }
+        
+        .sidebar .nav-link {
+            color: rgba(255, 255, 255, 0.8);
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin: 4px 0;
+            transition: all 0.3s ease;
+        }
+        
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            color: white;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .main-content {
+            background: #f8f9fa;
+            min-height: 100vh;
+        }
+        
+        .card {
+            border: none;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .status-badge {
+            font-size: 0.8em;
+            padding: 0.3em 0.6em;
+        }
+        
+        .brand-logo {
+            color: white;
+            font-size: 1.4em;
+            font-weight: bold;
+            text-decoration: none;
+            margin-bottom: 30px;
+            display: block;
+            padding: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .brand-logo:hover {
+            color: white;
+            text-decoration: none;
+        }
+        
+        .alert {
+            border: none;
+            border-radius: 10px;
+        }
+        
+        .btn {
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+        
+        .table th {
+            border-top: none;
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        .progress {
+            height: 8px;
+            border-radius: 4px;
+        }
+        
+        .navbar-brand {
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        .content-header {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            padding: 20px;
+        }
+    </style>
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-3 col-lg-2 sidebar">
+                <a href="{{ url_for('index') }}" class="brand-logo">
+                    <i class="fas fa-brain"></i> HyperGraph UI
+                </a>
+                
+                <nav class="nav flex-column">
+                    <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" href="{{ url_for('index') }}">
+                        <i class="fas fa-tachometer-alt me-2"></i> Dashboard
+                    </a>
+                    <a class="nav-link {% if request.endpoint == 'configure' %}active{% endif %}" href="{{ url_for('configure') }}">
+                        <i class="fas fa-cog me-2"></i> Configure
+                    </a>
+                    <a class="nav-link {% if request.endpoint == 'runs' %}active{% endif %}" href="{{ url_for('runs') }}">
+                        <i class="fas fa-play-circle me-2"></i> Test Runs
+                    </a>
+                    <a class="nav-link {% if request.endpoint == 'results' %}active{% endif %}" href="{{ url_for('results') }}">
+                        <i class="fas fa-chart-line me-2"></i> Results
+                    </a>
+                    <a class="nav-link {% if request.endpoint == 'templates' %}active{% endif %}" href="{{ url_for('templates') }}">
+                        <i class="fas fa-file-code me-2"></i> Templates
+                    </a>
+                    <a class="nav-link {% if request.endpoint == 'cache_status_page' %}active{% endif %}" href="{{ url_for('cache_status_page') }}">
+                        <i class="fas fa-database me-2"></i> Cache Status
+                    </a>
+                    
+                    <hr style="border-color: rgba(255, 255, 255, 0.2); margin: 20px 0;">
+                    
+                    <a class="nav-link shutdown-btn" href="#" onclick="confirmShutdown()" style="color: #ff6b6b;">
+                        <i class="fas fa-power-off me-2"></i> Shutdown Server
+                    </a>
+                </nav>
+            </div>
+            
+            <!-- Main Content -->
+            <div class="col-md-9 col-lg-10 main-content">
+                <div class="container-fluid py-4">
+                    <div class="content-header">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h1 class="h3 mb-1">{% block page_title %}Dashboard{% endblock %}</h1>
+                                <p class="text-muted mb-0">{% block page_description %}Overview of test configurations and runs{% endblock %}</p>
+                            </div>
+                            <div>
+                                {% block header_actions %}{% endblock %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Flash Messages -->
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    
+                    <!-- Page Content -->
+                    {% block content %}{% endblock %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    
+    <!-- Shutdown Confirmation Modal -->
+    <div class="modal fade" id="shutdownModal" tabindex="-1" aria-labelledby="shutdownModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="shutdownModalLabel">
+                        <i class="fas fa-exclamation-triangle text-warning me-2"></i>
+                        Confirm Server Shutdown
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p><strong>Are you sure you want to shutdown the server?</strong></p>
+                    <p class="text-muted">This will stop the HyperGraph Web UI and close your SSH tunnel connection. You will need to restart the server manually to access the UI again.</p>
+                    <div class="alert alert-warning">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Note:</strong> Any running test jobs will continue in the background.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <i class="fas fa-times me-2"></i>Cancel
+                    </button>
+                    <button type="button" class="btn btn-danger" onclick="shutdownServer()">
+                        <i class="fas fa-power-off me-2"></i>Shutdown Server
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function confirmShutdown() {
+            var shutdownModal = new bootstrap.Modal(document.getElementById('shutdownModal'));
+            shutdownModal.show();
+        }
+        
+        function shutdownServer() {
+            // Close the modal
+            var shutdownModal = bootstrap.Modal.getInstance(document.getElementById('shutdownModal'));
+            shutdownModal.hide();
+            
+            // Show shutdown in progress message
+            document.body.innerHTML = `
+                <div class="d-flex justify-content-center align-items-center" style="height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                    <div class="text-center text-white">
+                        <div class="spinner-border" role="status" style="width: 3rem; height: 3rem;">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <h3 class="mt-3">Shutting down server...</h3>
+                        <p class="text-light">Your SSH tunnel will disconnect shortly.</p>
+                    </div>
+                </div>
+            `;
+            
+            // Call shutdown API
+            fetch('/api/shutdown', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Shutdown initiated:', data.message);
+            })
+            .catch(error => {
+                console.error('Error during shutdown:', error);
+                // Show error message
+                document.body.innerHTML = `
+                    <div class="d-flex justify-content-center align-items-center" style="height: 100vh; background: #f8f9fa;">
+                        <div class="text-center">
+                            <i class="fas fa-exclamation-triangle text-warning" style="font-size: 3rem;"></i>
+                            <h3 class="mt-3 text-danger">Shutdown Error</h3>
+                            <p class="text-muted">There was an error shutting down the server. Please check the terminal.</p>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+    </script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html> 

@@ -1,0 +1,21 @@
+{
+  "name": "Basic Training",
+  "description": "Standard training configuration with default settings",
+  "config": {
+    "trainer_mode": "adaptive",
+    "traversal_type": "comprehensive",
+    "enable_traversal_switching": false,
+    "architectures": "resnestdf",
+    "num_epochs": 20,
+    "batch_size": 32,
+    "seed": 42,
+    "quality_threshold": 0.5,
+    "symmetry_threshold": 0.3,
+    "embedding_threshold": 0.7,
+    "fair_train": false,
+    "fair_test": false,
+    "enable_ivalue_viz": false,
+    "bias_loss_weight": 0.1,
+    "num_workers": 0
+  }
+}

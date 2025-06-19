@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration Templates - HyperGraph{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="fas fa-layer-group"></i> Configuration Templates</h2>
+                <a href="{{ url_for('configure') }}" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Create Custom Config
+                </a>
+            </div>
+            
+            <!-- Templates Info -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Templates:</strong> Pre-configured settings for common test scenarios. 
+                        Click "Use Template" to start with these settings, then customize as needed.
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Templates Grid -->
+            {% if templates %}
+            <div class="row">
+                {% for template_data in templates %}
+                <div class="col-md-6 col-lg-4 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-file-alt"></i> {{ template_data.name }}
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="card-text">
+                                {{ template_data.description }}
+                            </p>
+                            
+                            <!-- Template Details -->
+                            <div class="small text-muted mb-3">
+                                <div class="row">
+                                    <div class="col-6">
+                                        <strong>Architecture:</strong><br>
+                                        <span class="badge bg-secondary">{{ template_data.architecture or 'N/A' }}</span>
+                                    </div>
+                                    <div class="col-6">
+                                        <strong>Traversal:</strong><br>
+                                        <span class="badge bg-info">{{ template_data.traversal_mode or 'N/A' }}</span>
+                                    </div>
+                                </div>
+                                <div class="row mt-2">
+                                    <div class="col-6">
+                                        <strong>Quality Threshold:</strong><br>
+                                        {{ template_data.quality_threshold or 'N/A' }}
+                                    </div>
+                                    <div class="col-6">
+                                        <strong>Trainer Mode:</strong><br>
+                                        {{ template_data.trainer_mode or 'N/A' }}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Features -->
+                            {% if template_data.features %}
+                            <div class="small mb-3">
+                                <strong>Features:</strong>
+                                <ul class="list-unstyled mt-1">
+                                    {% for feature in template_data.features %}
+                                    <li><i class="fas fa-check text-success"></i> {{ feature }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="card-footer">
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-primary" onclick="useTemplate('{{ template_data.template_id }}')">
+                                    <i class="fas fa-rocket"></i> Use Template
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="previewTemplate('{{ template_data.template_id }}')">
+                                    <i class="fas fa-eye"></i> Preview Config
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <!-- Empty State -->
+            <div class="text-center py-5">
+                <i class="fas fa-layer-group fa-4x text-muted mb-3"></i>
+                <h4 class="text-muted">No Templates Available</h4>
+                <p class="text-muted">Configuration templates will help you get started quickly with common scenarios.</p>
+                <a href="{{ url_for('configure') }}" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Create Your First Configuration
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Template Preview Modal -->
+<div class="modal fade" id="templatePreviewModal" tabindex="-1" aria-labelledby="templatePreviewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="templatePreviewModalLabel">
+                    <i class="fas fa-eye"></i> Template Preview
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="templatePreviewContent">
+                    <div class="text-center">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="useTemplateFromPreview">
+                    <i class="fas fa-rocket"></i> Use This Template
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentTemplatePreview = null;
+
+function useTemplate(templateName) {
+    // Redirect to configure page with template parameter
+    window.location.href = `/configure?template=${encodeURIComponent(templateName)}`;
+}
+
+function previewTemplate(templateName) {
+    currentTemplatePreview = templateName;
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('templatePreviewModal'));
+    modal.show();
+    
+    // Update modal title
+    document.getElementById('templatePreviewModalLabel').innerHTML = 
+        `<i class="fas fa-eye"></i> Preview: ${templateName}`;
+    
+    // Load template data
+    fetch(`/api/templates/${encodeURIComponent(templateName)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('templatePreviewContent').innerHTML = 
+                    `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Error: ${data.error}</div>`;
+                return;
+            }
+            
+            // Format template data as readable JSON
+            const formatted = JSON.stringify(data, null, 2);
+            document.getElementById('templatePreviewContent').innerHTML = 
+                `<pre class="bg-light p-3 rounded"><code>${escapeHtml(formatted)}</code></pre>`;
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            document.getElementById('templatePreviewContent').innerHTML = 
+                `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Failed to load template</div>`;
+        });
+}
+
+function escapeHtml(text) {
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+}
+
+// Handle use template from preview modal
+document.getElementById('useTemplateFromPreview').addEventListener('click', function() {
+    if (currentTemplatePreview) {
+        useTemplate(currentTemplatePreview);
+    }
+});
+
+// Reset preview content when modal is hidden
+document.getElementById('templatePreviewModal').addEventListener('hidden.bs.modal', function() {
+    document.getElementById('templatePreviewContent').innerHTML = 
+        '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
+    currentTemplatePreview = null;
+});
+</script>
+{% endblock %} 

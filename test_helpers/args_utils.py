@@ -95,4 +95,9 @@ def parse_args():
     parser.add_argument('--viz-save-dir', type=str, default='ivalue_visualizations',
                         help='Directory to save I-value visualization plots (default: ivalue_visualizations)')
     
+    # DQN model selection
+    parser.add_argument('--dqn-model', type=str, default='basic',
+                      choices=['basic', 'residual', 'attention', 'conv_embedding', 'ensemble'],
+                      help='Type of DQN model to use for I-value prediction (default: basic)')
+    
     return parser.parse_args()

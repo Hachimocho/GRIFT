@@ -1,0 +1,41 @@
+{
+  "run_id": "run_20250617_131504_012794b3",
+  "config_name": "DQNTest",
+  "config": {
+    "name": "DQNTest",
+    "created": "2025-06-17T13:15:03.170068",
+    "modified": "2025-06-17T13:15:03.170095",
+    "config": {
+      "name": "DQNTest",
+      "trainer-mode": "legacy",
+      "dqn-model": "residual",
+      "num_epochs": 20,
+      "bias_hop_period": 5,
+      "batch_size": 32,
+      "seed": 42,
+      "quality_threshold": 0.5,
+      "symmetry_threshold": 0.3,
+      "embedding_threshold": 0.7,
+      "traversal_type": "i-value-cluster-hop",
+      "enable_traversal_switching": false,
+      "cached_nodes": true,
+      "cache_nodes": false,
+      "fair_train": true,
+      "fair_test": true,
+      "bias_loss_weight": 0.1,
+      "num_workers": 0,
+      "viz_track_nodes": 50,
+      "viz_sample_size": 200,
+      "architectures": "resnestdf",
+      "enable_ivalue_viz": true
+    }
+  },
+  "command": "python test_hierarchical.py",
+  "start_time": "2025-06-17T13:15:04.252619",
+  "status": "failed",
+  "log_file": "web_ui/runs/run_20250617_131504_012794b3.log",
+  "created": "2025-06-17T13:15:04.252692",
+  "last_updated": "2025-06-19T11:24:44.660824",
+  "end_time": "2025-06-19T11:24:44.660772",
+  "error": "Process not found on server startup. Marked as failed."
+}

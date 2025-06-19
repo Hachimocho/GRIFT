@@ -1,0 +1,594 @@
+{% extends "base.html" %}
+
+{% block title %}Configure - HyperGraph Test UI{% endblock %}
+
+{% block page_title %}
+{% if config_name %}Edit Configuration{% else %}New Configuration{% endif %}
+{% endblock %}
+
+{% block page_description %}
+{% if config_name %}Modify an existing test configuration{% else %}Create a new test configuration{% endif %}
+{% endblock %}
+
+{% block header_actions %}
+<button type="button" class="btn btn-outline-secondary me-2" onclick="loadTemplate()">
+    <i class="fas fa-file-code me-2"></i>Load Template
+</button>
+<button type="button" class="btn btn-outline-info me-2" onclick="validateConfiguration()">
+    <i class="fas fa-check-circle me-2"></i>Validate
+</button>
+<button type="button" class="btn btn-success" onclick="saveConfiguration()">
+    <i class="fas fa-save me-2"></i>Save & Run
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8">
+        <form id="configForm">
+            <!-- Basic Settings -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-cog text-primary me-2"></i>Basic Settings
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="configName" class="form-label">Configuration Name</label>
+                            <input type="text" class="form-control" id="configName" name="name" 
+                                   value="{{ config_name or '' }}" required>
+                            <div class="form-text">Unique name for this configuration</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="trainer-mode">Trainer Mode</label>
+                            <select class="form-control" id="trainer-mode" name="trainer-mode">
+                                <option value="legacy">Legacy</option>
+                                <option value="adaptive">Adaptive</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="dqn-model">DQN Model Type</label>
+                            <select class="form-control" id="dqn-model" name="dqn-model">
+                                <option value="basic">Basic DQN</option>
+                                <option value="residual">Residual DQN</option>
+                                <option value="attention">Attention DQN</option>
+                                <option value="conv_embedding">Conv Embedding DQN</option>
+                                <option value="ensemble">Ensemble DQN</option>
+                            </select>
+                            <small class="form-text text-muted">Select the type of DQN model to use for I-value prediction</small>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label">Model Architectures</label>
+                            <div class="row" id="architectureCheckboxes">
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="resnestdf" id="arch_resnestdf" checked>
+                                        <label class="form-check-label" for="arch_resnestdf">ResNestDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="effnetdf" id="arch_effnetdf">
+                                        <label class="form-check-label" for="arch_effnetdf">EfficientNetDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="xceptiondf" id="arch_xceptiondf">
+                                        <label class="form-check-label" for="arch_xceptiondf">XceptionDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="mesoinceptiondf" id="arch_mesoinceptiondf">
+                                        <label class="form-check-label" for="arch_mesoinceptiondf">MesoInceptionDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="mesonetdf" id="arch_mesonetdf">
+                                        <label class="form-check-label" for="arch_mesonetdf">MesoNetDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="facexray" id="arch_facexray">
+                                        <label class="form-check-label" for="arch_facexray">FaceXRay</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="vistransformdf" id="arch_vistransformdf">
+                                        <label class="form-check-label" for="arch_vistransformdf">ViTTransformDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="swintransformdf" id="arch_swintransformdf">
+                                        <label class="form-check-label" for="arch_swintransformdf">SwinTransformDF</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="squeezenetdf" id="arch_squeezenetdf">
+                                        <label class="form-check-label" for="arch_squeezenetdf">SqueezeNetDF</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-text">Select one or more model architectures to test</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="numEpochs" class="form-label">Number of Epochs</label>
+                            <input type="number" class="form-control" id="numEpochs" name="num_epochs" 
+                                   value="20" min="1" max="1000" required>
+                            <div class="form-text">Training epochs (1-1000)</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="biasHopPeriod" class="form-label">Bias Hop Period</label>
+                            <input type="number" class="form-control" id="biasHopPeriod" name="bias_hop_period" 
+                                   value="100" min="1" max="1000">
+                            <div class="form-text">Period for bias hop visualization (epochs)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="batchSize" class="form-label">Batch Size</label>
+                            <input type="number" class="form-control" id="batchSize" name="batch_size" 
+                                   value="32" min="1" max="256" required>
+                            <div class="form-text">Training batch size</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="seed" class="form-label">Random Seed</label>
+                            <input type="number" class="form-control" id="seed" name="seed" 
+                                   value="42" min="0" required>
+                            <div class="form-text">Random seed for reproducibility</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Quality Thresholds -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-sliders-h text-warning me-2"></i>Quality Thresholds
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label for="qualityThreshold" class="form-label">Quality Threshold</label>
+                            <input type="range" class="form-range" id="qualityThreshold" name="quality_threshold" 
+                                   min="0" max="1" step="0.001" value="0.500">
+                            <div class="d-flex justify-content-between">
+                                <small>0.0</small>
+                                <span id="qualityValue" class="fw-bold">0.500</span>
+                                <small>1.0</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="symmetryThreshold" class="form-label">Symmetry Threshold</label>
+                            <input type="range" class="form-range" id="symmetryThreshold" name="symmetry_threshold" 
+                                   min="0" max="1" step="0.001" value="0.300">
+                            <div class="d-flex justify-content-between">
+                                <small>0.0</small>
+                                <span id="symmetryValue" class="fw-bold">0.300</span>
+                                <small>1.0</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="embeddingThreshold" class="form-label">Embedding Threshold</label>
+                            <input type="range" class="form-range" id="embeddingThreshold" name="embedding_threshold" 
+                                   min="0" max="1" step="0.001" value="0.700">
+                            <div class="d-flex justify-content-between">
+                                <small>0.0</small>
+                                <span id="embeddingValue" class="fw-bold">0.700</span>
+                                <small>1.0</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Traversal Configuration -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-route text-info me-2"></i>Traversal Configuration
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="traversalType" class="form-label">Primary Traversal Type</label>
+                            <select class="form-select" id="traversalType" name="traversal_type" required>
+                                <option value="comprehensive">Comprehensive</option>
+                                <option value="random">Random</option>
+                                <option value="i-value">I-Value</option>
+                                <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                            </select>
+                            <div class="form-text">Graph traversal strategy</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="enableTraversalSwitching" name="enable_traversal_switching">
+                                <label class="form-check-label" for="enableTraversalSwitching">
+                                    Enable Traversal Switching
+                                </label>
+                            </div>
+                            <div class="form-text">Switch between different traversal types during training</div>
+                        </div>
+                    </div>
+                    
+                    <div id="traversalSwitchingConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label for="secondTraversalType" class="form-label">Second Traversal Type</label>
+                                <select class="form-select" id="secondTraversalType" name="second_traversal_type">
+                                    <option value="comprehensive">Comprehensive</option>
+                                    <option value="random">Random</option>
+                                    <option value="i-value">I-Value</option>
+                                    <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="switchEpoch" class="form-label">Switch at Epoch</label>
+                                <input type="number" class="form-control" id="switchEpoch" name="switch_epoch" 
+                                       value="10" min="1" max="1000">
+                                <div class="form-text">Epoch to switch traversal types</div>
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="thirdTraversalType" class="form-label">Third Traversal (Optional)</label>
+                                <select class="form-select" id="thirdTraversalType" name="third_traversal_type">
+                                    <option value="">None</option>
+                                    <option value="comprehensive">Comprehensive</option>
+                                    <option value="random">Random</option>
+                                    <option value="i-value">I-Value</option>
+                                    <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row" id="thirdTraversalEpochRow" style="display: none;">
+                            <div class="col-md-4 mb-3">
+                                <label for="secondSwitchEpoch" class="form-label">Second Switch Epoch</label>
+                                <input type="number" class="form-control" id="secondSwitchEpoch" name="second_switch_epoch" 
+                                       value="20" min="1" max="1000">
+                                <div class="form-text">Epoch for second switch</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Cache and Fairness Settings -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-database text-success me-2"></i>Cache & Fairness Settings
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="cachedNodes" name="cached_nodes">
+                                <label class="form-check-label" for="cachedNodes">
+                                    Use Cached Nodes
+                                </label>
+                            </div>
+                            <div class="form-text">Load nodes from cache if available (--use-cached)</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="cacheNodes" name="cache_nodes">
+                                <label class="form-check-label" for="cacheNodes">
+                                    Cache Nodes
+                                </label>
+                            </div>
+                            <div class="form-text">Save nodes to cache for future use (--cache-nodes)</div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="cachedNodesCount" class="form-label">Number of Nodes to Cache</label>
+                            <input type="number" class="form-control" id="cachedNodesCount" name="cached_nodes_count" 
+                                   value="1000" min="100" max="100000" step="100">
+                            <div class="form-text">Number of nodes to cache per split (--cached-nodes=X)</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="fairTrain" name="fair_train">
+                                <label class="form-check-label" for="fairTrain">
+                                    Fair Training
+                                </label>
+                            </div>
+                            <div class="form-text">Use balanced training data across demographic groups</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="fairTest" name="fair_test">
+                                <label class="form-check-label" for="fairTest">
+                                    Fair Testing
+                                </label>
+                            </div>
+                            <div class="form-text">Use balanced test data across demographic groups</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="biasLossWeight" class="form-label">Bias Loss Weight</label>
+                            <input type="range" class="form-range" id="biasLossWeight" name="bias_loss_weight" 
+                                   min="0" max="1" step="0.01" value="0.1">
+                            <div class="d-flex justify-content-between">
+                                <small>0.0</small>
+                                <span id="biasLossValue" class="fw-bold">0.10</span>
+                                <small>1.0</small>
+                            </div>
+                            <div class="form-text">Weight for bias loss component</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="numWorkers" class="form-label">Number of Workers</label>
+                            <input type="number" class="form-control" id="numWorkers" name="num_workers" 
+                                   value="0" min="0" max="16">
+                            <div class="form-text">DataLoader worker processes (0 = single-threaded)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Visualization Settings -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-line text-danger me-2"></i>Visualization Settings
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>I-Value Visualization:</strong> Automatically enabled for all runs. Visualizations will be available in the results page after completion.
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="vizTrackNodes" class="form-label">Track Nodes Count</label>
+                            <input type="number" class="form-control" id="vizTrackNodes" name="viz_track_nodes" 
+                                   value="50" min="10" max="500">
+                            <div class="form-text">Number of nodes to track for visualization</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="vizSampleSize" class="form-label">Visualization Sample Size</label>
+                            <input type="number" class="form-control" id="vizSampleSize" name="viz_sample_size" 
+                                   value="200" min="50" max="1000">
+                            <div class="form-text">Sample size for generating visualizations</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+    
+    <!-- Configuration Preview -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-eye text-secondary me-2"></i>Configuration Preview
+                </h5>
+            </div>
+            <div class="card-body">
+                <pre id="configPreview" class="bg-light p-3 rounded" style="font-size: 0.8em; max-height: 400px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    setupEventListeners();
+    updatePreview();
+});
+
+function setupEventListeners() {
+    $('#configForm input, #configForm select').on('input change', function() {
+        updatePreview();
+    });
+    
+    // Threshold value displays
+    $('#qualityThreshold').on('input', function() {
+        $('#qualityValue').text(parseFloat(this.value).toFixed(3));
+    });
+    
+    $('#symmetryThreshold').on('input', function() {
+        $('#symmetryValue').text(parseFloat(this.value).toFixed(3));
+    });
+    
+    $('#embeddingThreshold').on('input', function() {
+        $('#embeddingValue').text(parseFloat(this.value).toFixed(3));
+    });
+    
+    $('#biasLossWeight').on('input', function() {
+        $('#biasLossValue').text(parseFloat(this.value).toFixed(2));
+    });
+    
+    // Traversal switching logic
+    $('#enableTraversalSwitching').on('change', function() {
+        if (this.checked) {
+            $('#traversalSwitchingConfig').show();
+        } else {
+            $('#traversalSwitchingConfig').hide();
+        }
+        updatePreview();
+    });
+    
+    // Third traversal logic
+    $('#thirdTraversalType').on('change', function() {
+        if (this.value) {
+            $('#thirdTraversalEpochRow').show();
+        } else {
+            $('#thirdTraversalEpochRow').hide();
+        }
+        updatePreview();
+    });
+    
+    // Architecture checkboxes
+    $('#architectureCheckboxes input[type="checkbox"]').on('change', function() {
+        updatePreview();
+    });
+}
+
+function updatePreview() {
+    const config = getFormData();
+    $('#configPreview').text(JSON.stringify(config, null, 2));
+}
+
+function getFormData() {
+    const config = {};
+    
+    // Basic fields
+    const formElements = document.querySelectorAll('#configForm input, #configForm select');
+    formElements.forEach(element => {
+        if (element.name && element.name !== 'architectures') {
+            if (element.type === 'checkbox') {
+                config[element.name] = element.checked;
+            } else if (element.type === 'number' || element.type === 'range') {
+                config[element.name] = parseFloat(element.value);
+            } else {
+                config[element.name] = element.value;
+            }
+        }
+    });
+    
+    // Handle architecture checkboxes
+    const selectedArchitectures = [];
+    document.querySelectorAll('#architectureCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        selectedArchitectures.push(cb.value);
+    });
+    config.architectures = selectedArchitectures.join(',');
+    
+    // Handle traversal switching
+    if (config.enable_traversal_switching) {
+        const traversalSequence = [config.traversal_type];
+        const switchEpochs = [];
+        
+        if (config.second_traversal_type) {
+            traversalSequence.push(config.second_traversal_type);
+            switchEpochs.push(config.switch_epoch.toString());
+        }
+        
+        if (config.third_traversal_type) {
+            traversalSequence.push(config.third_traversal_type);
+            switchEpochs.push(config.second_switch_epoch.toString());
+        }
+        
+        config.traversal_sequence = traversalSequence.join(',');
+        config.switch_epochs = switchEpochs.join(',');
+    }
+    
+    // Auto-enable I-value visualization
+    config.enable_ivalue_viz = true;
+    
+    // Clean up temporary fields used only for UI
+    delete config.second_traversal_type;
+    delete config.third_traversal_type;
+    delete config.switch_epoch;
+    delete config.second_switch_epoch;
+    
+    return config;
+}
+
+function saveConfiguration() {
+    const config = getFormData();
+    const name = config.name;
+    
+    if (!name || name.trim() === '') {
+        alert('Please enter a configuration name');
+        return;
+    }
+    
+    $.ajax({
+        url: '/api/configurations',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            name: name,
+            config: config
+        }),
+        success: function(response) {
+            if (confirm(`Configuration saved! Start test run "${name}" now?`)) {
+                $.ajax({
+                    url: '/api/test-runs',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        config_name: name
+                    }),
+                    success: function(runResponse) {
+                        alert(`Test run started! Run ID: ${runResponse.run_id}`);
+                        window.location.href = `/runs/${runResponse.run_id}`;
+                    },
+                    error: function(xhr) {
+                        const errorResponse = JSON.parse(xhr.responseText);
+                        alert(`Configuration saved, but failed to start run: ${errorResponse.error}`);
+                        window.location.href = '/';
+                    }
+                });
+            } else {
+                window.location.href = '/';
+            }
+        },
+        error: function(xhr) {
+            const response = JSON.parse(xhr.responseText);
+            alert(`Error saving configuration: ${response.error}`);
+        }
+    });
+}
+
+function loadTemplate() {
+    const templates = ['basic_training', 'bias_analysis', 'traversal_switching', 'comparison_study'];
+    const template = prompt('Enter template name:\n' + templates.join('\n'));
+    
+    if (template && templates.includes(template)) {
+        $.ajax({
+            url: `/api/templates/${template}`,
+            method: 'GET',
+            success: function(response) {
+                for (const [key, value] of Object.entries(response.config)) {
+                    const element = document.querySelector(`[name="${key}"]`);
+                    if (element) {
+                        if (element.type === 'checkbox') {
+                            element.checked = value;
+                        } else {
+                            element.value = value;
+                        }
+                    }
+                }
+                updatePreview();
+            },
+            error: function() {
+                alert('Failed to load template');
+            }
+        });
+    }
+}
+
+function validateConfiguration() {
+    alert('Validation feature coming soon!');
+}
+</script>
+{% endblock %} 

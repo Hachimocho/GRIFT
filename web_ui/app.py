@@ -1,0 +1,628 @@
+#!/usr/bin/env python3
+"""
+HyperGraph Test Configuration Web UI
+
+A Flask-based web interface for managing test configurations, running experiments,
+and viewing results for the HyperGraph deepfake detection system.
+
+This UI allows users to:
+- Create and save test configurations
+- Load and modify existing configurations  
+- Start test runs remotely
+- Monitor test progress
+- View and compare results
+- Export configurations and results
+- Generate and manage cache files
+
+Author: Quanty 7
+"""
+
+import os
+import json
+import time
+import subprocess
+import threading
+import logging
+from datetime import datetime
+from pathlib import Path
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+import yaml
+import dill
+import glob
+
+# Create logs directory if it doesn't exist
+log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure logging
+log_file = os.path.join(log_dir, 'app.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also log to console
+    ]
+)
+logger = logging.getLogger(__name__)
+logger.info("Starting HyperGraph Test Configuration Web UI...")
+logger.info(f"Log file location: {log_file}")
+
+# Add parent directory to path to import our modules
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from web_ui.config_manager import ConfigManager
+from web_ui.test_runner import TestRunner
+from test_helpers.data_graph_utils import (
+    balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
+    load_and_prepare_data_splits
+)
+from dataloaders.HierarchicalDeepfakeDataloader import HierarchicalDeepfakeDataloader
+from graphs.HyperGraph import HyperGraph
+from edges.Edge import Edge
+
+app = Flask(__name__)
+app.secret_key = 'quanty_hypergraph_test_ui_secret_key_2024'
+
+# Initialize managers
+config_manager = ConfigManager()
+test_runner = TestRunner()
+
+# Debug route to check if server is running
+@app.route('/debug/ping')
+def ping():
+    """Simple endpoint to check if server is running."""
+    return jsonify({'status': 'ok', 'message': 'Server is running'})
+
+@app.route('/debug/paths')
+def debug_paths():
+    """Debug endpoint to check important paths."""
+    paths = {
+        'current_dir': os.getcwd(),
+        'app_dir': os.path.dirname(os.path.abspath(__file__)),
+        'project_root': os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'node_cache_dir': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'node_cache'),
+        'graph_cache_dir': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'graph_cache')
+    }
+    return jsonify(paths)
+
+@app.route('/')
+def index():
+    """Main dashboard showing overview of configurations and results."""
+    configs = config_manager.list_configurations()
+    runs = test_runner.list_runs()
+    recent_runs = sorted(runs, key=lambda x: x.get('start_time', ''), reverse=True)[:10]
+    
+    return render_template('index.html', 
+                         configs=configs, 
+                         recent_runs=recent_runs,
+                         active_runs=test_runner.get_active_runs())
+
+@app.route('/cache/status')
+def cache_status_page():
+    """Page showing cache status information."""
+    logger.info("Rendering cache status page")
+    return render_template('cache_status.html')
+
+@app.route('/api/cache/status')
+def get_cache_status():
+    """API endpoint for getting cache status information."""
+    logger.info("=== Cache Status Request Started ===")
+    try:
+        logger.info("Fetching cache status...")
+        
+        # Check if cache directories exist
+        node_cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'node_cache')
+        graph_cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'graph_cache')
+        
+        logger.info(f"Node cache directory: {node_cache_dir}")
+        logger.info(f"Graph cache directory: {graph_cache_dir}")
+        
+        if not os.path.exists(node_cache_dir):
+            logger.warning(f"Node cache directory does not exist: {node_cache_dir}")
+            return jsonify({
+                'error': 'Node cache directory not found',
+                'details': f'Directory not found: {node_cache_dir}'
+            }), 404
+            
+        if not os.path.exists(graph_cache_dir):
+            logger.warning(f"Graph cache directory does not exist: {graph_cache_dir}")
+            return jsonify({
+                'error': 'Graph cache directory not found',
+                'details': f'Directory not found: {graph_cache_dir}'
+            }), 404
+        
+        # Get basic file information first (fast)
+        node_cache_status = get_node_cache_status_basic()
+        graph_cache_status = get_graph_cache_status_basic()
+        
+        cache_status = {
+            'node_cache': node_cache_status,
+            'graph_cache': graph_cache_status,
+            'timestamp': time.time()
+        }
+        
+        # Add cache control headers
+        response = jsonify(cache_status)
+        response.headers['Cache-Control'] = 'public, max-age=300'  # Cache for 5 minutes
+        response.headers['ETag'] = f'"{hash(str(cache_status))}"'
+        
+        logger.info("=== Cache Status Request Completed Successfully ===")
+        return response
+    except Exception as e:
+        logger.error("=== Cache Status Request Failed ===")
+        logger.error(f"Error getting cache status: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to get cache status',
+            'details': str(e)
+        }), 500
+
+def get_node_cache_status_basic():
+    """Get status information for node cache files."""
+    node_cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'node_cache')
+    cache_status = {}
+    
+    try:
+        logger.info(f"Checking node cache in: {node_cache_dir}")
+        cache_file = os.path.join(node_cache_dir, 'cached_nodes.pkl')
+        logger.info(f"Looking for cache file: {cache_file}")
+        
+        if os.path.exists(cache_file):
+            logger.info(f"Found cache file: {cache_file}")
+            file_size = os.path.getsize(cache_file)
+            last_modified = os.path.getmtime(cache_file)
+            
+            # Get basic file info
+            cache_status = {
+                'exists': True,
+                'last_modified': last_modified,
+                'size': file_size,
+                'file_path': cache_file
+            }
+            
+            try:
+                logger.info("Loading node cache data...")
+                with open(cache_file, 'rb') as f:
+                    cache_data = dill.load(f)
+                logger.info("Successfully loaded node cache data")
+                
+                # Get node counts for each split
+                for split in ['train', 'val', 'test']:
+                    if split in cache_data:
+                        split_data = cache_data[split]
+                        if isinstance(split_data, dict):
+                            cache_status[split] = {
+                                'node_count': len(split_data.get('full', [])),
+                                'balanced_count': len(split_data.get('balanced', []))
+                            }
+                        else:
+                            cache_status[split] = {
+                                'node_count': len(split_data)
+                            }
+            except Exception as e:
+                logger.error(f"Error loading node cache data: {str(e)}", exc_info=True)
+                cache_status['load_error'] = str(e)
+        else:
+            logger.warning(f"Cache file not found at {cache_file}")
+            cache_status = {
+                'exists': False,
+                'error': f'Cache file not found at {cache_file}'
+            }
+    except Exception as e:
+        logger.error(f"Error checking node cache status: {str(e)}", exc_info=True)
+        cache_status = {
+            'error': f'Error checking cache status: {str(e)}'
+        }
+    
+    return cache_status
+
+def get_graph_cache_status_basic():
+    """Get status information for graph cache files."""
+    graph_cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'graph_cache')
+    cache_status = {}
+    
+    try:
+        logger.info(f"Checking graph cache in: {graph_cache_dir}")
+        cache_pattern = os.path.join(graph_cache_dir, '*_graph.pkl')
+        cache_files = glob.glob(cache_pattern)
+        logger.info(f"Found {len(cache_files)} graph cache files")
+        
+        for cache_file in cache_files:
+            try:
+                filename = os.path.basename(cache_file)
+                logger.info(f"Processing cache file: {filename}")
+                
+                # Extract split name from filename
+                split_match = None
+                for split in ['train', 'val', 'test']:
+                    if f'_{split}_' in filename:
+                        split_match = split
+                        break
+                
+                if split_match:
+                    file_size = os.path.getsize(cache_file)
+                    last_modified = os.path.getmtime(cache_file)
+                    
+                    split_status = {
+                        'exists': True,
+                        'last_modified': last_modified,
+                        'size': file_size,
+                        'file_path': cache_file
+                    }
+                    
+                    try:
+                        logger.info(f"Loading graph cache data for {split_match}...")
+                        with open(cache_file, 'rb') as f:
+                            edge_list = dill.load(f)
+                        logger.info(f"Successfully loaded graph cache data for {split_match}")
+                        split_status['edge_count'] = len(edge_list)
+                    except Exception as e:
+                        logger.error(f"Error loading graph cache data: {str(e)}", exc_info=True)
+                        split_status['load_error'] = str(e)
+                    
+                    cache_status[split_match] = split_status
+            except Exception as e:
+                logger.error(f"Error processing graph cache file {cache_file}: {str(e)}", exc_info=True)
+                if split_match:
+                    cache_status[split_match] = {
+                        'exists': False,
+                        'error': f'Error processing cache file: {str(e)}'
+                    }
+        
+        # Ensure all splits are represented
+        for split in ['train', 'val', 'test']:
+            if split not in cache_status:
+                logger.warning(f"No cache file found for {split} split")
+                cache_status[split] = {
+                    'exists': False,
+                    'error': 'No cache file found'
+                }
+    except Exception as e:
+        logger.error(f"Error checking graph cache status: {str(e)}", exc_info=True)
+        cache_status['error'] = f'Error checking cache status: {str(e)}'
+    
+    return cache_status
+
+@app.route('/api/cache/generate', methods=['POST'])
+def generate_cache():
+    """API endpoint for generating new cache files."""
+    try:
+        data = request.get_json()
+        
+        # Extract parameters
+        generate_node_cache = data.get('generateNodeCache', False)
+        balance_nodes = data.get('balanceNodes', False)
+        generate_graph_cache = data.get('generateGraphCache', False)
+        quality_threshold = data.get('qualityThreshold', 0.5)
+        symmetry_threshold = data.get('symmetryThreshold', 0.5)
+        embedding_threshold = data.get('embeddingThreshold', 0.5)
+        
+        # Start cache generation in a background thread
+        thread = threading.Thread(
+            target=generate_cache_background,
+            args=(
+                generate_node_cache,
+                balance_nodes,
+                generate_graph_cache,
+                quality_threshold,
+                symmetry_threshold,
+                embedding_threshold
+            )
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Cache generation started in background'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+def generate_cache_background(
+    generate_node_cache,
+    balance_nodes,
+    generate_graph_cache,
+    quality_threshold,
+    symmetry_threshold,
+    embedding_threshold
+):
+    """Background task to generate cache files."""
+    try:
+        data_root = "/home/brg2890/major/datasets/ai-face"
+        
+        # Load and prepare data splits
+        train_nodes, val_nodes, test_nodes, \
+        train_nodes_full, val_nodes_full, test_nodes_full, \
+        node_loading_time = load_and_prepare_data_splits(None, data_root)
+        
+        # Generate node cache if requested
+        if generate_node_cache:
+            print("Generating node cache...")
+            node_cache_dir = "node_cache"
+            os.makedirs(node_cache_dir, exist_ok=True)
+            
+            # Save nodes for each split
+            cache_data = {}
+            for split_name, nodes in [
+                ('train', train_nodes if balance_nodes else train_nodes_full),
+                ('val', val_nodes if balance_nodes else val_nodes_full),
+                ('test', test_nodes if balance_nodes else test_nodes_full)
+            ]:
+                cache_data[split_name] = nodes
+            
+            # Save to cache file
+            cache_file = os.path.join(node_cache_dir, 'cached_nodes.pkl')
+            with open(cache_file, 'wb') as f:
+                dill.dump(cache_data, f)
+            print(f"Node cache saved to {cache_file}")
+        
+        # Generate graph cache if requested
+        if generate_graph_cache:
+            print("Generating graph cache...")
+            graph_cache_dir = "graph_cache"
+            os.makedirs(graph_cache_dir, exist_ok=True)
+            
+            # Create dataloader for graph construction
+            dataloader = HierarchicalDeepfakeDataloader(
+                datasets=[],
+                edge_class=Edge,
+                test_mode=False,
+                visualize=False,
+                show_viz=False,
+                quality_threshold=quality_threshold,
+                symmetry_threshold=symmetry_threshold,
+                embedding_threshold=embedding_threshold,
+                silent_mode=True
+            )
+            
+            # Generate graphs for each split
+            for split_name, nodes_to_use in [
+                ('train', train_nodes if balance_nodes else train_nodes_full),
+                ('val', val_nodes if balance_nodes else val_nodes_full),
+                ('test', test_nodes if balance_nodes else test_nodes_full)
+            ]:
+                print(f"Building graph for {split_name} split...")
+                
+                # Build graph
+                if split_name == 'train':
+                    graph = dataloader._build_graph_standard(nodes_to_use, split_name)[0]
+                else:
+                    graph = HyperGraph(nodes_to_use)
+                
+                # Save edge list to cache
+                if graph:
+                    edge_list = graph.get_edge_list()
+                    cache_filename = os.path.join(
+                        graph_cache_dir,
+                        f"ai-face_{split_name}_{'balanced' if balance_nodes else 'full'}_nodes_{len(nodes_to_use)}_q{quality_threshold:.3f}_s{symmetry_threshold:.3f}_e{embedding_threshold:.3f}_graph.pkl"
+                    )
+                    with open(cache_filename, 'wb') as f:
+                        dill.dump(edge_list, f)
+                    print(f"Graph cache saved to {cache_filename}")
+        
+        print("Cache generation completed successfully")
+        
+    except Exception as e:
+        print(f"Error generating cache: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+@app.route('/configure', methods=['GET', 'POST'])
+def configure():
+    """Configuration page for test settings."""
+    if request.method == 'POST':
+        # Handle form submission
+        pass
+    return render_template('configure.html')
+
+@app.route('/configure/<config_name>')
+def edit_config(config_name):
+    """Edit existing configuration."""
+    config = config_manager.load_configuration(config_name)
+    if not config:
+        return redirect(url_for('configure'))
+    return render_template('configure.html', config=config, config_name=config_name)
+
+@app.route('/api/configurations', methods=['GET'])
+def api_list_configurations():
+    """API endpoint to list all configurations."""
+    return jsonify(config_manager.list_configurations())
+
+@app.route('/api/configurations', methods=['POST'])
+def api_save_configuration():
+    """API endpoint to save a configuration."""
+    data = request.get_json()
+    name = data.get('name')
+    config = data.get('config')
+    
+    if not name or not config:
+        return jsonify({'error': 'Name and config are required'}), 400
+    
+    success = config_manager.save_configuration(name, config)
+    if success:
+        return jsonify({'message': 'Configuration saved successfully'})
+    else:
+        return jsonify({'error': 'Failed to save configuration'}), 500
+
+@app.route('/api/configurations/<config_name>', methods=['GET'])
+def api_get_configuration(config_name):
+    """API endpoint to get a specific configuration."""
+    config = config_manager.load_configuration(config_name)
+    if config:
+        return jsonify(config)
+    else:
+        return jsonify({'error': 'Configuration not found'}), 404
+
+@app.route('/api/configurations/<config_name>', methods=['DELETE'])
+def api_delete_configuration(config_name):
+    """API endpoint to delete a configuration."""
+    success = config_manager.delete_configuration(config_name)
+    if success:
+        return jsonify({'message': 'Configuration deleted successfully'})
+    else:
+        return jsonify({'error': 'Failed to delete configuration'}), 500
+
+@app.route('/api/test-runs', methods=['POST'])
+def api_start_test_run():
+    """API endpoint to start a test run."""
+    data = request.get_json()
+    config_name = data.get('config_name')
+    
+    if not config_name:
+        return jsonify({'error': 'Configuration name is required'}), 400
+    
+    config = config_manager.load_configuration(config_name)
+    if not config:
+        return jsonify({'error': 'Configuration not found'}), 404
+    
+    run_id = test_runner.start_run(config_name, config)
+    if run_id:
+        return jsonify({'run_id': run_id, 'message': 'Test run started successfully'})
+    else:
+        return jsonify({'error': 'Failed to start test run'}), 500
+
+@app.route('/api/test-runs', methods=['GET'])
+def api_list_test_runs():
+    """API endpoint to list all test runs."""
+    return jsonify(test_runner.list_runs())
+
+@app.route('/api/test-runs/<run_id>', methods=['GET'])
+def api_get_test_run(run_id):
+    """API endpoint to get details of a specific test run."""
+    run = test_runner.get_run(run_id)
+    if run:
+        return jsonify(run)
+    else:
+        return jsonify({'error': 'Test run not found'}), 404
+
+@app.route('/api/test-runs/<run_id>/stop', methods=['POST'])
+def api_stop_test_run(run_id):
+    """API endpoint to stop a running test."""
+    success = test_runner.stop_run(run_id)
+    if success:
+        return jsonify({'message': 'Test run stopped successfully'})
+    else:
+        return jsonify({'error': 'Failed to stop test run'}), 500
+
+@app.route('/api/test-runs/<run_id>/logs')
+def api_get_run_logs(run_id):
+    """API endpoint to get logs for a test run."""
+    logs = test_runner.get_run_logs(run_id)
+    return jsonify({'logs': logs})
+
+@app.route('/runs')
+def runs():
+    """Test runs management page."""
+    runs = test_runner.list_runs()
+    return render_template('runs.html', runs=runs)
+
+@app.route('/runs/<run_id>')
+def view_run(run_id):
+    """View details of a specific test run."""
+    run = test_runner.get_run(run_id)
+    if not run:
+        return redirect(url_for('runs'))
+    
+    logs = test_runner.get_run_logs(run_id)
+    return render_template('run_details.html', run=run, logs=logs)
+
+@app.route('/results')
+def results():
+    """Results comparison page."""
+    completed_runs = [run for run in test_runner.list_runs() if run.get('status') == 'completed']
+    return render_template('results.html', runs=completed_runs)
+
+@app.route('/api/results/compare', methods=['POST'])
+def api_compare_results():
+    """API endpoint to compare results from multiple runs."""
+    data = request.get_json()
+    run_ids = data.get('run_ids', [])
+    
+    if not run_ids:
+        return jsonify({'error': 'At least one run ID is required'}), 400
+    
+    comparison = test_runner.compare_runs(run_ids)
+    return jsonify(comparison)
+
+@app.route('/templates')
+def templates():
+    """Configuration templates page."""
+    templates = config_manager.list_templates()
+    return render_template('templates.html', templates=templates)
+
+@app.route('/api/templates/<template_name>')
+def api_get_template(template_name):
+    """API endpoint to get a configuration template."""
+    template = config_manager.get_template(template_name)
+    if template:
+        return jsonify(template)
+    else:
+        return jsonify({'error': 'Template not found'}), 404
+
+@app.route('/api/shutdown', methods=['POST'])
+def api_shutdown():
+    """API endpoint to shutdown the server."""
+    def shutdown_server():
+        import time
+        import signal
+        import os
+        # Give the response time to be sent
+        time.sleep(1)
+        # Send SIGTERM to self
+        os.kill(os.getpid(), signal.SIGTERM)
+    
+    # Start shutdown in a separate thread
+    shutdown_thread = threading.Thread(target=shutdown_server)
+    shutdown_thread.daemon = True
+    shutdown_thread.start()
+    
+    return jsonify({'message': 'Server is shutting down...'})
+
+@app.route('/debug/logs')
+def view_logs():
+    """Debug endpoint to view application logs."""
+    try:
+        with open(log_file, 'r') as f:
+            logs = f.readlines()
+        return jsonify({
+            'log_file': log_file,
+            'log_count': len(logs),
+            'logs': logs[-100:]  # Return last 100 lines
+        })
+    except Exception as e:
+        logger.error(f"Error reading log file: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to read logs',
+            'details': str(e)
+        }), 500
+
+# Add a route to check if the API endpoint is accessible
+@app.route('/api/cache/test')
+def test_cache_api():
+    """Test endpoint to verify API accessibility."""
+    logger.info("Testing cache API endpoint")
+    return jsonify({
+        'status': 'ok',
+        'message': 'Cache API is accessible',
+        'timestamp': datetime.now().isoformat()
+    })
+
+if __name__ == '__main__':
+    # Create necessary directories
+    os.makedirs('web_ui/configs', exist_ok=True)
+    os.makedirs('web_ui/runs', exist_ok=True)
+    os.makedirs('web_ui/templates', exist_ok=True)
+    os.makedirs('web_ui/static/css', exist_ok=True)
+    os.makedirs('web_ui/static/js', exist_ok=True)
+    
+    print("Starting HyperGraph Test Configuration Web UI...")
+    print("Access the interface at: http://localhost:5000")
+    print("For SSH tunneling, use: ssh -L 5000:localhost:5000 user@server")
+    
+    app.run(host='0.0.0.0', port=5000, debug=True) 

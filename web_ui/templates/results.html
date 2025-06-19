@@ -1,0 +1,477 @@
+{% extends "base.html" %}
+
+{% block title %}Results - HyperGraph Test Configuration UI{% endblock %}
+
+{% block page_title %}Results & Analysis{% endblock %}
+{% block page_description %}Compare test run results and analyze performance metrics{% endblock %}
+
+{% block header_actions %}
+<div class="btn-group" role="group">
+    <button type="button" class="btn btn-outline-primary" onclick="refreshResults()">
+        <i class="fas fa-sync-alt"></i> Refresh
+    </button>
+    <button type="button" class="btn btn-outline-success" onclick="exportResults()">
+        <i class="fas fa-download"></i> Export
+    </button>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Results Summary -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h4 class="card-title">{{ runs|length }}</h4>
+                            <p class="card-text">Total Runs</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-chart-bar fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h4 class="card-title">{{ runs|selectattr('status', 'equalto', 'completed')|list|length }}</h4>
+                            <p class="card-text">Completed</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-check-circle fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-warning text-white">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h4 class="card-title">{{ runs|selectattr('status', 'equalto', 'running')|list|length }}</h4>
+                            <p class="card-text">Running</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-play-circle fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            {% set completed_runs = runs|selectattr('status', 'equalto', 'completed')|list %}
+                            {% if completed_runs %}
+                            <h4 class="card-title">{{ "%.1f%%"|format(completed_runs|map(attribute='accuracy')|max * 100) }}</h4>
+                            {% else %}
+                            <h4 class="card-title">N/A</h4>
+                            {% endif %}
+                            <p class="card-text">Best Accuracy</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-trophy fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comparison Tools -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-balance-scale me-2"></i>Compare Results
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="form-group">
+                                <label class="form-label">Select runs to compare:</label>
+                                <div class="row" id="comparisonCheckboxes">
+                                    {% for run in runs %}
+                                    {% if run.status == 'completed' %}
+                                    <div class="col-md-6 col-lg-4 mb-2">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" value="{{ run.run_id }}" id="compare_{{ run.run_id }}">
+                                            <label class="form-check-label" for="compare_{{ run.run_id }}">
+                                                {{ run.config_name }} - {{ "%.1f%%"|format(run.accuracy * 100) }}
+                                            </label>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="d-grid">
+                                <button type="button" class="btn btn-primary" onclick="compareSelectedRuns()" disabled id="compareBtn">
+                                    <i class="fas fa-chart-line me-2"></i>Compare Selected
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary mt-2" onclick="clearComparison()">
+                                    <i class="fas fa-times me-2"></i>Clear Selection
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Table -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-table me-2"></i>Test Results
+                    </h5>
+                </div>
+                <div class="card-body">
+                    {% if runs %}
+                    <div class="table-responsive">
+                        <table class="table table-hover" id="resultsTable">
+                            <thead>
+                                <tr>
+                                    <th>Configuration</th>
+                                    <th>Architecture</th>
+                                    <th>Traversal</th>
+                                    <th>Status</th>
+                                    <th>Accuracy</th>
+                                    <th>Loss</th>
+                                    <th>Duration</th>
+                                    <th>Started</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for run in runs %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ run.config_name }}</strong>
+                                        {% if run.description %}
+                                        <br><small class="text-muted">{{ run.description }}</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">{{ run.architecture or 'N/A' }}</span>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">{{ run.traversal_type or 'N/A' }}</span>
+                                    </td>
+                                    <td>
+                                        {% if run.status == 'completed' %}
+                                        <span class="badge bg-success">
+                                            <i class="fas fa-check-circle me-1"></i>Completed
+                                        </span>
+                                        {% elif run.status == 'running' %}
+                                        <span class="badge bg-warning">
+                                            <i class="fas fa-play-circle me-1"></i>Running
+                                        </span>
+                                        {% elif run.status == 'failed' %}
+                                        <span class="badge bg-danger">
+                                            <i class="fas fa-exclamation-circle me-1"></i>Failed
+                                        </span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">
+                                            <i class="fas fa-question-circle me-1"></i>{{ run.status|title }}
+                                        </span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.accuracy %}
+                                        <strong>{{ "%.2f%%"|format(run.accuracy * 100) }}</strong>
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.loss %}
+                                        {{ "%.4f"|format(run.loss) }}
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.duration %}
+                                        {{ run.duration }}
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <small>{{ run.start_time|default('Unknown') }}</small>
+                                    </td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm" role="group">
+                                            <a href="{{ url_for('view_run', run_id=run.run_id) }}" class="btn btn-outline-primary">
+                                                <i class="fas fa-eye"></i>
+                                            </a>
+                                            {% if run.status == 'running' %}
+                                            <button type="button" class="btn btn-outline-danger" onclick="stopRun('{{ run.run_id }}')">
+                                                <i class="fas fa-stop"></i>
+                                            </button>
+                                            {% endif %}
+                                            {% if run.status == 'completed' %}
+                                            <button type="button" class="btn btn-outline-success" onclick="downloadResults('{{ run.run_id }}')">
+                                                <i class="fas fa-download"></i>
+                                            </button>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <!-- Empty State -->
+                    <div class="text-center py-5">
+                        <i class="fas fa-chart-line fa-4x text-muted mb-3"></i>
+                        <h4 class="text-muted">No Results Available</h4>
+                        <p class="text-muted">Run some tests to see results and comparisons here.</p>
+                        <a href="{{ url_for('configure') }}" class="btn btn-primary">
+                            <i class="fas fa-plus me-2"></i>Start Your First Test
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Comparison Results Modal -->
+<div class="modal fade" id="comparisonModal" tabindex="-1" aria-labelledby="comparisonModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="comparisonModalLabel">
+                    <i class="fas fa-balance-scale me-2"></i>Results Comparison
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="comparisonContent">
+                    <div class="text-center">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading comparison...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="exportComparison()">
+                    <i class="fas fa-download me-2"></i>Export Comparison
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Enable/disable compare button based on checkbox selection
+document.addEventListener('DOMContentLoaded', function() {
+    const checkboxes = document.querySelectorAll('#comparisonCheckboxes input[type="checkbox"]');
+    const compareBtn = document.getElementById('compareBtn');
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', function() {
+            const selectedCount = document.querySelectorAll('#comparisonCheckboxes input[type="checkbox"]:checked').length;
+            compareBtn.disabled = selectedCount < 2;
+        });
+    });
+});
+
+function refreshResults() {
+    window.location.reload();
+}
+
+function clearComparison() {
+    const checkboxes = document.querySelectorAll('#comparisonCheckboxes input[type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    document.getElementById('compareBtn').disabled = true;
+}
+
+function compareSelectedRuns() {
+    const selectedRuns = [];
+    const checkboxes = document.querySelectorAll('#comparisonCheckboxes input[type="checkbox"]:checked');
+    
+    checkboxes.forEach(checkbox => {
+        selectedRuns.push(checkbox.value);
+    });
+    
+    if (selectedRuns.length < 2) {
+        alert('Please select at least 2 runs to compare.');
+        return;
+    }
+    
+    // Show comparison modal
+    const modal = new bootstrap.Modal(document.getElementById('comparisonModal'));
+    modal.show();
+    
+    // Load comparison data
+    fetch('/api/results/compare', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            run_ids: selectedRuns
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            document.getElementById('comparisonContent').innerHTML = 
+                `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Error: ${data.error}</div>`;
+            return;
+        }
+        
+        displayComparisonResults(data);
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('comparisonContent').innerHTML = 
+            `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Failed to load comparison data</div>`;
+    });
+}
+
+function displayComparisonResults(data) {
+    // Create comparison table
+    let html = `
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        ${data.runs.map(run => `<th>${run.config_name}</th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Accuracy</strong></td>
+                        ${data.runs.map(run => `<td>${(run.accuracy * 100).toFixed(2)}%</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Loss</strong></td>
+                        ${data.runs.map(run => `<td>${run.loss ? run.loss.toFixed(4) : 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Duration</strong></td>
+                        ${data.runs.map(run => `<td>${run.duration || 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Architecture</strong></td>
+                        ${data.runs.map(run => `<td>${run.architecture || 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Traversal</strong></td>
+                        ${data.runs.map(run => `<td>${run.traversal_type || 'N/A'}</td>`).join('')}
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    `;
+    
+    // Add summary if available
+    if (data.summary) {
+        html += `
+            <div class="mt-4">
+                <h6><i class="fas fa-chart-bar me-2"></i>Summary</h6>
+                <div class="alert alert-info">
+                    <ul class="mb-0">
+                        <li><strong>Best Performer:</strong> ${data.summary.best_run} (${(data.summary.best_accuracy * 100).toFixed(2)}%)</li>
+                        <li><strong>Average Accuracy:</strong> ${(data.summary.average_accuracy * 100).toFixed(2)}%</li>
+                        <li><strong>Performance Range:</strong> ${((data.summary.max_accuracy - data.summary.min_accuracy) * 100).toFixed(2)}% difference</li>
+                    </ul>
+                </div>
+            </div>
+        `;
+    }
+    
+    document.getElementById('comparisonContent').innerHTML = html;
+}
+
+function stopRun(runId) {
+    if (!confirm('Are you sure you want to stop this test run?')) {
+        return;
+    }
+    
+    fetch(`/api/test-runs/${runId}/stop`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error stopping run: ' + data.error);
+        } else {
+            alert('Test run stopped successfully');
+            refreshResults();
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to stop test run');
+    });
+}
+
+function downloadResults(runId) {
+    window.open(`/api/test-runs/${runId}/download`, '_blank');
+}
+
+function exportResults() {
+    // Create CSV export of all results
+    const rows = [['Configuration', 'Architecture', 'Traversal', 'Status', 'Accuracy', 'Loss', 'Duration', 'Started']];
+    
+    {% for run in runs %}
+    rows.push([
+        '{{ run.config_name }}',
+        '{{ run.architecture or "" }}',
+        '{{ run.traversal_type or "" }}',
+        '{{ run.status }}',
+        '{{ run.accuracy or "" }}',
+        '{{ run.loss or "" }}',
+        '{{ run.duration or "" }}',
+        '{{ run.start_time or "" }}'
+    ]);
+    {% endfor %}
+    
+    const csvContent = rows.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'hypergraph_results_' + new Date().toISOString().split('T')[0] + '.csv';
+    a.click();
+    window.URL.revokeObjectURL(url);
+}
+
+function exportComparison() {
+    alert('Comparison export functionality would be implemented here');
+}
+</script>
+{% endblock %} 
