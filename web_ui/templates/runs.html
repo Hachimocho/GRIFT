@@ -15,7 +15,7 @@
             
             <!-- Quick Stats -->
             <div class="row mb-4">
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="card bg-primary text-white">
                         <div class="card-body">
                             <div class="d-flex justify-content-between">
@@ -30,7 +30,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="card bg-success text-white">
                         <div class="card-body">
                             <div class="d-flex justify-content-between">
@@ -45,7 +45,22 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <p class="card-text">Queued</p>
+                                    <h4 class="card-title">{{ runs|selectattr('status', 'equalto', 'queued')|list|length }}</h4>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-clock fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
                     <div class="card bg-info text-white">
                         <div class="card-body">
                             <div class="d-flex justify-content-between">
@@ -60,7 +75,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="card bg-danger text-white">
                         <div class="card-body">
                             <div class="d-flex justify-content-between">
@@ -72,6 +87,35 @@
                                     <i class="fas fa-times fa-2x"></i>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-secondary text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <p class="card-text">GPU Status</p>
+                                    <h4 class="card-title" id="gpu-status">Loading...</h4>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-microchip fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- GPU Status Panel -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0"><i class="fas fa-microchip"></i> GPU & Queue Status</h5>
+                </div>
+                <div class="card-body">
+                    <div id="gpu-status-panel">
+                        <div class="text-center">
+                            <i class="fas fa-spinner fa-spin"></i> Loading GPU status...
                         </div>
                     </div>
                 </div>
@@ -98,7 +142,7 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for run in runs|sort(attribute='start_time', reverse=true) %}
+                                {% for run in runs|sort(attribute='created', reverse=true) %}
                                 <tr>
                                     <td>
                                         <code>{{ run.run_id[:8] if run.run_id else 'N/A' }}</code>
@@ -110,6 +154,16 @@
                                         {% if run.status == 'running' %}
                                             <span class="badge bg-success">
                                                 <i class="fas fa-spinner fa-spin"></i> Running
+                                                {% if run.gpu_id is defined %}
+                                                    <small>(GPU {{ run.gpu_id }})</small>
+                                                {% endif %}
+                                            </span>
+                                        {% elif run.status == 'queued' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-clock"></i> Queued
+                                                {% if run.priority is defined %}
+                                                    <small>(P:{{ run.priority }})</small>
+                                                {% endif %}
                                             </span>
                                         {% elif run.status == 'completed' %}
                                             <span class="badge bg-primary">
@@ -138,7 +192,13 @@
                                     </td>
                                     <td>
                                         {% if run.end_time and run.start_time %}
-                                            <small>{{ '%.1f'|format((run.end_time|float - run.start_time|float) / 60) }} min</small>
+                                            {% set start_time = run.start_time|string %}
+                                            {% set end_time = run.end_time|string %}
+                                            {% if start_time != 'None' and end_time != 'None' %}
+                                                <small>{{ '%.1f'|format((end_time|float - start_time|float) / 60) }} min</small>
+                                            {% else %}
+                                                <em>N/A</em>
+                                            {% endif %}
                                         {% elif run.status == 'running' and run.start_time %}
                                             <small class="text-muted">
                                                 <i class="fas fa-clock"></i> Running...
@@ -204,6 +264,22 @@
 
 <!-- Auto-refresh for running tests -->
 <script>
+function checkOrphanedRuns() {
+    fetch('/api/gpu/check-orphaned', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.orphaned_runs && data.orphaned_runs.length > 0) {
+            console.log(`Found ${data.orphaned_runs.length} orphaned runs, refreshing page`);
+            location.reload();
+        }
+    })
+    .catch(error => {
+        console.error('Error checking for orphaned runs:', error);
+    });
+}
+
 function stopRun(runId) {
     if (confirm('Are you sure you want to stop this test run?')) {
         fetch(`/api/test-runs/${runId}/stop`, {
@@ -256,6 +332,104 @@ document.addEventListener('DOMContentLoaded', function() {
             location.reload();
         }, 30000);
     }
+    
+    // Load GPU status
+    loadGPUStatus();
+    
+    // Refresh GPU status every 10 seconds
+    setInterval(loadGPUStatus, 10000);
+    
+    // Check for orphaned queued runs every 60 seconds
+    setInterval(checkOrphanedRuns, 60000);
+    
+    // Initial check for orphaned runs
+    checkOrphanedRuns();
 });
+
+function loadGPUStatus() {
+    fetch('/api/gpu/status')
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            console.error('Error loading GPU status:', data.error);
+            return;
+        }
+        
+        updateGPUStatusPanel(data);
+        updateGPUStatusBadge(data);
+    })
+    .catch(error => {
+        console.error('Error loading GPU status:', error);
+    });
+}
+
+function updateGPUStatusPanel(data) {
+    const panel = document.getElementById('gpu-status-panel');
+    if (!panel) return;
+    
+    let html = '<div class="row">';
+    
+    // GPU Status
+    html += '<div class="col-md-6">';
+    html += '<h6><i class="fas fa-microchip"></i> GPU Status</h6>';
+    if (data.gpus && data.gpus.length > 0) {
+        data.gpus.forEach(gpu => {
+            const statusClass = gpu.status === 'available' ? 'text-success' : 'text-warning';
+            const statusIcon = gpu.status === 'available' ? 'fa-check-circle' : 'fa-clock';
+            html += `<div class="mb-2">
+                <strong>GPU ${gpu.id}:</strong> 
+                <span class="${statusClass}">
+                    <i class="fas ${statusIcon}"></i> ${gpu.status}
+                </span>
+                ${gpu.allocated_to ? `<small class="text-muted">(Run: ${gpu.allocated_to})</small>` : ''}
+                <br>
+                <small class="text-muted">
+                    Memory: ${gpu.memory_free_gb.toFixed(1)}GB free / ${gpu.memory_total_gb.toFixed(1)}GB total
+                </small>
+            </div>`;
+        });
+    } else {
+        html += '<p class="text-muted">No GPUs detected</p>';
+    }
+    html += '</div>';
+    
+    // Queue Status
+    html += '<div class="col-md-6">';
+    html += '<h6><i class="fas fa-list"></i> Queue Status</h6>';
+    if (data.queue_status) {
+        const queue = data.queue_status;
+        html += `<p><strong>Queue Length:</strong> ${queue.queue_length}</p>`;
+        html += `<p><strong>Active Runs:</strong> ${queue.active_runs.length}</p>`;
+        html += `<p><strong>Available GPUs:</strong> ${queue.available_gpus.length}</p>`;
+        
+        if (queue.queued_runs && queue.queued_runs.length > 0) {
+            html += '<h6>Queued Runs:</h6>';
+            queue.queued_runs.forEach(run => {
+                html += `<div class="mb-1">
+                    <small><strong>${run.config_name}</strong> (P:${run.priority})</small>
+                </div>`;
+            });
+        }
+    } else {
+        html += '<p class="text-muted">No queue information available</p>';
+    }
+    html += '</div>';
+    
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
+function updateGPUStatusBadge(data) {
+    const badge = document.getElementById('gpu-status');
+    if (!badge) return;
+    
+    if (data.gpus && data.gpus.length > 0) {
+        const availableGPUs = data.gpus.filter(gpu => gpu.status === 'available').length;
+        const totalGPUs = data.gpus.length;
+        badge.textContent = `${availableGPUs}/${totalGPUs}`;
+    } else {
+        badge.textContent = 'N/A';
+    }
+}
 </script>
 {% endblock %} 

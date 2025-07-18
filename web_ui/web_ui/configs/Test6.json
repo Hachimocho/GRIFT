@@ -1,0 +1,30 @@
+{
+  "name": "Test6",
+  "created": "2025-06-19T18:46:23.347615",
+  "modified": "2025-06-19T18:46:23.347641",
+  "config": {
+    "name": "Test6",
+    "dqn-model": "residual",
+    "num_epochs": 20,
+    "bias_hop_period": 100,
+    "batch_size": 32,
+    "seed": 42,
+    "quality_threshold": 0.5,
+    "symmetry_threshold": 0.3,
+    "embedding_threshold": 0.7,
+    "traversal_type": "i-value-cluster-hop",
+    "enable_traversal_switching": false,
+    "cached_nodes": true,
+    "cache_nodes": false,
+    "cached_nodes_count": 10000,
+    "use_dynamic_cache": false,
+    "fair_train": true,
+    "fair_test": true,
+    "bias_loss_weight": 0.1,
+    "num_workers": 0,
+    "viz_track_nodes": 50,
+    "viz_sample_size": 200,
+    "architectures": "resnestdf",
+    "enable_ivalue_viz": true
+  }
+}

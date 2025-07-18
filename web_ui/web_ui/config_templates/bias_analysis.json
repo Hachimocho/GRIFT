@@ -2,7 +2,6 @@
   "name": "Bias Analysis",
   "description": "Configuration optimized for bias analysis with I-value visualization",
   "config": {
-    "trainer_mode": "adaptive",
     "traversal_type": "i-value",
     "enable_traversal_switching": false,
     "architectures": "resnestdf",

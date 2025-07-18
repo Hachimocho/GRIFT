@@ -65,6 +65,14 @@ class AdaptiveTrainer(Trainer):
             else:
                 print(f"AdaptiveTrainer: Will track distribution for attributes: {self.categorical_attrs_for_tracking}")
         
+        # Set bias loss weight on BiasCapability if provided (store for later if not available yet)
+        self.bias_loss_weight = kwargs.get('bias_loss_weight', None)
+        if self.bias_loss_weight is not None and hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
+            self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
+            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} on BiasCapability.")
+        elif self.bias_loss_weight is not None:
+            print(f"[DEBUG] BiasCapability not initialized yet; will set bias_loss_weight={self.bias_loss_weight} when available.")
+            
     def set_traversal(self, traversal_instance, traversal_type):
         """Dynamically set traversal and enable required capabilities."""
         self.current_traversal = traversal_instance
@@ -72,6 +80,11 @@ class AdaptiveTrainer(Trainer):
         
         # Enable required capabilities based on traversal type
         self.capabilities.configure_for_traversal(traversal_type)
+
+        # Ensure bias loss weight is set if capability is now available
+        if self.bias_loss_weight is not None and hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
+            self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
+            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} on BiasCapability (post-initialization).")
         
         # Set trainer reference in traversal if needed
         if hasattr(traversal_instance, 'trainer'):
@@ -80,6 +93,11 @@ class AdaptiveTrainer(Trainer):
             traversal_instance.set_trainer(self)
             
         print(f"AdaptiveTrainer: Set traversal to {traversal_type} ({type(traversal_instance).__name__})")
+        
+    def set_traversal_sequence(self, sequence):
+        """Set the full traversal sequence for DQN warm-up planning."""
+        self.capabilities.set_traversal_sequence(sequence)
+        print(f"AdaptiveTrainer: Set traversal sequence: {sequence}")
             
     def switch_traversal(self, new_traversal_type, **traversal_kwargs):
         """Switch to a different traversal method during training."""

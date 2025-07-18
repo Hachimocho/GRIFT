@@ -1,0 +1,32 @@
+{
+  "name": "convtest4",
+  "created": "2025-06-24T13:55:33.332110",
+  "modified": "2025-06-24T13:55:33.332138",
+  "config": {
+    "name": "convtest4",
+    "dqn-model": "conv_embedding",
+    "num_epochs": 20,
+    "bias_hop_period": 5,
+    "batch_size": 32,
+    "seed": 42,
+    "quality_threshold": 0.5,
+    "symmetry_threshold": 0.3,
+    "embedding_threshold": 0.7,
+    "traversal_type": "comprehensive",
+    "enable_traversal_switching": true,
+    "cached_nodes": true,
+    "cache_nodes": false,
+    "cached_nodes_count": 1000,
+    "use_dynamic_cache": false,
+    "fair_train": true,
+    "fair_test": true,
+    "bias_loss_weight": 0.1,
+    "num_workers": 0,
+    "viz_track_nodes": 50,
+    "viz_sample_size": 200,
+    "architectures": "resnestdf",
+    "traversal_sequence": "comprehensive,i-value-cluster-hop",
+    "switch_epochs": "10",
+    "enable_ivalue_viz": true
+  }
+}

@@ -7,7 +7,6 @@
     "modified": "2025-06-17T13:54:10.503202",
     "config": {
       "name": "Test3",
-      "trainer-mode": "legacy",
       "dqn-model": "residual",
       "num_epochs": 20,
       "bias_hop_period": 5,

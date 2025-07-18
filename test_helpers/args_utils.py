@@ -23,6 +23,8 @@ def parse_args():
                         help='Load the full dataset from cache instead of the subset (use with --use-cached)')
     parser.add_argument('--cached-nodes', type=int, default=1000, 
                         help='Number of nodes to cache per split when not using full cache (default: 1000)')
+    parser.add_argument('--dynamic-cache-detection', action='store_true',
+                        help='Automatically detect cache size from existing cache files (use with --use-cached)')
     parser.add_argument('--cache-file', type=str, default='node_cache/cached_nodes.pkl', 
                         help='Filename for caching/loading nodes (relative to script execution dir)')
 
@@ -59,14 +61,9 @@ def parse_args():
     parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility') # Add seed argument
 
-    # NEW: Trainer and traversal configuration options
-    parser.add_argument('--trainer-mode', type=str, default='adaptive', 
-                        choices=['adaptive', 'legacy'],
-                        help='Trainer mode: adaptive (new AdaptiveTrainer) or legacy (old trainer classes) (default: adaptive)')
-    
-    # Single traversal mode options
+    # Traversal configuration options
     parser.add_argument('--traversal-type', type=str, default='comprehensive',
-                        choices=['comprehensive', 'random', 'i-value', 'i-value-cluster-hop'],
+                        choices=['comprehensive', 'random', 'i-value', 'i-value-cluster-hop', 'i-value-subcluster', 'i-value-cluster-hop-subcluster'],
                         help='Single traversal type to use throughout training (default: comprehensive)')
     
     # Switch traversal mode options  
@@ -99,5 +96,18 @@ def parse_args():
     parser.add_argument('--dqn-model', type=str, default='basic',
                       choices=['basic', 'residual', 'attention', 'conv_embedding', 'ensemble'],
                       help='Type of DQN model to use for I-value prediction (default: basic)')
-    
+
+    # Run ID for output organization
+    parser.add_argument('--run-id', type=str, default=None,
+                        help='Unique run ID for organizing outputs (set by web UI)')
+
+    # New argument for disconnected traversal switching
+    parser.add_argument('--disconnected-switching', action='store_true',
+                        help='If set, resets the main detection model after traversal switching (I-value model is NOT reset). Only relevant if traversal switching is enabled.')
+
+    # Graph construction type
+    parser.add_argument('--graph-type', type=str, default='clustered',
+                        choices=['clustered', 'nonclustered', 'subclustered'],
+                        help='Type of graph construction: clustered (race-gender groups) or nonclustered (all nodes) (default: clustered)')
+
     return parser.parse_args()

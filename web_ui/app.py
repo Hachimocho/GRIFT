@@ -56,18 +56,79 @@ from web_ui.config_manager import ConfigManager
 from web_ui.test_runner import TestRunner
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
-    load_and_prepare_data_splits
+    load_and_prepare_data_splits, check_graph_cache_compatibility,
+    find_existing_graph_caches
 )
 from dataloaders.HierarchicalDeepfakeDataloader import HierarchicalDeepfakeDataloader
 from graphs.HyperGraph import HyperGraph
 from edges.Edge import Edge
+
+# Import utilities from the new helper module
+from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
+from test_helpers.args_utils import parse_args
+from test_helpers.data_graph_utils import (
+    run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
+    load_and_prepare_data_splits, check_graph_cache_compatibility
+)
+
+# Import visualization modules
+from trainers.IValueVisualizationTracker import IValueVisualizationTracker
+from trainers.BiasHopVisualizer import BiasHopVisualizer
+from trainers.BiasMetricsTracker import BiasMetricsTracker
+
+# Add the project root to the path if needed
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from dataloaders.HierarchicalDeepfakeDataloader import HierarchicalDeepfakeDataloader
+from datasets.AIFaceDataset import AIFaceDataset
+from edges.Edge import Edge
+from nodes.atrnode import AttributeNode
+from graphs.HyperGraph import HyperGraph
+from data.ImageFileData import ImageFileData
+
+# Imports for model training/testing
+import sys
+import traceback
+from pathlib import Path
+from contextlib import contextmanager
+
+# Import AdaptiveTrainer (unified trainer architecture)
+from trainers.AdaptiveTrainer import AdaptiveTrainer
+
+from dataloaders.UnclusteredDeepfakeDataloader import UnclusteredDeepfakeDataloader
+from datasets.AIFaceDataset import AIFaceDataset
+from data.ImageFileData import ImageFileData
+from nodes.atrnode import AttributeNode
+from managers.NoGraphManager import NoGraphManager
+from managers.PerformanceGraphManager import PerformanceGraphManager
+from traversals.ComprehensiveTraversal import ComprehensiveTraversal
+from traversals.IValueTraversal import IValueTraversal
+from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop 
+from traversals.RandomTraversal import RandomTraversal
+from models.CNNModel import CNNModel
+from edges.Edge import Edge
+import copy
+import torch
+import time
+import random
+
+import torch
+import torch.nn as nn
+import numpy as np
+import traceback 
+from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader 
+import io
+
+# Import the new GPU queue manager
+from web_ui.gpu_queue_manager import GPUQueueManager
 
 app = Flask(__name__)
 app.secret_key = 'quanty_hypergraph_test_ui_secret_key_2024'
 
 # Initialize managers
 config_manager = ConfigManager()
-test_runner = TestRunner()
+gpu_queue_manager = GPUQueueManager()  # Replace test_runner with gpu_queue_manager
 
 # Debug route to check if server is running
 @app.route('/debug/ping')
@@ -91,13 +152,24 @@ def debug_paths():
 def index():
     """Main dashboard showing overview of configurations and results."""
     configs = config_manager.list_configurations()
-    runs = test_runner.list_runs()
-    recent_runs = sorted(runs, key=lambda x: x.get('start_time', ''), reverse=True)[:10]
+    runs = gpu_queue_manager.list_runs()  # Use gpu_queue_manager instead of test_runner
+
+    # Patch: promote results.final_accuracy to final_accuracy and accuracy for template compatibility
+    for run in runs:
+        if 'final_accuracy' not in run:
+            accuracy = None
+            if 'results' in run and isinstance(run['results'], dict):
+                accuracy = run['results'].get('final_accuracy')
+            if accuracy is not None:
+                run['final_accuracy'] = accuracy
+                run['accuracy'] = accuracy / 100.0 if accuracy > 1.5 else accuracy  # for consistency with /results
+
+    recent_runs = sorted(runs, key=lambda x: x.get('start_time') or '', reverse=True)[:10]
     
     return render_template('index.html', 
                          configs=configs, 
                          recent_runs=recent_runs,
-                         active_runs=test_runner.get_active_runs())
+                         active_runs=gpu_queue_manager.get_queue_status())  # Use gpu_queue_manager
 
 @app.route('/cache/status')
 def cache_status_page():
@@ -137,9 +209,17 @@ def get_cache_status():
         node_cache_status = get_node_cache_status_basic()
         graph_cache_status = get_graph_cache_status_basic()
         
+        # Get all existing graph cache configurations
+        try:
+            existing_graph_caches = find_existing_graph_caches(graph_cache_dir)
+        except Exception as e:
+            logger.warning(f"Error finding existing graph caches: {e}")
+            existing_graph_caches = {}
+        
         cache_status = {
             'node_cache': node_cache_status,
             'graph_cache': graph_cache_status,
+            'existing_graph_caches': existing_graph_caches,
             'timestamp': time.time()
         }
         
@@ -297,6 +377,7 @@ def generate_cache():
         quality_threshold = data.get('qualityThreshold', 0.5)
         symmetry_threshold = data.get('symmetryThreshold', 0.5)
         embedding_threshold = data.get('embeddingThreshold', 0.5)
+        graph_type = data.get('graphType', data.get('graph_type', 'clustered'))  # NEW: graph type
         
         # Start cache generation in a background thread
         thread = threading.Thread(
@@ -307,7 +388,8 @@ def generate_cache():
                 generate_graph_cache,
                 quality_threshold,
                 symmetry_threshold,
-                embedding_threshold
+                embedding_threshold,
+                graph_type  # Pass graph type
             )
         )
         thread.daemon = True
@@ -330,7 +412,8 @@ def generate_cache_background(
     generate_graph_cache,
     quality_threshold,
     symmetry_threshold,
-    embedding_threshold
+    embedding_threshold,
+    graph_type  # NEW: graph type
 ):
     """Background task to generate cache files."""
     try:
@@ -368,18 +451,46 @@ def generate_cache_background(
             graph_cache_dir = "graph_cache"
             os.makedirs(graph_cache_dir, exist_ok=True)
             
-            # Create dataloader for graph construction
-            dataloader = HierarchicalDeepfakeDataloader(
-                datasets=[],
-                edge_class=Edge,
-                test_mode=False,
-                visualize=False,
-                show_viz=False,
-                quality_threshold=quality_threshold,
-                symmetry_threshold=symmetry_threshold,
-                embedding_threshold=embedding_threshold,
-                silent_mode=True
-            )
+            # Select dataloader based on graph_type
+            if graph_type == 'nonclustered':
+                dataloader = UnclusteredDeepfakeDataloader(
+                    datasets=[],
+                    edge_class=Edge,
+                    test_mode=False,
+                    visualize=False,
+                    show_viz=False,
+                    quality_threshold=quality_threshold,
+                    symmetry_threshold=symmetry_threshold,
+                    embedding_threshold=embedding_threshold,
+                    silent_mode=True
+                )
+                graph_type_str = 'nonclustered'
+            elif graph_type == 'subclustered':
+                dataloader = HierarchicalDeepfakeDataloader(
+                    datasets=[],
+                    edge_class=Edge,
+                    test_mode=False,
+                    visualize=False,
+                    show_viz=False,
+                    quality_threshold=quality_threshold,
+                    symmetry_threshold=symmetry_threshold,
+                    embedding_threshold=embedding_threshold,
+                    silent_mode=True
+                )
+                graph_type_str = 'subclustered'
+            else:
+                dataloader = HierarchicalDeepfakeDataloader(
+                    datasets=[],
+                    edge_class=Edge,
+                    test_mode=False,
+                    visualize=False,
+                    show_viz=False,
+                    quality_threshold=quality_threshold,
+                    symmetry_threshold=symmetry_threshold,
+                    embedding_threshold=embedding_threshold,
+                    silent_mode=True
+                )
+                graph_type_str = 'clustered'
             
             # Generate graphs for each split
             for split_name, nodes_to_use in [
@@ -400,7 +511,7 @@ def generate_cache_background(
                     edge_list = graph.get_edge_list()
                     cache_filename = os.path.join(
                         graph_cache_dir,
-                        f"ai-face_{split_name}_{'balanced' if balance_nodes else 'full'}_nodes_{len(nodes_to_use)}_q{quality_threshold:.3f}_s{symmetry_threshold:.3f}_e{embedding_threshold:.3f}_graph.pkl"
+                        f"ai-face_{split_name}_{graph_type_str}_{'balanced' if balance_nodes else 'full'}_nodes_{len(nodes_to_use)}_q{quality_threshold:.3f}_s{symmetry_threshold:.3f}_e{embedding_threshold:.3f}_graph.pkl"
                     )
                     with open(cache_filename, 'wb') as f:
                         dill.dump(edge_list, f)
@@ -470,32 +581,78 @@ def api_delete_configuration(config_name):
 
 @app.route('/api/test-runs', methods=['POST'])
 def api_start_test_run():
-    """API endpoint to start a test run."""
+    """API endpoint to start a test run (supports multiple architectures and DQN models)."""
     data = request.get_json()
     config_name = data.get('config_name')
     
     if not config_name:
         return jsonify({'error': 'Configuration name is required'}), 400
     
-    config = config_manager.load_configuration(config_name)
-    if not config:
+    config_data = config_manager.load_configuration(config_name)
+    if not config_data:
         return jsonify({'error': 'Configuration not found'}), 404
     
-    run_id = test_runner.start_run(config_name, config)
-    if run_id:
-        return jsonify({'run_id': run_id, 'message': 'Test run started successfully'})
+    # Extract the inner config object from the configuration data
+    config = config_data.get('config', config_data)
+
+    # Parse architectures and dqn-model as lists
+    archs = config.get('architectures', None)
+    dqn_models = config.get('dqn-model', config.get('dqn_model', None))
+
+    # Support both comma-separated strings and lists
+    if archs is None:
+        arch_list = [None]
+    elif isinstance(archs, str):
+        arch_list = [a.strip() for a in archs.split(',') if a.strip()]
+    elif isinstance(archs, list):
+        arch_list = archs
     else:
-        return jsonify({'error': 'Failed to start test run'}), 500
+        arch_list = [str(archs)]
+
+    if dqn_models is None:
+        dqn_list = [None]
+    elif isinstance(dqn_models, str):
+        dqn_list = [d.strip() for d in dqn_models.split(',') if d.strip()]
+    elif isinstance(dqn_models, list):
+        dqn_list = dqn_models
+    else:
+        dqn_list = [str(dqn_models)]
+
+    # If either is missing, treat as single None (for backward compatibility)
+    if not arch_list:
+        arch_list = [None]
+    if not dqn_list:
+        dqn_list = [None]
+
+    run_ids = []
+    for arch in arch_list:
+        for dqn in dqn_list:
+            # Create a deep copy of the config for each run
+            run_config = copy.deepcopy(config)
+            if arch is not None:
+                run_config['architectures'] = arch
+            if dqn is not None:
+                run_config['dqn-model'] = dqn
+                run_config['dqn_model'] = dqn  # for compatibility with both keys
+            # Use a descriptive config name for each run
+            run_config_name = f"{config_name}__{arch or 'default'}__{dqn or 'default'}"
+            run_id = gpu_queue_manager.queue_run(run_config_name, run_config)
+            run_ids.append(run_id)
+
+    if run_ids:
+        return jsonify({'run_ids': run_ids, 'message': f'Queued {len(run_ids)} run(s) for all model/DQN combinations.'})
+    else:
+        return jsonify({'error': 'Failed to queue test run(s)'}), 500
 
 @app.route('/api/test-runs', methods=['GET'])
 def api_list_test_runs():
     """API endpoint to list all test runs."""
-    return jsonify(test_runner.list_runs())
+    return jsonify(gpu_queue_manager.list_runs())
 
 @app.route('/api/test-runs/<run_id>', methods=['GET'])
 def api_get_test_run(run_id):
     """API endpoint to get details of a specific test run."""
-    run = test_runner.get_run(run_id)
+    run = gpu_queue_manager.get_run(run_id)
     if run:
         return jsonify(run)
     else:
@@ -504,7 +661,7 @@ def api_get_test_run(run_id):
 @app.route('/api/test-runs/<run_id>/stop', methods=['POST'])
 def api_stop_test_run(run_id):
     """API endpoint to stop a running test."""
-    success = test_runner.stop_run(run_id)
+    success = gpu_queue_manager.stop_run(run_id)
     if success:
         return jsonify({'message': 'Test run stopped successfully'})
     else:
@@ -513,29 +670,38 @@ def api_stop_test_run(run_id):
 @app.route('/api/test-runs/<run_id>/logs')
 def api_get_run_logs(run_id):
     """API endpoint to get logs for a test run."""
-    logs = test_runner.get_run_logs(run_id)
+    logs = gpu_queue_manager.get_run_logs(run_id)
     return jsonify({'logs': logs})
 
 @app.route('/runs')
 def runs():
     """Test runs management page."""
-    runs = test_runner.list_runs()
+    runs = gpu_queue_manager.list_runs()
     return render_template('runs.html', runs=runs)
 
 @app.route('/runs/<run_id>')
 def view_run(run_id):
     """View details of a specific test run."""
-    run = test_runner.get_run(run_id)
+    run = gpu_queue_manager.get_run(run_id)
     if not run:
         return redirect(url_for('runs'))
     
-    logs = test_runner.get_run_logs(run_id)
+    logs = gpu_queue_manager.get_run_logs(run_id)
     return render_template('run_details.html', run=run, logs=logs)
 
 @app.route('/results')
 def results():
     """Results comparison page."""
-    completed_runs = [run for run in test_runner.list_runs() if run.get('status') == 'completed']
+    completed_runs = [run for run in gpu_queue_manager.list_runs() if run.get('status') == 'completed']
+    # Patch: promote results.final_accuracy to accuracy for template compatibility
+    for run in completed_runs:
+        if 'accuracy' not in run:
+            # Try to get from results.final_accuracy
+            accuracy = None
+            if 'results' in run and isinstance(run['results'], dict):
+                accuracy = run['results'].get('final_accuracy')
+            if accuracy is not None:
+                run['accuracy'] = accuracy / 100.0 if accuracy > 1.5 else accuracy  # If stored as percent, convert to 0-1
     return render_template('results.html', runs=completed_runs)
 
 @app.route('/api/results/compare', methods=['POST'])
@@ -547,7 +713,18 @@ def api_compare_results():
     if not run_ids:
         return jsonify({'error': 'At least one run ID is required'}), 400
     
-    comparison = test_runner.compare_runs(run_ids)
+    # For now, return basic comparison info since the old test_runner.compare_runs method
+    # might not be available in the new GPU queue manager
+    comparison = {
+        'run_ids': run_ids,
+        'runs': []
+    }
+    
+    for run_id in run_ids:
+        run = gpu_queue_manager.get_run(run_id)
+        if run:
+            comparison['runs'].append(run)
+    
     return jsonify(comparison)
 
 @app.route('/templates')
@@ -574,6 +751,8 @@ def api_shutdown():
         import os
         # Give the response time to be sent
         time.sleep(1)
+        # Shutdown GPU queue manager
+        gpu_queue_manager.shutdown()
         # Send SIGTERM to self
         os.kill(os.getpid(), signal.SIGTERM)
     
@@ -612,6 +791,56 @@ def test_cache_api():
         'message': 'Cache API is accessible',
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route('/api/gpu/status')
+def api_get_gpu_status():
+    """API endpoint to get GPU status information."""
+    try:
+        gpu_info = gpu_queue_manager.get_gpu_info()
+        queue_status = gpu_queue_manager.get_queue_status()
+        
+        return jsonify({
+            'gpus': gpu_info,
+            'queue_status': queue_status,
+            'timestamp': time.time()
+        })
+    except Exception as e:
+        logger.error(f"Error getting GPU status: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to get GPU status',
+            'details': str(e)
+        }), 500
+
+@app.route('/api/gpu/queue')
+def api_get_queue_status():
+    """API endpoint to get queue status information."""
+    try:
+        queue_status = gpu_queue_manager.get_queue_status()
+        return jsonify(queue_status)
+    except Exception as e:
+        logger.error(f"Error getting queue status: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to get queue status',
+            'details': str(e)
+        }), 500
+
+@app.route('/api/gpu/check-orphaned', methods=['POST'])
+def api_check_orphaned_runs():
+    """API endpoint to manually check for orphaned queued runs."""
+    try:
+        orphaned_runs = gpu_queue_manager.check_orphaned_queued_runs()
+        return jsonify({
+            'success': True,
+            'orphaned_runs': orphaned_runs,
+            'message': f'Found and marked {len(orphaned_runs)} orphaned runs as failed'
+        })
+    except Exception as e:
+        logger.error(f"Error checking for orphaned runs: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Failed to check for orphaned runs',
+            'details': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Create necessary directories

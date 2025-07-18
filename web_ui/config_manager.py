@@ -36,7 +36,6 @@ class ConfigManager:
                 "name": "Basic Training",
                 "description": "Standard training configuration with default settings",
                 "config": {
-                    "trainer_mode": "adaptive",
                     "traversal_type": "comprehensive",
                     "enable_traversal_switching": False,
                     "architectures": "resnestdf",
@@ -51,6 +50,7 @@ class ConfigManager:
                     "cache_nodes": False,
                     "cached_nodes_count": 1000,
                     "cache_file": "node_cache/cached_nodes.pkl",
+                    "use_dynamic_cache": False,
                     "fair_train": False,
                     "fair_test": False,
                     "enable_ivalue_viz": True,
@@ -64,7 +64,6 @@ class ConfigManager:
                 "name": "Bias Analysis",
                 "description": "Configuration optimized for bias analysis with I-value visualization",
                 "config": {
-                    "trainer_mode": "adaptive", 
                     "traversal_type": "i-value",
                     "enable_traversal_switching": False,
                     "architectures": "resnestdf",
@@ -79,6 +78,7 @@ class ConfigManager:
                     "cache_nodes": True,
                     "cached_nodes_count": 1000,
                     "cache_file": "node_cache/cached_nodes.pkl",
+                    "use_dynamic_cache": False,
                     "fair_train": True,
                     "fair_test": True,
                     "enable_ivalue_viz": True,
@@ -92,7 +92,6 @@ class ConfigManager:
                 "name": "Traversal Switching",
                 "description": "Multi-traversal configuration with switching between methods",
                 "config": {
-                    "trainer_mode": "adaptive",
                     "traversal_type": "comprehensive",
                     "enable_traversal_switching": True,
                     "traversal_sequence": "comprehensive,i-value,i-value-cluster-hop",
@@ -109,20 +108,21 @@ class ConfigManager:
                     "cache_nodes": True,
                     "cached_nodes_count": 1000,
                     "cache_file": "node_cache/cached_nodes.pkl",
+                    "use_dynamic_cache": False,
                     "fair_train": False,
                     "fair_test": False,
                     "enable_ivalue_viz": True,
                     "viz_track_nodes": 75,
                     "viz_sample_size": 300,
                     "bias_loss_weight": 0.1,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    "disconnected_switching": False
                 }
             },
             "comparison_study": {
                 "name": "Comparison Study",
                 "description": "Test all traversal types for comparison",
                 "config": {
-                    "trainer_mode": "adaptive",
                     "test_all_traversals": True,
                     "architectures": "resnestdf,effnetdf",
                     "num_epochs": 25,
@@ -136,6 +136,7 @@ class ConfigManager:
                     "cache_nodes": True,
                     "cached_nodes_count": 1000,
                     "cache_file": "node_cache/cached_nodes.pkl",
+                    "use_dynamic_cache": False,
                     "fair_train": True,
                     "fair_test": True,
                     "enable_ivalue_viz": True,
@@ -243,7 +244,7 @@ class ConfigManager:
         
         # Required fields
         required_fields = [
-            "trainer_mode", "num_epochs", "batch_size", "seed",
+            "traversal_type", "num_epochs", "batch_size", "seed",
             "quality_threshold", "symmetry_threshold", "embedding_threshold"
         ]
         
@@ -259,11 +260,6 @@ class ConfigManager:
         if "batch_size" in config:
             if not isinstance(config["batch_size"], int) or config["batch_size"] <= 0:
                 errors.append("batch_size must be a positive integer")
-        
-        if "trainer_mode" in config:
-            valid_modes = ["adaptive", "legacy"]
-            if config["trainer_mode"] not in valid_modes:
-                errors.append(f"trainer_mode must be one of: {valid_modes}")
         
         # Traversal validation
         if config.get("enable_traversal_switching", False):

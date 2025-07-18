@@ -2,6 +2,15 @@ import random
 import matplotlib.pyplot as plt
 from nodes.Node import Node
 from edges.Edge import Edge
+import collections
+
+# Optional: Louvain/Label Propagation imports (fail gracefully if not installed)
+try:
+    import networkx as nx
+    import community as community_louvain
+    _louvain_available = True
+except ImportError:
+    _louvain_available = False
 
 """
 Planning/TODO/brainstorming:
@@ -90,6 +99,7 @@ class HyperGraph():
         # Store nodes and create a lookup map for quick access by node ID
         self.nodes = nodes
         self._node_data_map = {node.node_id: node for node in self.nodes} # Use node_id as key
+        self.subclusters = None  # node_id -> subcluster_id
         
     def __len__(self):
         """
@@ -314,6 +324,63 @@ class HyperGraph():
 
     def num_edges(self):
         return len(self.get_edge_list())
+
+    def assign_louvain_subclusters(self):
+        """
+        Assign Louvain subclusters to nodes using networkx + python-louvain.
+        Stores mapping in self.subclusters (node_id -> subcluster_id).
+        """
+        if not _louvain_available:
+            print("Louvain/community-louvain not available. Skipping subcluster assignment.")
+            self.subclusters = None
+            return None
+        # Build networkx graph from nodes/edges
+        G = nx.Graph()
+        for node in self.nodes:
+            G.add_node(node.node_id)
+        for node in self.nodes:
+            if hasattr(node, 'edges'):
+                for edge in node.edges:
+                    n1, n2 = edge.get_nodes()
+                    G.add_edge(n1.node_id, n2.node_id)
+        # Run Louvain
+        partition = community_louvain.best_partition(G)
+        self.subclusters = partition  # {node_id: subcluster_id}
+        # Optionally, store subcluster on node
+        for node in self.nodes:
+            node.subcluster_id = partition.get(node.node_id, None)
+        return partition
+
+    def get_nodes_by_subcluster(self, subcluster_id):
+        """Return list of nodes in a given subcluster."""
+        if self.subclusters is None:
+            return []
+        return [node for node in self.nodes if self.subclusters.get(node.node_id) == subcluster_id]
+
+    def save_with_subclusters(self, path):
+        """Save edge list and subclusters to a file (dill)."""
+        import dill
+        cache_data = {
+            'edges': self.get_edge_list(),
+            'subclusters': self.subclusters
+        }
+        with open(path, 'wb') as f:
+            dill.dump(cache_data, f)
+
+    @staticmethod
+    def load_with_subclusters(path, nodes):
+        """Load edge list and subclusters from a file, assign to a new HyperGraph."""
+        import dill
+        with open(path, 'rb') as f:
+            cache_data = dill.load(f)
+        hg = HyperGraph(nodes)
+        if 'edges' in cache_data:
+            hg.add_edges_from_list(cache_data['edges'])
+        if 'subclusters' in cache_data:
+            hg.subclusters = cache_data['subclusters']
+            for node in hg.nodes:
+                node.subcluster_id = hg.subclusters.get(node.node_id, None)
+        return hg
 
     def save_display(self, path):
         """

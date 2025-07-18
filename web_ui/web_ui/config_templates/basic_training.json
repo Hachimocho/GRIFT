@@ -2,7 +2,6 @@
   "name": "Basic Training",
   "description": "Standard training configuration with default settings",
   "config": {
-    "trainer_mode": "adaptive",
     "traversal_type": "comprehensive",
     "enable_traversal_switching": false,
     "architectures": "resnestdf",

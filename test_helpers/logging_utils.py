@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import random
 import numpy as np
 import torch
+import os
 
 class NullHandler(logging.Handler):
     def emit(self, record):
@@ -68,6 +69,11 @@ def log_exception(logfile_path, exc_type, exc_value, exc_traceback):
 
 def set_seed(seed):
     """Sets the seed for reproducibility."""
+    # Set CUBLAS workspace config for deterministic behavior
+    if 'CUBLAS_WORKSPACE_CONFIG' not in os.environ:
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        print(f"Set CUBLAS_WORKSPACE_CONFIG=:4096:8 for deterministic CuBLAS operations")
+    
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

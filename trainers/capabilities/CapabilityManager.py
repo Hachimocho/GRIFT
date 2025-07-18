@@ -22,6 +22,22 @@ class CapabilityManager:
         # Current configuration
         self.enabled_capabilities = set()
         
+        # NEW: Sequence awareness for DQN warm-up
+        self.traversal_sequence = None
+        self.requires_dqn_warmup = False
+        
+    def set_traversal_sequence(self, sequence):
+        """Set the full traversal sequence to enable DQN warm-up if needed."""
+        self.traversal_sequence = sequence
+        self.requires_dqn_warmup = any(t in ["i-value", "i-value-cluster-hop"] for t in sequence)
+        
+        if self.requires_dqn_warmup:
+            print(f"CapabilityManager: I-value traversal detected in sequence {sequence}")
+            print(f"CapabilityManager: DQN will be trained during ALL traversals for warm-up")
+            # Enable DQN immediately if I-value traversal is used anywhere
+            self._enable_dqn_capability()
+            self._enable_bias_capability()
+        
     def configure_for_traversal(self, traversal_type):
         """Enable capabilities needed for specific traversal type."""
         print(f"CapabilityManager: Configuring for traversal type '{traversal_type}'")
@@ -30,9 +46,16 @@ class CapabilityManager:
             self._enable_dqn_capability()
             self._enable_bias_capability()
         else:
-            # For basic traversals, we don't disable existing capabilities
-            # This allows for seamless switching between traversal types
-            print(f"CapabilityManager: Using basic capabilities for '{traversal_type}'")
+            # For basic traversals, check if DQN warm-up is needed
+            if self.requires_dqn_warmup:
+                print(f"CapabilityManager: Using DQN-enabled capabilities for '{traversal_type}' (warm-up mode)")
+                # Keep DQN enabled for warm-up
+                self._enable_dqn_capability()
+                self._enable_bias_capability()
+            else:
+                # For basic traversals, we don't disable existing capabilities
+                # This allows for seamless switching between traversal types
+                print(f"CapabilityManager: Using basic capabilities for '{traversal_type}'")
             
     def _enable_dqn_capability(self):
         """Enable DQN functionality."""

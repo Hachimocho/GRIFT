@@ -342,3 +342,94 @@ class IValueTraversalClusterHop(Traversal):
     def __len__(self):
         """Return the number of steps in the traversal."""
         return self.num_steps
+
+class IValueTraversalClusterHopSubcluster(IValueTraversalClusterHop):
+    """
+    Traverses the graph by moving pointers to information-rich nodes, using Louvain subclusters for area selection.
+    During bias-hop, hops to a subcluster with high average I-value (softmax), then to a node within that subcluster (excluding outliers).
+    Maintains epsilon-based random jumps and all bias-hop logic. Falls back to standard cluster-hop traversal if no subcluster info.
+    """
+    def __init__(self, graph, num_pointers, num_steps, trainer=None, return_delay=10, warp_chance=0.005, predictor_update_period=50, bias_hop_period=100, pessimistic_i_value=1.0, outlier_std=2.0, softmax_temp=0.5):
+        super().__init__(graph, num_pointers, num_steps, trainer, return_delay, warp_chance, predictor_update_period, bias_hop_period, pessimistic_i_value)
+        self.outlier_std = outlier_std
+        self.softmax_temp = softmax_temp
+
+    def _softmax(self, values, temp=1.0):
+        import numpy as np
+        v = np.array(values)
+        v = v - np.max(v)  # for numerical stability
+        exp_v = np.exp(v / temp)
+        probs = exp_v / np.sum(exp_v)
+        return probs
+
+    def _choose_subcluster(self, pointer):
+        subclusters = getattr(self.graph, 'subclusters', None)
+        if not subclusters:
+            return None, None
+        from collections import defaultdict
+        subcluster_to_nodes = defaultdict(list)
+        for node in self.graph.get_nodes():
+            sc_id = subclusters.get(node.node_id, None)
+            if sc_id is not None:
+                subcluster_to_nodes[sc_id].append(node)
+        subcluster_stats = {}
+        for sc_id, nodes in subcluster_to_nodes.items():
+            i_vals = [pointer['i_values'].get(n, 0.5) for n in nodes]
+            if not i_vals:
+                continue
+            mean = sum(i_vals) / len(i_vals)
+            std = (sum((x - mean) ** 2 for x in i_vals) / len(i_vals)) ** 0.5 if len(i_vals) > 1 else 0.0
+            subcluster_stats[sc_id] = {'mean': mean, 'std': std, 'nodes': nodes, 'i_vals': i_vals}
+        eligible_subclusters = []
+        eligible_means = []
+        for sc_id, stats in subcluster_stats.items():
+            mean, std, nodes, i_vals = stats['mean'], stats['std'], stats['nodes'], stats['i_vals']
+            non_outliers = [n for n, v in zip(nodes, i_vals) if v < mean + self.outlier_std * std]
+            if non_outliers:
+                eligible_subclusters.append(sc_id)
+                eligible_means.append(mean)
+        if not eligible_subclusters:
+            return None, None
+        probs = self._softmax(eligible_means, temp=self.softmax_temp)
+        chosen_sc = random.choices(eligible_subclusters, weights=probs, k=1)[0]
+        stats = subcluster_stats[chosen_sc]
+        mean, std, nodes, i_vals = stats['mean'], stats['std'], stats['nodes'], stats['i_vals']
+        candidates = [(n, v) for n, v in zip(nodes, i_vals) if v < mean + self.outlier_std * std]
+        if not candidates:
+            return None, None
+        cand_nodes, cand_vals = zip(*candidates)
+        cand_probs = self._softmax(cand_vals, temp=self.softmax_temp)
+        return cand_nodes, cand_probs
+
+    def traverse(self, batch_size=32):
+        if self.t >= self.num_steps:
+            return []
+        self.t += 1
+        batch_nodes = []
+        visited_this_batch = set()
+        # Update I-values periodically using trainer's predictions
+        if self.trainer and self.t % self.predictor_update_period == 0:
+            for pointer_idx in range(len(self.pointers)):
+                self.update_i_values(pointer_idx)
+        subclusters = getattr(self.graph, 'subclusters', None)
+        if not subclusters:
+            return super().traverse(batch_size)
+        for pointer in self.pointers:
+            if random.random() < self.warp_chance:
+                new_node = self.graph.get_random_node()
+                pointer['current_node'] = new_node
+                if new_node not in visited_this_batch:
+                    batch_nodes.append(new_node)
+                    visited_this_batch.add(new_node)
+                continue
+            cand_nodes, cand_probs = self._choose_subcluster(pointer)
+            if not cand_nodes:
+                # fallback
+                continue
+            next_node = random.choices(cand_nodes, weights=cand_probs, k=1)[0]
+            pointer['current_node'] = next_node
+            if next_node not in visited_this_batch:
+                batch_nodes.append(next_node)
+                visited_this_batch.add(next_node)
+        self.current_batch_nodes = batch_nodes
+        return batch_nodes

@@ -1204,7 +1204,12 @@ class HierarchicalDeepfakeDataloader(Dataloader):
              logger.info("Skipping subgroup validation as node_index_to_subgroup_id map was not provided.")
 
         # Create the HyperGraph object
-        graph = HyperGraph(nodes=all_nodes) 
+        graph = HyperGraph(nodes=all_nodes)
+        # Assign Louvain subclusters (if available)
+        try:
+            graph.assign_louvain_subclusters()
+        except Exception as e:
+            logger.warning(f"Louvain subcluster assignment failed: {e}")
         return graph
         
     def _build_graph_standard(self, nodes, split_name):

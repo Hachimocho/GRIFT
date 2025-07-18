@@ -32,7 +32,7 @@ from test_helpers.args_utils import parse_args
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
-    load_and_prepare_data_splits # Added import for the new function
+    load_and_prepare_data_splits, check_graph_cache_compatibility
 )
 
 # Import visualization modules
@@ -56,10 +56,8 @@ import traceback
 from pathlib import Path
 from contextlib import contextmanager
 
-# Import new AdaptiveTrainer (primary) and keep legacy trainers for comparison
+# Import AdaptiveTrainer (unified trainer architecture)
 from trainers.AdaptiveTrainer import AdaptiveTrainer
-from trainers.ExperimentTrainer import ExperimentTrainer  # Keep for comparison mode
-from trainers.IValueTrainer import IValueTrainer  # Keep for comparison mode
 
 from dataloaders.UnclusteredDeepfakeDataloader import UnclusteredDeepfakeDataloader
 from datasets.AIFaceDataset import AIFaceDataset
@@ -386,11 +384,12 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
 def parse_traversal_config(args):
     """Parse traversal configuration from command line arguments."""
     config = {
-        'trainer_mode': args.trainer_mode,
+        'trainer_mode': getattr(args, 'trainer_mode', 'adaptive'),  # Default to 'adaptive' if not set
         'single_traversal': args.traversal_type,
         'enable_switching': args.enable_traversal_switching,
         'architectures': [arch.strip() for arch in args.architectures.split(',')],
-        'test_all_traversals': args.test_all_traversals
+        'test_all_traversals': args.test_all_traversals,
+        'disconnected_switching': getattr(args, 'disconnected_switching', False)
     }
     
     if args.enable_traversal_switching:
@@ -419,32 +418,6 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
         loss_fn=criterion,
         bias_loss_weight=args.bias_loss_weight
     )
-    return trainer
-
-def create_legacy_trainer(traversal_type, train_manager, train_traversal, model, device, attribute_metadata, criterion, args):
-    """Create a legacy trainer for comparison purposes."""
-    if traversal_type in ["i-value", "i-value-cluster-hop"]:
-        trainer = IValueTrainer(
-            graphmanager=train_manager,
-            models=[model],
-            device=device,
-            attribute_metadata=attribute_metadata,
-            use_bias_loss_in_training=False,
-            bias_loss_weight=args.bias_loss_weight,
-            loss_fn=criterion,
-            train_traversal=train_traversal
-        )
-        trainer.set_train_traversal(train_traversal)
-    else:
-        trainer = ExperimentTrainer(
-            graphmanager=train_manager,
-            train_traversal=train_traversal,
-            models=[model],
-            device=device,
-            traversal_type=traversal_type,
-            attribute_metadata=attribute_metadata,
-            loss_fn=criterion
-        )
     return trainer
 
 def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwargs):
@@ -614,6 +587,16 @@ def main():
     s_thresh_str = f"{args.symmetry_threshold:.3f}"
     e_thresh_str = f"{args.embedding_threshold:.3f}"
 
+    # Select dataloader based on graph type
+    if args.graph_type == 'nonclustered':
+        print(f"Using UnclusteredDeepfakeDataloader for non-clustered graph construction")
+        dataloader_class = UnclusteredDeepfakeDataloader
+        graph_type_str = 'nonclustered'
+    else:
+        print(f"Using HierarchicalDeepfakeDataloader for clustered graph construction")
+        dataloader_class = HierarchicalDeepfakeDataloader
+        graph_type_str = 'clustered'
+
     for split_name, nodes_to_use, suffix in [
         ('train', train_nodes, train_suffix),
         ('val', val_nodes, val_suffix),
@@ -629,8 +612,8 @@ def main():
         
         cache_filename = os.path.join(
             graph_cache_dir,
-            # Include the balancing status and node hash in the cache filename
-            f"{dataset_name}_{split_name}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_graph.pkl"
+            # Include the graph type, balancing status and node hash in the cache filename
+            f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_graph.pkl"
         )
 
         # Check/Load Graph Cache
@@ -689,10 +672,8 @@ def main():
                  continue # Or handle error appropriately
                  
             print(f"\nBuilding graph for {split_name} split ({len(split_nodes)} nodes)... No suitable cache found or --use-cached=False.")
-            # Use the dataloader to build the graph
-            # Assuming dataloader.build_graph returns the graph object directly now
-            # If it still returns a tuple, adjust accordingly (e.g., graph = dataloader.build_graph(...)[0] )
-            dataloader = HierarchicalDeepfakeDataloader(
+            # Use the selected dataloader to build the graph
+            dataloader = dataloader_class(
                 datasets=[], 
                 edge_class=edge_class,
                 test_mode=False,  # Don't limit nodes
@@ -868,6 +849,18 @@ def main():
         train_steps = 1000
         val_steps = 1000
         
+        # --- Setup run-specific output directory ---
+        import string
+        import random as pyrandom
+        def generate_run_id():
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            rand = ''.join(pyrandom.choices(string.ascii_lowercase + string.digits, k=8))
+            return f"run_{timestamp}_{rand}"
+        run_id = args.run_id if hasattr(args, 'run_id') and args.run_id else generate_run_id()
+        run_output_dir = Path(f"run_outputs/{run_id}")
+        run_output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[Quanty] All visualizations and outputs for this run will be saved under: {run_output_dir}")
+
         # Test each configuration
         for config in test_configs:
             print(f"\n{'='*80}")
@@ -886,52 +879,37 @@ def main():
                     embedding_dim=512  # Default embedding dimension
                 )
                 
-                # Create trainer based on mode
-                if traversal_config['trainer_mode'] == 'adaptive':
-                    trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
-                    
-                    # Set initial traversal
-                    if config['mode'] == 'single':
-                        initial_traversal = create_traversal(
-                            config['traversal'], 
-                            train_manager.graph, 
-                            num_pointers=1, 
-                            num_steps=train_steps,
-                            trainer=trainer,
-                            bias_hop_period=args.bias_hop_period
-                        )
-                        trainer.set_traversal(initial_traversal, config['traversal'])
-                        print(f"Set single traversal: {config['traversal']}")
-                    else:  # switching mode
-                        initial_traversal_type = config['traversal_sequence'][0]
-                        initial_traversal = create_traversal(
-                            initial_traversal_type,
-                            train_manager.graph,
-                            num_pointers=1,
-                            num_steps=train_steps,
-                            trainer=trainer,
-                            bias_hop_period=args.bias_hop_period
-                        )
-                        trainer.set_traversal(initial_traversal, initial_traversal_type)
-                        print(f"Set initial traversal for switching: {initial_traversal_type}")
-                        
-                else:  # legacy mode
-                    if config['mode'] == 'switching':
-                        raise ValueError("Legacy trainer mode does not support traversal switching")
-                    
-                    traversal_type = config['traversal']
-                    train_traversal = create_traversal(
-                        traversal_type,
+                # Create trainer (always use AdaptiveTrainer)
+                trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
+                
+                # NEW: Set traversal sequence for DQN warm-up if using switching mode
+                if config['mode'] == 'switching':
+                    trainer.set_traversal_sequence(config['traversal_sequence'])
+                
+                # Set initial traversal
+                if config['mode'] == 'single':
+                    initial_traversal = create_traversal(
+                        config['traversal'], 
+                        train_manager.graph, 
+                        num_pointers=1, 
+                        num_steps=train_steps,
+                        trainer=trainer,
+                        bias_hop_period=args.bias_hop_period
+                    )
+                    trainer.set_traversal(initial_traversal, config['traversal'])
+                    print(f"Set single traversal: {config['traversal']}")
+                else:  # switching mode
+                    initial_traversal_type = config['traversal_sequence'][0]
+                    initial_traversal = create_traversal(
+                        initial_traversal_type,
                         train_manager.graph,
                         num_pointers=1,
                         num_steps=train_steps,
+                        trainer=trainer,
                         bias_hop_period=args.bias_hop_period
                     )
-                    trainer = create_legacy_trainer(
-                        traversal_type, train_manager, train_traversal, model, 
-                        device, attribute_metadata, criterion, args
-                    )
-                    print(f"Created legacy trainer for {traversal_type}")
+                    trainer.set_traversal(initial_traversal, initial_traversal_type)
+                    print(f"Set initial traversal for switching: {initial_traversal_type}")
                 
                 # Training setup
                 best_val_accuracy = 0.0
@@ -948,31 +926,30 @@ def main():
                     uses_ivalue_traversal = config['traversal'] in ['i-value', 'i-value-cluster-hop']
                 else:  # switching mode
                     uses_ivalue_traversal = any(t in ['i-value', 'i-value-cluster-hop'] for t in config.get('traversal_sequence', []))
-                
+                # --- Use run-specific directory for all visualizations ---
+                config_output_dir = run_output_dir / config['description']
+                config_output_dir.mkdir(parents=True, exist_ok=True)
                 if args.enable_ivalue_viz and uses_ivalue_traversal:
                     print(f"\n📊 Initializing I-value visualization tracking...")
-                    
-                    viz_save_dir = f"{args.viz_save_dir}/{config['description']}"
+                    viz_save_dir = config_output_dir / "ivalue"
+                    viz_save_dir.mkdir(parents=True, exist_ok=True)
                     viz_tracker = IValueVisualizationTracker(save_dir=viz_save_dir)
-                    
                     # Set up bias hop visualizer for cluster hop traversal
                     if (config['mode'] == 'single' and config['traversal'] == 'i-value-cluster-hop') or \
                        (config['mode'] == 'switching' and 'i-value-cluster-hop' in config.get('traversal_sequence', [])):
-                        bias_hop_viz = BiasHopVisualizer(save_dir=f"{viz_save_dir}/bias_hops")
-                    
+                        bias_hop_viz = BiasHopVisualizer(save_dir=config_output_dir / "bias_hops")
                     # Track specific nodes for detailed analysis
                     sample_nodes = random.sample(list(train_manager.graph.get_nodes()), 
                                                 min(args.viz_track_nodes, len(train_manager.graph.get_nodes())))
                     viz_tracker.track_specific_nodes(trainer, sample_nodes, max_nodes=args.viz_track_nodes)
-                    
                     print(f"   Visualization directory: {viz_save_dir}")
                     print(f"   Tracking {len(sample_nodes)} nodes for detailed analysis")
                     if bias_hop_viz:
                         print(f"   Bias hop visualization enabled")
-                
                 # Initialize bias metrics tracking
                 print(f"\n🎯 Initializing bias metrics tracking...")
-                bias_save_dir = f"bias_visualizations/{config['description']}"
+                bias_save_dir = config_output_dir / "bias"
+                bias_save_dir.mkdir(parents=True, exist_ok=True)
                 bias_tracker = BiasMetricsTracker(save_dir=bias_save_dir)
                 
                 print(f"\nTraversal settings:")
@@ -989,33 +966,43 @@ def main():
                     if viz_tracker:
                         viz_tracker.start_epoch(epoch)
                     
-                    # Handle traversal switching for adaptive trainer
-                    if (traversal_config['trainer_mode'] == 'adaptive' and 
-                        config['mode'] == 'switching' and 
+                    # Handle traversal switching
+                    if (config['mode'] == 'switching' and 
                         epoch in config['switch_epochs']):
-                        
                         switch_idx = config['switch_epochs'].index(epoch)
                         new_traversal_type = config['traversal_sequence'][switch_idx + 1]
-                        
                         print(f"🔄 Switching to {new_traversal_type} traversal at epoch {epoch+1}")
                         trainer.switch_traversal(new_traversal_type, bias_hop_period=args.bias_hop_period)
+                        # --- Disconnected switching: reset main detection model and best checkpoint/vars ---
+                        if config.get('disconnected_switching', False):
+                            print(f"[Disconnected Switching] Resetting main detection model and best checkpoint/vars after traversal switch at epoch {epoch+1}")
+                            # Re-instantiate the model with the same parameters
+                            arch = config['arch']
+                            model = create_model(
+                                arch,
+                                f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
+                                device,
+                                dqn_model_type=args.dqn_model,  # Pass DQN model type from args
+                                feature_dim=128,  # Default feature dimension for DQN models
+                                embedding_dim=512  # Default embedding dimension
+                            )
+                            trainer.models[0] = model
+                            print(f"[Disconnected Switching] Main detection model has been reset.")
+                            # Reset best checkpoint/vars
+                            best_val_accuracy = 0.0
+                            best_epoch = 0
+                            if os.path.exists(best_model_checkpoint_path):
+                                os.remove(best_model_checkpoint_path)
+                                print(f"[Disconnected Switching] Deleted old best model checkpoint: {best_model_checkpoint_path}")
                     
                     # Training step
                     train_start_time = time.time()
                     train_distribution = None
                     
-                    if traversal_config['trainer_mode'] == 'adaptive':
-                        train_metrics = trainer.train()
-                        # Get current traversal info
-                        current_traversal_info = trainer.get_current_traversal_info()
-                        print(f"  Current traversal: {current_traversal_info}")
-                    else:
-                        if isinstance(trainer, ExperimentTrainer):
-                            train_metrics, train_distribution = trainer.train(epoch)
-                        else:
-                            train_metrics = trainer.train()
-                    
-                    print(f"  Train Metrics: {train_metrics}")
+                    train_metrics = trainer.train()
+                    # Get current traversal info
+                    current_traversal_info = trainer.get_current_traversal_info()
+                    print(f"  Current traversal: {current_traversal_info}")
                     
                     # Log I-value visualization data at the end of each epoch
                     if viz_tracker:
@@ -1027,10 +1014,8 @@ def main():
                         
                         # Get current traversal for additional data
                         current_traversal = None
-                        if traversal_config['trainer_mode'] == 'adaptive':
+                        if hasattr(trainer, 'current_traversal'):
                             current_traversal = trainer.current_traversal
-                        elif hasattr(trainer, 'train_traversal'):
-                            current_traversal = trainer.train_traversal
                         
                         # Track bias hop data if available
                         if bias_hop_viz and current_traversal and hasattr(current_traversal, 'get_hop_i_value_history'):
@@ -1130,8 +1115,7 @@ def main():
                             model_to_eval.save_checkpoint(best_model_checkpoint_path)
                             
                             # Save additional checkpoints for AdaptiveTrainer capabilities
-                            if traversal_config['trainer_mode'] == 'adaptive':
-                                trainer.save_capability_checkpoints(best_model_checkpoint_path)
+                            trainer.save_capability_checkpoints(best_model_checkpoint_path)
                             
                             print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
                         else:
@@ -1140,18 +1124,13 @@ def main():
                 # Final testing
                 if args.num_epochs > 0 and os.path.exists(best_model_checkpoint_path):
                     print(f"\n🔍 Loading best model from epoch {best_epoch} for final testing...")
-                    
                     model_to_eval = trainer.models[0]
                     model_to_eval.load_checkpoint(best_model_checkpoint_path)
-                    
                     # Load additional checkpoints for AdaptiveTrainer
-                    if traversal_config['trainer_mode'] == 'adaptive':
-                        trainer.load_capability_checkpoints(best_model_checkpoint_path)
-                    
+                    trainer.load_capability_checkpoints(best_model_checkpoint_path)
                     model_to_eval.eval()
-                    
                     test_metrics = evaluate_model(
-                        model=model_to_eval,
+                        model=trainer.models[0],
                         nodes_to_evaluate=test_nodes_from_graph,
                         loss_fn=criterion,
                         batch_size=args.batch_size,
@@ -1160,10 +1139,8 @@ def main():
                         desc="Final Test",
                         attribute_metadata=attribute_metadata
                     )
-                    
                     print("\n--- Final Test Results ---")
                     print(json.dumps(test_metrics, indent=2))
-                    
                     # Log final test bias metrics
                     bias_tracker.log_bias_metrics(epoch=best_epoch-1, test_metrics=test_metrics)
                 

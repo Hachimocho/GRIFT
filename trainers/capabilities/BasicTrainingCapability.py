@@ -129,10 +129,25 @@ class BasicTrainingCapability:
                             with torch.cuda.amp.autocast():
                                 chunk_outputs = self.trainer.models[0](chunk_tensor)
                                 loss = self.trainer.criterion(chunk_outputs, chunk_labels_tensor)
+                                # Calculate bias loss if available
+                                bias_loss_val = 0.0
+                                bias_loss_fn = getattr(self.trainer.capabilities, 'get_bias_loss', None)
+                                bias_weight = 0.0
+                                if bias_loss_fn is not None:
+                                    bias_loss = bias_loss_fn()
+                                    if bias_loss is not None:
+                                        try:
+                                            bias_loss_val = bias_loss(chunk_outputs, chunk_labels_tensor, chunk_nodes)
+                                            # Get bias weight from capability if present
+                                            bias_weight = getattr(self.trainer.capabilities.bias_capability, 'bias_weight', 0.0)
+                                        except Exception as e:
+                                            print(f"Warning: Error calculating bias loss: {e}")
+                                # Combine losses
+                                total_loss = loss + bias_weight * bias_loss_val
                             
                             # Backward pass with gradient scaling
                             self.trainer.models[0].optim.zero_grad()
-                            self.scaler.scale(loss).backward()
+                            self.scaler.scale(total_loss).backward()
                             self.scaler.step(self.trainer.models[0].optim)
                             self.scaler.update()
                             

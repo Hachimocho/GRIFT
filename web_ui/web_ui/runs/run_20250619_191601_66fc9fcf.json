@@ -1,0 +1,42 @@
+{
+  "run_id": "run_20250619_191601_66fc9fcf",
+  "config_name": "asgfdsd",
+  "config": {
+    "name": "asgfdsd",
+    "created": "2025-06-19T19:16:00.619039",
+    "modified": "2025-06-19T19:16:00.619069",
+    "config": {
+      "name": "asgfdsd",
+      "dqn-model": "basic",
+      "num_epochs": 20,
+      "bias_hop_period": 100,
+      "batch_size": 32,
+      "seed": 42,
+      "quality_threshold": 0.5,
+      "symmetry_threshold": 0.3,
+      "embedding_threshold": 0.7,
+      "traversal_type": "comprehensive",
+      "enable_traversal_switching": false,
+      "cached_nodes": true,
+      "cache_nodes": false,
+      "cached_nodes_count": 10000,
+      "use_dynamic_cache": false,
+      "fair_train": true,
+      "fair_test": true,
+      "bias_loss_weight": 0.1,
+      "num_workers": 0,
+      "viz_track_nodes": 50,
+      "viz_sample_size": 200,
+      "architectures": "resnestdf",
+      "enable_ivalue_viz": true
+    }
+  },
+  "command": "python test_hierarchical.py --cache-file node_cache/cached_nodes.pkl",
+  "start_time": "2025-06-19T19:16:01.620824",
+  "status": "stopped",
+  "log_file": "web_ui/runs/run_20250619_191601_66fc9fcf.log",
+  "created": "2025-06-19T19:16:01.620852",
+  "last_updated": "2025-06-19T19:16:33.003726",
+  "end_time": "2025-06-19T19:16:33.003273",
+  "error": "Process exited with code -15"
+}

@@ -7,7 +7,6 @@
     "modified": "2025-06-09T21:48:12.256753",
     "config": {
       "name": "UITest1",
-      "trainer_mode": "adaptive",
       "architectures": "resnestdf",
       "num_epochs": 20,
       "batch_size": 32,

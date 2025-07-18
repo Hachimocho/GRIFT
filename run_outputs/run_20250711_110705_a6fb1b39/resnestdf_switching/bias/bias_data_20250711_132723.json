@@ -1,0 +1,1135 @@
+{
+  "train_bias_history": [
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5128205128205128,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.6243781094527363,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6842105263157895,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7333333333333333,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5856481481481481,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6829268292682927,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7027027027027027
+      },
+      "race_gender_overall_bias": 0.28717948717948727,
+      "race_gender_average_subgroup_bias": 0.08413535501302422,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.6231578947368421,
+          "1": 0.6057142857142858
+        },
+        "Ground Truth Race": {
+          "0": 0.5740740740740741,
+          "1": 0.60431654676259,
+          "2": 0.7142857142857143,
+          "3": 0.6964285714285714
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.017443609022556372,
+        "Ground Truth Race": 0.14021164021164023
+      },
+      "average_attribute_bias": 0.0788276246170983,
+      "epoch": 0,
+      "timestamp": "2025-07-11T11:09:22.214311",
+      "split": "train",
+      "overall_accuracy": 0.614
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5588235294117647,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8033175355450237,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7894736842105263,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7384259259259259,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.8,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7575757575757576
+      },
+      "race_gender_overall_bias": 0.244494006133259,
+      "race_gender_average_subgroup_bias": 0.06724575085526274,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.779835390946502,
+          "1": 0.745136186770428
+        },
+        "Ground Truth Race": {
+          "0": 0.6415094339622641,
+          "1": 0.7704918032786885,
+          "2": 0.8,
+          "3": 0.7083333333333334
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.03469920417607397,
+        "Ground Truth Race": 0.15849056603773592
+      },
+      "average_attribute_bias": 0.09659488510690495,
+      "epoch": 5,
+      "timestamp": "2025-07-11T11:12:39.739766",
+      "split": "train",
+      "overall_accuracy": 0.762
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5454545454545454,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8033980582524272,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6666666666666666,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7142857142857143,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6625615763546798,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6388888888888888,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6444444444444445
+      },
+      "race_gender_overall_bias": 0.25794351279788175,
+      "race_gender_average_subgroup_bias": 0.068637027769686,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7735470941883767,
+          "1": 0.6606786427145709
+        },
+        "Ground Truth Race": {
+          "0": 0.5862068965517241,
+          "1": 0.7334963325183375,
+          "2": 0.6875,
+          "3": 0.65
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.11286845147380586,
+        "Ground Truth Race": 0.14728943596661337
+      },
+      "average_attribute_bias": 0.13007894372020962,
+      "epoch": 10,
+      "timestamp": "2025-07-11T11:26:44.367045",
+      "split": "train",
+      "overall_accuracy": 0.7170000000000001
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7551020408163265,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7877237851662404,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6842105263157895,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8620689655172413,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.625,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6738609112709832,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.8285714285714286
+      },
+      "race_gender_overall_bias": 0.23706896551724133,
+      "race_gender_average_subgroup_bias": 0.06604934781055802,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7848360655737705,
+          "1": 0.689453125
+        },
+        "Ground Truth Race": {
+          "0": 0.7230769230769231,
+          "1": 0.7289603960396039,
+          "2": 0.7301587301587301,
+          "3": 0.84375
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.0953829405737705,
+        "Ground Truth Race": 0.12067307692307694
+      },
+      "average_attribute_bias": 0.10802800874842372,
+      "epoch": 15,
+      "timestamp": "2025-07-11T12:34:37.756506",
+      "split": "train",
+      "overall_accuracy": 0.736
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7297297297297297,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7319034852546917,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7142857142857143,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7058823529411765,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5679287305122495,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.725,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.5581395348837209
+      },
+      "race_gender_overall_bias": 0.1737639503709708,
+      "race_gender_average_subgroup_bias": 0.07334162710191773,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7250554323725056,
+          "1": 0.5828779599271403
+        },
+        "Ground Truth Race": {
+          "0": 0.7222222222222222,
+          "1": 0.6423357664233577,
+          "2": 0.6833333333333333,
+          "3": 0.609375
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.14217747244536527,
+        "Ground Truth Race": 0.11284722222222221
+      },
+      "average_attribute_bias": 0.12751234733379374,
+      "epoch": 19,
+      "timestamp": "2025-07-11T13:25:46.438729",
+      "split": "train",
+      "overall_accuracy": 0.647
+    }
+  ],
+  "val_bias_history": [
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5306122448979592,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.6892950391644909,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6818181818181818,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7777777777777778,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.625,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5336322869955157,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7647058823529411,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.5
+      },
+      "race_gender_overall_bias": 0.2777777777777778,
+      "race_gender_average_subgroup_bias": 0.09454404365248958,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.6758474576271186,
+          "1": 0.5492424242424242
+        },
+        "Ground Truth Race": {
+          "0": 0.5538461538461539,
+          "1": 0.6055488540410132,
+          "2": 0.7321428571428571,
+          "3": 0.6
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.12660503338469442,
+        "Ground Truth Race": 0.17829670329670322
+      },
+      "average_attribute_bias": 0.15245086834069882,
+      "epoch": 0,
+      "timestamp": "2025-07-11T11:09:22.214311",
+      "split": "val",
+      "overall_accuracy": 0.609
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6071428571428571,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7201017811704835,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.631578947368421,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6818181818181818,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.75,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5816554809843401,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.8,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7837837837837838
+      },
+      "race_gender_overall_bias": 0.21834451901566,
+      "race_gender_average_subgroup_bias": 0.07491580765960389,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7077922077922078,
+          "1": 0.6152416356877324
+        },
+        "Ground Truth Race": {
+          "0": 0.6730769230769231,
+          "1": 0.6464285714285715,
+          "2": 0.7346938775510204,
+          "3": 0.7457627118644068
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.09255057210447537,
+        "Ground Truth Race": 0.09933414043583533
+      },
+      "average_attribute_bias": 0.09594235627015535,
+      "epoch": 1,
+      "timestamp": "2025-07-11T11:09:58.485008",
+      "split": "val",
+      "overall_accuracy": 0.6579999999999999
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5483870967741935,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7581047381546134,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6363636363636364,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.5263157894736842,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5840909090909091,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6842105263157895,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6551724137931034
+      },
+      "race_gender_overall_bias": 0.23178894868092925,
+      "race_gender_average_subgroup_bias": 0.06599817737185956,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7320675105485233,
+          "1": 0.5931558935361216
+        },
+        "Ground Truth Race": {
+          "0": 0.54,
+          "1": 0.667063020214031,
+          "2": 0.6666666666666666,
+          "3": 0.6326530612244898
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.13891161701240162,
+        "Ground Truth Race": 0.12706302021403093
+      },
+      "average_attribute_bias": 0.13298731861321628,
+      "epoch": 2,
+      "timestamp": "2025-07-11T11:10:34.774351",
+      "split": "val",
+      "overall_accuracy": 0.659
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6136363636363636,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7552083333333334,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8125,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8235294117647058,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.38095238095238093,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6104783599088838,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6666666666666666,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7352941176470589
+      },
+      "race_gender_overall_bias": 0.4425770308123249,
+      "race_gender_average_subgroup_bias": 0.10684976144760039,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7462039045553145,
+          "1": 0.614100185528757
+        },
+        "Ground Truth Race": {
+          "0": 0.5384615384615384,
+          "1": 0.6780072904009721,
+          "2": 0.7049180327868853,
+          "3": 0.7647058823529411
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.1321037190265575,
+        "Ground Truth Race": 0.2262443438914027
+      },
+      "average_attribute_bias": 0.1791740314589801,
+      "epoch": 3,
+      "timestamp": "2025-07-11T11:11:12.489991",
+      "split": "val",
+      "overall_accuracy": 0.675
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7368421052631579,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8592233009708737,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.9230769230769231,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6666666666666666,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.782608695652174,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7453703703703703,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6842105263157895,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6875
+      },
+      "race_gender_overall_bias": 0.2564102564102565,
+      "race_gender_average_subgroup_bias": 0.07988773247245484,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8463157894736842,
+          "1": 0.7390476190476191
+        },
+        "Ground Truth Race": {
+          "0": 0.7540983606557377,
+          "1": 0.8009478672985783,
+          "2": 0.7450980392156863,
+          "3": 0.6818181818181818
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.10726817042606518,
+        "Ground Truth Race": 0.11912968548039649
+      },
+      "average_attribute_bias": 0.11319892795323083,
+      "epoch": 4,
+      "timestamp": "2025-07-11T11:11:49.081250",
+      "split": "val",
+      "overall_accuracy": 0.79
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6888888888888889,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8038740920096852,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.78125,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7777777777777778,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.8235294117647058,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7125,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7804878048780488,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7647058823529411
+      },
+      "race_gender_overall_bias": 0.13464052287581696,
+      "race_gender_average_subgroup_bias": 0.036779509986783726,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7913385826771654,
+          "1": 0.725609756097561
+        },
+        "Ground Truth Race": {
+          "0": 0.7258064516129032,
+          "1": 0.7589175891758918,
+          "2": 0.7808219178082192,
+          "3": 0.7692307692307693
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.06572882657960444,
+        "Ground Truth Race": 0.05501546619531594
+      },
+      "average_attribute_bias": 0.06037214638746019,
+      "epoch": 5,
+      "timestamp": "2025-07-11T11:12:39.739766",
+      "split": "val",
+      "overall_accuracy": 0.759
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.4864864864864865,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8153846153846154,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.875,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.8333333333333334,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6945107398568019,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6956521739130435
+      },
+      "race_gender_overall_bias": 0.3885135135135135,
+      "race_gender_average_subgroup_bias": 0.08713356855770212,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7861771058315334,
+          "1": 0.707635009310987
+        },
+        "Ground Truth Race": {
+          "0": 0.6575342465753424,
+          "1": 0.7527812113720643,
+          "2": 0.7884615384615384,
+          "3": 0.696969696969697
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.07854209652054644,
+        "Ground Truth Race": 0.130927291886196
+      },
+      "average_attribute_bias": 0.10473469420337123,
+      "epoch": 6,
+      "timestamp": "2025-07-11T11:13:15.376761",
+      "split": "val",
+      "overall_accuracy": 0.7440000000000001
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6938775510204082,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8407960199004975,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8333333333333334,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8518518518518519,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7857142857142857,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7506053268765133,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7941176470588235,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6486486486486487
+      },
+      "race_gender_overall_bias": 0.20320320320320318,
+      "race_gender_average_subgroup_bias": 0.055156629985581296,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8266932270916335,
+          "1": 0.7469879518072289
+        },
+        "Ground Truth Race": {
+          "0": 0.7142857142857143,
+          "1": 0.7950920245398773,
+          "2": 0.8103448275862069,
+          "3": 0.734375
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.07970527528440463,
+        "Ground Truth Race": 0.09605911330049255
+      },
+      "average_attribute_bias": 0.08788219429244859,
+      "epoch": 7,
+      "timestamp": "2025-07-11T11:13:51.438735",
+      "split": "val",
+      "overall_accuracy": 0.787
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5882352941176471,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7696078431372549,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.7894736842105263,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8461538461538461,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.6296296296296297,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.655860349127182,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7674418604651163,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6666666666666666
+      },
+      "race_gender_overall_bias": 0.25791855203619907,
+      "race_gender_average_subgroup_bias": 0.07903566180320229,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7618069815195072,
+          "1": 0.6647173489278753
+        },
+        "Ground Truth Race": {
+          "0": 0.6065573770491803,
+          "1": 0.7132262051915945,
+          "2": 0.7741935483870968,
+          "3": 0.7352941176470589
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.09708963259163195,
+        "Ground Truth Race": 0.16763617133791642
+      },
+      "average_attribute_bias": 0.13236290196477418,
+      "epoch": 8,
+      "timestamp": "2025-07-11T11:14:26.763464",
+      "split": "val",
+      "overall_accuracy": 0.7120000000000001
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7027027027027027,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.825136612021858,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6842105263157895,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8125,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.6470588235294118,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7794432548179872,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7105263157894737
+      },
+      "race_gender_overall_bias": 0.17807778849244615,
+      "race_gender_average_subgroup_bias": 0.06346187360831165,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8082191780821918,
+          "1": 0.7686832740213523
+        },
+        "Ground Truth Race": {
+          "0": 0.6851851851851852,
+          "1": 0.7995198079231692,
+          "2": 0.7288135593220338,
+          "3": 0.7407407407407407
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.03953590406083951,
+        "Ground Truth Race": 0.114334622737984
+      },
+      "average_attribute_bias": 0.07693526339941176,
+      "epoch": 9,
+      "timestamp": "2025-07-11T11:15:03.216201",
+      "split": "val",
+      "overall_accuracy": 0.786
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6785714285714286,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7417721518987341,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.5882352941176471,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.72,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.3181818181818182,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6091954022988506,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6578947368421053,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.75
+      },
+      "race_gender_overall_bias": 0.4318181818181818,
+      "race_gender_average_subgroup_bias": 0.08960454112871769,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7311827956989247,
+          "1": 0.611214953271028
+        },
+        "Ground Truth Race": {
+          "0": 0.52,
+          "1": 0.672289156626506,
+          "2": 0.6363636363636364,
+          "3": 0.7384615384615385
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.11996784242789671,
+        "Ground Truth Race": 0.21846153846153848
+      },
+      "average_attribute_bias": 0.1692146904447176,
+      "epoch": 10,
+      "timestamp": "2025-07-11T11:26:44.367045",
+      "split": "val",
+      "overall_accuracy": 0.667
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.4878048780487805,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.5501355013550135,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.4090909090909091,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.631578947368421,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.4827586206896552,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.4759725400457666,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.65,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.5813953488372093
+      },
+      "race_gender_overall_bias": 0.2409090909090909,
+      "race_gender_average_subgroup_bias": 0.06968535621069157,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.541019955654102,
+          "1": 0.4972677595628415
+        },
+        "Ground Truth Race": {
+          "0": 0.4857142857142857,
+          "1": 0.5099255583126551,
+          "2": 0.5645161290322581,
+          "3": 0.5967741935483871
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.043752196091260465,
+        "Ground Truth Race": 0.11105990783410141
+      },
+      "average_attribute_bias": 0.07740605196268094,
+      "epoch": 11,
+      "timestamp": "2025-07-11T11:39:21.319906",
+      "split": "val",
+      "overall_accuracy": 0.517
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6956521739130435,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8337662337662337,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.7142857142857143,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8214285714285714,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.47368421052631576,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7686915887850467,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.8125
+      },
+      "race_gender_overall_bias": 0.36008202323991795,
+      "race_gender_average_subgroup_bias": 0.07967263971058561,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8160676532769556,
+          "1": 0.7590132827324478
+        },
+        "Ground Truth Race": {
+          "0": 0.6307692307692307,
+          "1": 0.7995079950799509,
+          "2": 0.7419354838709677,
+          "3": 0.8166666666666667
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.05705437054450779,
+        "Ground Truth Race": 0.1858974358974359
+      },
+      "average_attribute_bias": 0.12147590322097185,
+      "epoch": 12,
+      "timestamp": "2025-07-11T11:48:22.136288",
+      "split": "val",
+      "overall_accuracy": 0.786
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5952380952380952,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8232189973614775,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6875,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6923076923076923,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7777777777777778,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.8026905829596412,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.717948717948718,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7941176470588235
+      },
+      "race_gender_overall_bias": 0.2279809021233823,
+      "race_gender_average_subgroup_bias": 0.06690686801345735,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7904967602591793,
+          "1": 0.7951582867783985
+        },
+        "Ground Truth Race": {
+          "0": 0.65,
+          "1": 0.8121212121212121,
+          "2": 0.7090909090909091,
+          "3": 0.75
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.00466152651921925,
+        "Ground Truth Race": 0.1621212121212121
+      },
+      "average_attribute_bias": 0.08339136932021568,
+      "epoch": 13,
+      "timestamp": "2025-07-11T12:11:31.758526",
+      "split": "val",
+      "overall_accuracy": 0.7929999999999999
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.6410256410256411,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7439613526570048,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.6923076923076923,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.6666666666666666,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.5555555555555556,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.697841726618705,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.8857142857142857,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6511627906976745
+      },
+      "race_gender_overall_bias": 0.3301587301587301,
+      "race_gender_average_subgroup_bias": 0.07313944568741941,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7322175732217573,
+          "1": 0.6992337164750958
+        },
+        "Ground Truth Race": {
+          "0": 0.6060606060606061,
+          "1": 0.7208182912154031,
+          "2": 0.8333333333333334,
+          "3": 0.6545454545454545
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.03298385674666149,
+        "Ground Truth Race": 0.2272727272727273
+      },
+      "average_attribute_bias": 0.1301282920096944,
+      "epoch": 14,
+      "timestamp": "2025-07-11T12:24:12.361329",
+      "split": "val",
+      "overall_accuracy": 0.715
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7954545454545454,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.8020304568527918,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8571428571428571,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7142857142857143,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.6538461538461539,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.7322654462242563,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7777777777777778,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6571428571428571
+      },
+      "race_gender_overall_bias": 0.20329670329670324,
+      "race_gender_average_subgroup_bias": 0.05935818321612382,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8004291845493562,
+          "1": 0.7265917602996255
+        },
+        "Ground Truth Race": {
+          "0": 0.7428571428571429,
+          "1": 0.7653429602888087,
+          "2": 0.8,
+          "3": 0.673469387755102
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.07383742424973072,
+        "Ground Truth Race": 0.12653061224489803
+      },
+      "average_attribute_bias": 0.10018401824731438,
+      "epoch": 15,
+      "timestamp": "2025-07-11T12:34:37.756506",
+      "split": "val",
+      "overall_accuracy": 0.7609999999999999
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.48484848484848486,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.5994550408719346,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.7,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.4583333333333333,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.35294117647058826,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.49448123620309054,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7346938775510204,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.5405405405405406
+      },
+      "race_gender_overall_bias": 0.3817527010804322,
+      "race_gender_average_subgroup_bias": 0.09962551837836468,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.5878378378378378,
+          "1": 0.5143884892086331
+        },
+        "Ground Truth Race": {
+          "0": 0.44,
+          "1": 0.5414634146341464,
+          "2": 0.7246376811594203,
+          "3": 0.5081967213114754
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.07344934862920471,
+        "Ground Truth Race": 0.2846376811594203
+      },
+      "average_attribute_bias": 0.1790435148943125,
+      "epoch": 16,
+      "timestamp": "2025-07-11T12:47:37.998260",
+      "split": "val",
+      "overall_accuracy": 0.547
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5277777777777778,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.691358024691358,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.8125,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8333333333333334,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.4782608695652174,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5755395683453237,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.6764705882352942,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.7435897435897436
+      },
+      "race_gender_overall_bias": 0.35507246376811596,
+      "race_gender_average_subgroup_bias": 0.11195918427017627,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.6919917864476386,
+          "1": 0.5906432748538012
+        },
+        "Ground Truth Race": {
+          "0": 0.5084745762711864,
+          "1": 0.6326034063260341,
+          "2": 0.72,
+          "3": 0.782608695652174
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.1013485115938374,
+        "Ground Truth Race": 0.27413411938098753
+      },
+      "average_attribute_bias": 0.18774131548741246,
+      "epoch": 17,
+      "timestamp": "2025-07-11T12:59:06.211572",
+      "split": "val",
+      "overall_accuracy": 0.64
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5882352941176471,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7379134860050891,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.75,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.7777777777777778,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.6111111111111112,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.6219239373601789,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7096774193548387,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6410256410256411
+      },
+      "race_gender_overall_bias": 0.1895424836601307,
+      "race_gender_average_subgroup_bias": 0.06413408744039092,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.7290322580645161,
+          "1": 0.6280373831775701
+        },
+        "Ground Truth Race": {
+          "0": 0.5961538461538461,
+          "1": 0.6761904761904762,
+          "2": 0.7254901960784313,
+          "3": 0.6842105263157895
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.10099487488694603,
+        "Ground Truth Race": 0.1293363499245852
+      },
+      "average_attribute_bias": 0.11516561240576562,
+      "epoch": 18,
+      "timestamp": "2025-07-11T13:06:50.634387",
+      "split": "val",
+      "overall_accuracy": 0.675
+    },
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.5106382978723404,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.7142857142857143,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.5555555555555556,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.84,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.5769230769230769,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.5377358490566038,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.5483870967741935,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.6486486486486487
+      },
+      "race_gender_overall_bias": 0.3293617021276596,
+      "race_gender_average_subgroup_bias": 0.0889618108440741,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.6950207468879668,
+          "1": 0.5482625482625483
+        },
+        "Ground Truth Race": {
+          "0": 0.5342465753424658,
+          "1": 0.6225490196078431,
+          "2": 0.5510204081632653,
+          "3": 0.7258064516129032
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.1467581986254185,
+        "Ground Truth Race": 0.19155987627043747
+      },
+      "average_attribute_bias": 0.16915903744792798,
+      "epoch": 19,
+      "timestamp": "2025-07-11T13:25:46.438729",
+      "split": "val",
+      "overall_accuracy": 0.619
+    }
+  ],
+  "test_bias_history": [
+    {
+      "race_gender_subgroup_accuracies": {
+        "Ground Truth Gender_0_Ground Truth Race_0": 0.7837837837837838,
+        "Ground Truth Gender_0_Ground Truth Race_1": 0.843906093906094,
+        "Ground Truth Gender_0_Ground Truth Race_2": 0.7171717171717171,
+        "Ground Truth Gender_0_Ground Truth Race_3": 0.8701923076923077,
+        "Ground Truth Gender_1_Ground Truth Race_0": 0.7958333333333333,
+        "Ground Truth Gender_1_Ground Truth Race_1": 0.79688972667295,
+        "Ground Truth Gender_1_Ground Truth Race_2": 0.7366863905325444,
+        "Ground Truth Gender_1_Ground Truth Race_3": 0.778393351800554
+      },
+      "race_gender_overall_bias": 0.15302059052059058,
+      "race_gender_average_subgroup_bias": 0.044367512287939836,
+      "per_attribute_accuracies": {
+        "Ground Truth Gender": {
+          "0": 0.8347519202823334,
+          "1": 0.7916264711557013
+        },
+        "Ground Truth Race": {
+          "0": 0.7882534775888718,
+          "1": 0.819713870029098,
+          "2": 0.7294776119402985,
+          "3": 0.81195079086116
+        }
+      },
+      "per_attribute_bias": {
+        "Ground Truth Gender": 0.043125449126632076,
+        "Ground Truth Race": 0.09023625808879954
+      },
+      "average_attribute_bias": 0.0666808536077158,
+      "epoch": 13,
+      "timestamp": "2025-07-11T13:27:15.678442",
+      "split": "test",
+      "overall_accuracy": 0.8123999999999999
+    }
+  ],
+  "overall_metrics_history": [
+    {
+      "epoch": 0,
+      "timestamp": "2025-07-11T11:09:22.214311",
+      "train_accuracy": 61.4,
+      "val_accuracy": 60.9,
+      "test_accuracy": null,
+      "train_bias": 0.28717948717948727,
+      "val_bias": 0.2777777777777778,
+      "test_bias": null
+    },
+    {
+      "epoch": 1,
+      "timestamp": "2025-07-11T11:09:58.485008",
+      "train_accuracy": null,
+      "val_accuracy": 65.8,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.21834451901566,
+      "test_bias": null
+    },
+    {
+      "epoch": 2,
+      "timestamp": "2025-07-11T11:10:34.774351",
+      "train_accuracy": null,
+      "val_accuracy": 65.9,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.23178894868092925,
+      "test_bias": null
+    },
+    {
+      "epoch": 3,
+      "timestamp": "2025-07-11T11:11:12.489991",
+      "train_accuracy": null,
+      "val_accuracy": 67.5,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.4425770308123249,
+      "test_bias": null
+    },
+    {
+      "epoch": 4,
+      "timestamp": "2025-07-11T11:11:49.081250",
+      "train_accuracy": null,
+      "val_accuracy": 79.0,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.2564102564102565,
+      "test_bias": null
+    },
+    {
+      "epoch": 5,
+      "timestamp": "2025-07-11T11:12:39.739766",
+      "train_accuracy": 76.2,
+      "val_accuracy": 75.9,
+      "test_accuracy": null,
+      "train_bias": 0.244494006133259,
+      "val_bias": 0.13464052287581696,
+      "test_bias": null
+    },
+    {
+      "epoch": 6,
+      "timestamp": "2025-07-11T11:13:15.376761",
+      "train_accuracy": null,
+      "val_accuracy": 74.4,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.3885135135135135,
+      "test_bias": null
+    },
+    {
+      "epoch": 7,
+      "timestamp": "2025-07-11T11:13:51.438735",
+      "train_accuracy": null,
+      "val_accuracy": 78.7,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.20320320320320318,
+      "test_bias": null
+    },
+    {
+      "epoch": 8,
+      "timestamp": "2025-07-11T11:14:26.763464",
+      "train_accuracy": null,
+      "val_accuracy": 71.2,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.25791855203619907,
+      "test_bias": null
+    },
+    {
+      "epoch": 9,
+      "timestamp": "2025-07-11T11:15:03.216201",
+      "train_accuracy": null,
+      "val_accuracy": 78.60000000000001,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.17807778849244615,
+      "test_bias": null
+    },
+    {
+      "epoch": 10,
+      "timestamp": "2025-07-11T11:26:44.367045",
+      "train_accuracy": 71.7,
+      "val_accuracy": 66.7,
+      "test_accuracy": null,
+      "train_bias": 0.25794351279788175,
+      "val_bias": 0.4318181818181818,
+      "test_bias": null
+    },
+    {
+      "epoch": 11,
+      "timestamp": "2025-07-11T11:39:21.319906",
+      "train_accuracy": null,
+      "val_accuracy": 51.7,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.2409090909090909,
+      "test_bias": null
+    },
+    {
+      "epoch": 12,
+      "timestamp": "2025-07-11T11:48:22.136288",
+      "train_accuracy": null,
+      "val_accuracy": 78.60000000000001,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.36008202323991795,
+      "test_bias": null
+    },
+    {
+      "epoch": 13,
+      "timestamp": "2025-07-11T12:11:31.758526",
+      "train_accuracy": null,
+      "val_accuracy": 79.3,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.2279809021233823,
+      "test_bias": null
+    },
+    {
+      "epoch": 14,
+      "timestamp": "2025-07-11T12:24:12.361329",
+      "train_accuracy": null,
+      "val_accuracy": 71.5,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.3301587301587301,
+      "test_bias": null
+    },
+    {
+      "epoch": 15,
+      "timestamp": "2025-07-11T12:34:37.756506",
+      "train_accuracy": 73.6,
+      "val_accuracy": 76.1,
+      "test_accuracy": null,
+      "train_bias": 0.23706896551724133,
+      "val_bias": 0.20329670329670324,
+      "test_bias": null
+    },
+    {
+      "epoch": 16,
+      "timestamp": "2025-07-11T12:47:37.998260",
+      "train_accuracy": null,
+      "val_accuracy": 54.7,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.3817527010804322,
+      "test_bias": null
+    },
+    {
+      "epoch": 17,
+      "timestamp": "2025-07-11T12:59:06.211572",
+      "train_accuracy": null,
+      "val_accuracy": 64.0,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.35507246376811596,
+      "test_bias": null
+    },
+    {
+      "epoch": 18,
+      "timestamp": "2025-07-11T13:06:50.634387",
+      "train_accuracy": null,
+      "val_accuracy": 67.5,
+      "test_accuracy": null,
+      "train_bias": null,
+      "val_bias": 0.1895424836601307,
+      "test_bias": null
+    },
+    {
+      "epoch": 19,
+      "timestamp": "2025-07-11T13:25:46.438729",
+      "train_accuracy": 64.7,
+      "val_accuracy": 61.9,
+      "test_accuracy": null,
+      "train_bias": 0.1737639503709708,
+      "val_bias": 0.3293617021276596,
+      "test_bias": null
+    },
+    {
+      "epoch": 13,
+      "timestamp": "2025-07-11T13:27:15.678442",
+      "train_accuracy": null,
+      "val_accuracy": null,
+      "test_accuracy": 81.24,
+      "train_bias": null,
+      "val_bias": null,
+      "test_bias": 0.15302059052059058
+    }
+  ],
+  "metadata": {
+    "total_epochs": 21,
+    "generation_time": "2025-07-11T13:27:23.413369",
+    "description": "Bias metrics tracking data from hierarchical deepfake training"
+  }
+}

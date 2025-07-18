@@ -252,22 +252,24 @@ class DQNCapability:
                     # Forward pass
                     outputs = self.trainer.models[0](images)
                     loss = self.trainer.criterion(outputs, batch_labels_tensor)
-                    
                     # Add bias loss if available
+                    bias_loss_val = 0.0
+                    bias_weight = 0.0
                     bias_loss_fn = self.trainer.capabilities.get_bias_loss()
                     if bias_loss_fn:
                         try:
                             bias_loss_val = bias_loss_fn(outputs, batch_labels_tensor, batch_nodes_loaded)
+                            bias_weight = getattr(self.trainer.capabilities.bias_capability, 'bias_weight', 0.0)
                             total_train_bias_loss += bias_loss_val.item()
                         except Exception as e:
                             print(f"Warning: Error calculating bias loss: {e}")
-                    
+                    # Combine losses
+                    total_loss_for_backward = loss + bias_weight * bias_loss_val
                     # Calculate metrics
                     preds = (torch.sigmoid(outputs) > 0.5).float()
                     correct += (preds == batch_labels_tensor).sum().item()
                     total_loss += loss.item()
                     total += len(batch_labels_loaded)
-                    
                     # Track attribute distribution
                     if track_attributes:
                         for node in batch_nodes_loaded:
@@ -275,9 +277,8 @@ class DQNCapability:
                                 if attr_name in node.attributes:
                                     attr_value = node.attributes[attr_name]
                                     attribute_distribution[attr_name][attr_value] += 1
-                    
                     # Backward pass
-                    self.scaler.scale(loss).backward()
+                    self.scaler.scale(total_loss_for_backward).backward()
                     self.scaler.step(self.trainer.models[0].optim)
                     self.scaler.update()
                     self.trainer.models[0].optim.zero_grad()

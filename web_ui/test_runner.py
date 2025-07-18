@@ -70,11 +70,20 @@ class TestRunner:
         try:
             run_id = self._generate_run_id()
             
-            # Build command arguments
-            cmd_args = self._build_command_args(config)
+            # Build command arguments, passing run_id
+            cmd_args = self._build_command_args(config, run_id)
             
             # Create log file
             log_file = self.runs_dir / f"{run_id}.log"
+            
+            # Write debug information to log file
+            with open(log_file, 'w') as f:
+                f.write(f"=== Test Run Debug Information ===\n")
+                f.write(f"Run ID: {run_id}\n")
+                f.write(f"Config Name: {config_name}\n")
+                f.write(f"Configuration: {json.dumps(config, indent=2)}\n")
+                f.write(f"Command: {' '.join(cmd_args)}\n")
+                f.write(f"=== End Debug Information ===\n\n")
             
             # Create run metadata
             metadata = {
@@ -94,7 +103,7 @@ class TestRunner:
                 return None
             
             # Start process
-            with open(log_file, 'w') as f:
+            with open(log_file, 'a') as f:
                 process = subprocess.Popen(
                     cmd_args,
                     stdout=f,
@@ -128,14 +137,22 @@ class TestRunner:
         short_uuid = str(uuid.uuid4())[:8]
         return f"run_{timestamp}_{short_uuid}"
     
-    def _build_command_args(self, config: Dict[str, Any]) -> List[str]:
-        """Build command line arguments from configuration."""
+    def _build_command_args(self, config: Dict[str, Any], run_id: str = None) -> List[str]:
+        """Build command line arguments from configuration. Always appends --run-id <run_id>."""
         args = ["python", "test_hierarchical.py"]
         
-        # Map configuration to command line arguments
+        # Define argument mapping
         arg_mapping = {
-            "trainer_mode": "--trainer-mode",
-            "traversal_type": "--traversal-type", 
+            "test": "--test",
+            "visualize": "--visualize",
+            "show": "--show",
+            "search": "--search",
+            "search_split": "--search-split",
+            "quality_steps": "--quality-steps",
+            "symmetry_steps": "--symmetry-steps",
+            "embedding_steps": "--embedding-steps",
+            "search_results": "--search-results",
+            "traversal_type": "--traversal-type",
             "enable_traversal_switching": "--enable-traversal-switching",
             "traversal_sequence": "--traversal-sequence",
             "switch_epochs": "--switch-epochs",
@@ -143,7 +160,7 @@ class TestRunner:
             "architectures": "--architectures",
             "num_epochs": "--num-epochs",
             "batch_size": "--batch-size",
-            "bias_hop_period": "--bias-hop-period",
+            "bias_hop_period": "--bias_hop_period",
             "seed": "--seed",
             "quality_threshold": "--quality-threshold",
             "symmetry_threshold": "--symmetry-threshold",
@@ -157,14 +174,17 @@ class TestRunner:
             "viz_track_nodes": "--viz-track-nodes",
             "viz_sample_size": "--viz-sample-size",
             "viz_save_dir": "--viz-save-dir",
-            "bias_loss_weight": "--bias-loss-weight",
+            "bias_loss_weight": "--bias_loss_weight",
             "num_workers": "--num-workers",
-            "dqn_model": "--dqn-model"
+            "dqn_model": "--dqn-model",
+            "graph_type": "--graph-type"
         }
         
-        # Add arguments based on configuration
+        # Add arguments based on configuration (excluding cache-related flags for special handling)
+        cache_related_keys = {"cached_nodes", "cache_nodes", "cached_nodes_count", "use_dynamic_cache", "cache_file"}
+        
         for config_key, arg_name in arg_mapping.items():
-            if config_key in config:
+            if config_key in config and config_key not in cache_related_keys:
                 value = config[config_key]
                 
                 # Handle boolean flags
@@ -174,16 +194,44 @@ class TestRunner:
                 else:
                     args.extend([arg_name, str(value)])
         
-        # Special handling for cached_nodes_count when using cached nodes
-        if config.get("cached_nodes", False) and "cached_nodes_count" in config:
-            # Remove any existing --cached-nodes argument
-            args = [arg for arg in args if arg != "--cached-nodes"]
-            # Add the cached_nodes_count value
-            args.extend(["--cached-nodes", str(config["cached_nodes_count"])])
+        # Special handling for cache flags
+        # If using cached nodes, don't add --cache-nodes flag (don't regenerate cache)
+        if config.get("cached_nodes", False):
+            # Add --use-cached flag (boolean flag, no value)
+            args.append("--use-cached")
+            
+            # Check if we should use dynamic cache detection
+            if config.get("use_dynamic_cache", False):
+                # Add a flag to indicate dynamic cache detection
+                args.append("--dynamic-cache-detection")
+            else:
+                # Use the specified cached_nodes_count
+                if "cached_nodes_count" in config:
+                    args.extend(["--cached-nodes", str(config["cached_nodes_count"])])
+        else:
+            # If not using cached nodes, check if we should cache nodes
+            if config.get("cache_nodes", False):
+                args.append("--cache-nodes")
+                # Add cached_nodes_count if specified
+                if "cached_nodes_count" in config:
+                    args.extend(["--cached-nodes", str(config["cached_nodes_count"])])
         
         # Always include the cache file argument
         cache_file = config.get("cache_file", "node_cache/cached_nodes.pkl")
         args.extend(["--cache-file", cache_file])
+        
+        # Debug output for cache-related issues
+        print(f"DEBUG: Cache configuration:")
+        print(f"  cached_nodes: {config.get('cached_nodes', False)}")
+        print(f"  cache_nodes: {config.get('cache_nodes', False)}")
+        print(f"  use_dynamic_cache: {config.get('use_dynamic_cache', False)}")
+        print(f"  cached_nodes_count: {config.get('cached_nodes_count', 'Not set')}")
+        print(f"  cache_file: {cache_file}")
+        print(f"  Final command args: {args}")
+        
+        # Always append --run-id <run_id> if available
+        if run_id:
+            args.extend(["--run-id", run_id])
         return args
     
     def list_runs(self) -> List[Dict[str, Any]]:
@@ -223,48 +271,84 @@ class TestRunner:
         return active
     
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
-        """Get details of a specific run."""
+        """Get details for a specific test run."""
         metadata = self._load_run_metadata(run_id)
         if not metadata:
             return None
         
-        # Add runtime information
-        if run_id in self.active_processes:
-            process = self.active_processes[run_id]
-            metadata["pid"] = process.pid
-            metadata["is_active"] = process.poll() is None
-            
-            # Get memory usage if process is still running
-            try:
-                if metadata["is_active"]:
-                    proc = psutil.Process(process.pid)
-                    metadata["memory_mb"] = proc.memory_info().rss / 1024 / 1024
-                    metadata["cpu_percent"] = proc.cpu_percent()
-            except:
-                pass
+        # Optionally add some recent log lines
+        metadata["logs_preview"] = self.get_run_logs(run_id, tail_lines=20)
+        
+        # Calculate duration if not present
+        if "duration" not in metadata:
+            metadata["duration"] = self._calculate_duration(metadata)
         
         return metadata
     
-    def get_run_logs(self, run_id: str, tail_lines: int = 100) -> List[str]:
-        """Get logs for a specific run."""
+    def get_run_logs(self, run_id: str, tail_lines: int = 0) -> List[str]:
+        """
+        Get logs for a specific test run, processing carriage returns to handle
+        progress bars correctly.
+        """
         try:
             metadata = self._load_run_metadata(run_id)
-            if not metadata:
-                return []
+            if not metadata or "log_file" not in metadata:
+                return ["Log file not found."]
             
-            log_file = metadata.get("log_file")
-            if not log_file or not os.path.exists(log_file):
-                return []
+            log_file = Path(metadata["log_file"])
+            if not log_file.exists():
+                return ["Log file does not exist."]
             
-            with open(log_file, 'r') as f:
+            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
             
-            # Return last N lines
-            return [line.rstrip() for line in lines[-tail_lines:]]
-        
+            processed_lines = []
+            for line in lines:
+                # Get the part of the line after the last carriage return
+                # This handles TQDM's single-line updates
+                line_content = line.strip().rsplit('\r', 1)[-1]
+                
+                if not line_content:
+                    continue
+                
+                # Enhanced heuristic to detect TQDM progress bar lines
+                # Look for patterns like: "Basic Training Epoch N/A: 3%|3 | 1/32 [00:01<00:52, 1.70s/batch]"
+                is_progress_line = (
+                    # Check for percentage and progress bar patterns
+                    ('%|' in line_content and '|' in line_content) or
+                    # Check for time-based patterns (s/batch, batch/s, it/s)
+                    any(pattern in line_content for pattern in ['s/batch', 'batch/s', 'it/s']) or
+                    # Check for ETA patterns
+                    ('ETA' in line_content and ('<' in line_content or '>' in line_content)) or
+                    # Check for progress bar with hash symbols
+                    ('%|#' in line_content and '|' in line_content)
+                )
+
+                # If current line is a progress bar and the last processed line was also one,
+                # replace the last one to create an "in-place" update effect.
+                if is_progress_line and processed_lines:
+                    last_line = processed_lines[-1]
+                    # Use the same detection logic for the last line
+                    is_last_line_progress = (
+                        ('%|' in last_line and '|' in last_line) or
+                        any(pattern in last_line for pattern in ['s/batch', 'batch/s', 'it/s']) or
+                        ('ETA' in last_line and ('<' in last_line or '>' in last_line)) or
+                        ('%|#' in last_line and '|' in last_line)
+                    )
+                    if is_last_line_progress:
+                        processed_lines[-1] = line_content
+                        continue
+
+                processed_lines.append(line_content)
+
+            if tail_lines > 0:
+                return processed_lines[-tail_lines:]
+            else:
+                return processed_lines
+
         except Exception as e:
-            print(f"Error reading logs for {run_id}: {e}")
-            return []
+            print(f"Error reading log file for run {run_id}: {e}")
+            return [f"Error reading logs: {e}"]
     
     def stop_run(self, run_id: str) -> bool:
         """Stop a running test."""

@@ -2,7 +2,6 @@
   "name": "Traversal Switching",
   "description": "Multi-traversal configuration with switching between methods",
   "config": {
-    "trainer_mode": "adaptive",
     "traversal_type": "comprehensive",
     "enable_traversal_switching": true,
     "traversal_sequence": "comprehensive,i-value,i-value-cluster-hop",

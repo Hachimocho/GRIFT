@@ -1,0 +1,42 @@
+{
+  "run_id": "run_20250619_184342_2f926a1b",
+  "config_name": "Test6",
+  "config": {
+    "name": "Test6",
+    "created": "2025-06-19T18:43:41.369362",
+    "modified": "2025-06-19T18:43:41.369388",
+    "config": {
+      "name": "Test6",
+      "dqn-model": "residual",
+      "num_epochs": 20,
+      "bias_hop_period": 5,
+      "batch_size": 32,
+      "seed": 42,
+      "quality_threshold": 0.5,
+      "symmetry_threshold": 0.3,
+      "embedding_threshold": 0.7,
+      "traversal_type": "i-value-cluster-hop",
+      "enable_traversal_switching": false,
+      "cached_nodes": true,
+      "cache_nodes": false,
+      "cached_nodes_count": 827339,
+      "use_dynamic_cache": false,
+      "fair_train": false,
+      "fair_test": false,
+      "bias_loss_weight": 0.1,
+      "num_workers": 0,
+      "viz_track_nodes": 50,
+      "viz_sample_size": 200,
+      "architectures": "resnestdf",
+      "enable_ivalue_viz": true
+    }
+  },
+  "command": "python test_hierarchical.py --cache-file node_cache/cached_nodes.pkl",
+  "start_time": "2025-06-19T18:43:42.374754",
+  "status": "stopped",
+  "log_file": "web_ui/runs/run_20250619_184342_2f926a1b.log",
+  "created": "2025-06-19T18:43:42.374839",
+  "last_updated": "2025-06-19T18:44:14.102373",
+  "end_time": "2025-06-19T18:44:14.102200",
+  "error": "Process exited with code -15"
+}

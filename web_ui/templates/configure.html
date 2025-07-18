@@ -42,22 +42,30 @@
                             <div class="form-text">Unique name for this configuration</div>
                         </div>
                         <div class="col-md-6 mb-3">
-                            <label for="trainer-mode">Trainer Mode</label>
-                            <select class="form-control" id="trainer-mode" name="trainer-mode">
-                                <option value="legacy">Legacy</option>
-                                <option value="adaptive">Adaptive</option>
-                            </select>
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label for="dqn-model">DQN Model Type</label>
-                            <select class="form-control" id="dqn-model" name="dqn-model">
-                                <option value="basic">Basic DQN</option>
-                                <option value="residual">Residual DQN</option>
-                                <option value="attention">Attention DQN</option>
-                                <option value="conv_embedding">Conv Embedding DQN</option>
-                                <option value="ensemble">Ensemble DQN</option>
-                            </select>
-                            <small class="form-text text-muted">Select the type of DQN model to use for I-value prediction</small>
+                            <label class="form-label">DQN Model Types</label>
+                            <div id="dqnModelCheckboxes">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="basic" id="dqn_basic">
+                                    <label class="form-check-label" for="dqn_basic">Basic DQN</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="residual" id="dqn_residual">
+                                    <label class="form-check-label" for="dqn_residual">Residual DQN</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="attention" id="dqn_attention">
+                                    <label class="form-check-label" for="dqn_attention">Attention DQN</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="conv_embedding" id="dqn_conv_embedding">
+                                    <label class="form-check-label" for="dqn_conv_embedding">Conv Embedding DQN</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" value="ensemble" id="dqn_ensemble">
+                                    <label class="form-check-label" for="dqn_ensemble">Ensemble DQN</label>
+                                </div>
+                            </div>
+                            <small class="form-text text-muted">Select one or more DQN model types to use for I-value prediction</small>
                         </div>
                     </div>
                     
@@ -214,9 +222,10 @@
                                 <option value="comprehensive">Comprehensive</option>
                                 <option value="random">Random</option>
                                 <option value="i-value">I-Value</option>
-                                <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                                <option value="i-value-subcluster">I-Value (Subcluster)</option>
+                                <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                             </select>
-                            <div class="form-text">Graph traversal strategy</div>
+                            <div class="form-text">Graph traversal strategy (I-Value automatically adapts to graph type)</div>
                         </div>
                         <div class="col-md-6 mb-3">
                             <div class="form-check">
@@ -237,7 +246,8 @@
                                     <option value="comprehensive">Comprehensive</option>
                                     <option value="random">Random</option>
                                     <option value="i-value">I-Value</option>
-                                    <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                                    <option value="i-value-subcluster">I-Value (Subcluster)</option>
+                                    <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                                 </select>
                             </div>
                             <div class="col-md-4 mb-3">
@@ -253,7 +263,8 @@
                                     <option value="comprehensive">Comprehensive</option>
                                     <option value="random">Random</option>
                                     <option value="i-value">I-Value</option>
-                                    <option value="i-value-cluster-hop">I-Value Cluster Hop</option>
+                                    <option value="i-value-subcluster">I-Value (Subcluster)</option>
+                                    <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                                 </select>
                             </div>
                         </div>
@@ -263,6 +274,17 @@
                                 <input type="number" class="form-control" id="secondSwitchEpoch" name="second_switch_epoch" 
                                        value="20" min="1" max="1000">
                                 <div class="form-text">Epoch for second switch</div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="disconnectedSwitching" name="disconnected_switching">
+                                    <label class="form-check-label" for="disconnectedSwitching">
+                                        Disconnected Traversal Switching
+                                    </label>
+                                </div>
+                                <div class="form-text">Reset main detection model after switching traversal (I-value model is NOT reset)</div>
                             </div>
                         </div>
                     </div>
@@ -277,6 +299,35 @@
                     </h5>
                 </div>
                 <div class="card-body">
+                    <!-- Cache Status Warning -->
+                    <div id="cacheWarning" class="alert alert-warning" style="display: none;">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>Cache Warning:</strong> <span id="cacheWarningText"></span>
+                    </div>
+                    
+                    <!-- Quick Cache Setup -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <h6>Quick Cache Setup</h6>
+                            <div class="btn-group" role="group">
+                                <button type="button" class="btn btn-outline-primary" onclick="useExistingCache('train', false)">
+                                    <i class="fas fa-database me-1"></i>Use Existing Cache (Train)
+                                </button>
+                                <button type="button" class="btn btn-outline-success" onclick="useExistingCache('train', true)">
+                                    <i class="fas fa-balance-scale me-1"></i>Use Existing Cache (Fair Train)
+                                </button>
+                                <button type="button" class="btn btn-outline-info" onclick="useExistingCache('test', false)">
+                                    <i class="fas fa-database me-1"></i>Use Existing Cache (Val/Test)
+                                </button>
+                                <button type="button" class="btn btn-outline-warning" onclick="useExistingCache('test', true)">
+                                    <i class="fas fa-balance-scale me-1"></i>Use Existing Cache (Fair Val/Test)
+                                </button>
+                            </div>
+                            <div class="form-text">One-click setup using detected cache files</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Manual Cache Settings -->
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <div class="form-check">
@@ -297,7 +348,9 @@
                             <div class="form-text">Save nodes to cache for future use (--cache-nodes)</div>
                         </div>
                     </div>
-                    <div class="row">
+                    
+                    <!-- Conditionally visible cached nodes count field -->
+                    <div class="row" id="cachedNodesCountRow" style="display: none;">
                         <div class="col-md-6 mb-3">
                             <label for="cachedNodesCount" class="form-label">Number of Nodes to Cache</label>
                             <input type="number" class="form-control" id="cachedNodesCount" name="cached_nodes_count" 
@@ -305,6 +358,9 @@
                             <div class="form-text">Number of nodes to cache per split (--cached-nodes=X)</div>
                         </div>
                     </div>
+                    
+                    <!-- Hidden cached nodes count - will be auto-detected -->
+                    <input type="hidden" id="useDynamicCache" name="use_dynamic_cache" value="false">
                     
                     <div class="row">
                         <div class="col-md-6 mb-3">
@@ -378,19 +434,53 @@
                     </div>
                 </div>
             </div>
+
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="graphType" class="form-label">Graph Type</label>
+                    <select class="form-select" id="graphType" name="graph_type" required>
+                        <option value="clustered">Clustered (Race-Gender)</option>
+                        <option value="nonclustered">Non-Clustered (All Nodes)</option>
+                        <option value="subclustered">Subclustered (Louvain)</option>
+                    </select>
+                    <div class="form-text">How to construct the graph for each split</div>
+                </div>
+            </div>
         </form>
     </div>
     
-    <!-- Configuration Preview -->
+    <!-- Sidebar with Configuration Preview and Cache Status -->
     <div class="col-lg-4">
-        <div class="card">
+        <!-- Configuration Preview -->
+        <div class="card mb-4">
             <div class="card-header">
                 <h5 class="card-title mb-0">
                     <i class="fas fa-eye text-secondary me-2"></i>Configuration Preview
                 </h5>
             </div>
             <div class="card-body">
-                <pre id="configPreview" class="bg-light p-3 rounded" style="font-size: 0.8em; max-height: 400px; overflow-y: auto;"></pre>
+                <pre id="configPreview" class="bg-light p-3 rounded" style="font-size: 0.8em; max-height: 300px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+        
+        <!-- Cache Status -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-database text-primary me-2"></i>Cache Status
+                </h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="refreshCacheStatus()">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="cacheStatusContent">
+                    <div class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -400,43 +490,47 @@
 {% block extra_js %}
 <script>
 $(document).ready(function() {
-    setupEventListeners();
+    // Initialize form
     updatePreview();
-});
-
-function setupEventListeners() {
-    $('#configForm input, #configForm select').on('input change', function() {
-        updatePreview();
-    });
+    refreshCacheStatus();
     
-    // Threshold value displays
-    $('#qualityThreshold').on('input', function() {
-        $('#qualityValue').text(parseFloat(this.value).toFixed(3));
-    });
+    // Add event listeners for form changes
+    $('#configForm input, #configForm select').on('change', updatePreview);
     
-    $('#symmetryThreshold').on('input', function() {
-        $('#symmetryValue').text(parseFloat(this.value).toFixed(3));
-    });
-    
-    $('#embeddingThreshold').on('input', function() {
-        $('#embeddingValue').text(parseFloat(this.value).toFixed(3));
-    });
-    
-    $('#biasLossWeight').on('input', function() {
-        $('#biasLossValue').text(parseFloat(this.value).toFixed(2));
-    });
-    
-    // Traversal switching logic
-    $('#enableTraversalSwitching').on('change', function() {
-        if (this.checked) {
-            $('#traversalSwitchingConfig').show();
-        } else {
-            $('#traversalSwitchingConfig').hide();
+    // Add event listener for graph type changes to handle I-value traversal adaptation
+    $('#graphType').on('change', function() {
+        const graphType = $(this).val();
+        const traversalType = $('#traversalType').val();
+        
+        // If I-value is selected, just update the preview to show what will actually be used
+        if (traversalType === 'i-value') {
+            updatePreview();
         }
-        updatePreview();
     });
     
-    // Third traversal logic
+    // Add event listener for traversal type changes
+    $('#traversalType').on('change', function() {
+        const selectedTraversal = $(this).val();
+        const graphType = $('#graphType').val();
+        
+        // If I-value is selected, just update the preview to show what will actually be used
+        if (selectedTraversal === 'i-value') {
+            updatePreview();
+        }
+    });
+    
+    // Add event listeners for second and third traversal types in switching mode
+    $('#secondTraversalType, #thirdTraversalType').on('change', function() {
+        const selectedTraversal = $(this).val();
+        const graphType = $('#graphType').val();
+        
+        // If I-value is selected, just update the preview to show what will actually be used
+        if (selectedTraversal === 'i-value') {
+            updatePreview();
+        }
+    });
+    
+    // Add event listeners for third traversal type to show/hide second switch epoch
     $('#thirdTraversalType').on('change', function() {
         if (this.value) {
             $('#thirdTraversalEpochRow').show();
@@ -446,70 +540,362 @@ function setupEventListeners() {
         updatePreview();
     });
     
-    // Architecture checkboxes
-    $('#architectureCheckboxes input[type="checkbox"]').on('change', function() {
+    // Add event listeners for traversal switching
+    $('#enableTraversalSwitching').on('change', function() {
+        if (this.checked) {
+            $('#traversalSwitchingConfig').show();
+        } else {
+            $('#traversalSwitchingConfig').hide();
+        }
         updatePreview();
     });
-}
-
-function updatePreview() {
-    const config = getFormData();
-    $('#configPreview').text(JSON.stringify(config, null, 2));
-}
-
-function getFormData() {
-    const config = {};
     
-    // Basic fields
-    const formElements = document.querySelectorAll('#configForm input, #configForm select');
-    formElements.forEach(element => {
-        if (element.name && element.name !== 'architectures') {
-            if (element.type === 'checkbox') {
-                config[element.name] = element.checked;
-            } else if (element.type === 'number' || element.type === 'range') {
-                config[element.name] = parseFloat(element.value);
-            } else {
-                config[element.name] = element.value;
-            }
-        }
+    // Add event listeners for cache settings
+    $('#cachedNodes, #cacheNodes').on('change', function() {
+        updateCachedNodesCountVisibility();
+        showCacheWarning();
+        updatePreview();
+        checkConfigurationCompatibility();
     });
     
-    // Handle architecture checkboxes
-    const selectedArchitectures = [];
-    document.querySelectorAll('#architectureCheckboxes input[type="checkbox"]:checked').forEach(cb => {
-        selectedArchitectures.push(cb.value);
+    $('#fairTrain, #fairTest').on('change', function() {
+        showCacheWarning();
+        updatePreview();
+        checkConfigurationCompatibility();
     });
-    config.architectures = selectedArchitectures.join(',');
     
-    // Handle traversal switching
-    if (config.enable_traversal_switching) {
-        const traversalSequence = [config.traversal_type];
-        const switchEpochs = [];
+    // Add event listeners for threshold changes
+    $('#qualityThreshold, #symmetryThreshold, #embeddingThreshold').on('input', function() {
+        updatePreview();
+        checkConfigurationCompatibility();
+    });
+    
+    // Add event listener for graph type changes
+    $('#graphType').on('change', function() {
+        updatePreview();
+        checkConfigurationCompatibility();
+    });
+    
+    // Add event listeners for range inputs
+    $('#qualityThreshold, #symmetryThreshold, #embeddingThreshold, #biasLossWeight').on('input', function() {
+        const value = parseFloat(this.value);
+        const id = this.id;
         
-        if (config.second_traversal_type) {
-            traversalSequence.push(config.second_traversal_type);
-            switchEpochs.push(config.switch_epoch.toString());
+        if (id === 'qualityThreshold') {
+            $('#qualityValue').text(value.toFixed(3));
+        } else if (id === 'symmetryThreshold') {
+            $('#symmetryValue').text(value.toFixed(3));
+        } else if (id === 'embeddingThreshold') {
+            $('#embeddingValue').text(value.toFixed(3));
+        } else if (id === 'biasLossWeight') {
+            $('#biasLossValue').text(value.toFixed(2));
         }
         
-        if (config.third_traversal_type) {
-            traversalSequence.push(config.third_traversal_type);
-            switchEpochs.push(config.second_switch_epoch.toString());
-        }
-        
-        config.traversal_sequence = traversalSequence.join(',');
-        config.switch_epochs = switchEpochs.join(',');
+        updatePreview();
+        checkConfigurationCompatibility();
+    });
+    
+    // Initialize visibility
+    updateCachedNodesCountVisibility();
+});
+
+// Function to update I-value traversal based on graph type
+function updateIValueTraversalForGraphType(graphType, elementId = 'traversalType') {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    
+    // Don't change the dropdown value - keep it as 'i-value'
+    // The mapping will happen in getFormData() when the form is submitted
+    // This prevents the dropdown from showing an invalid value
+}
+
+function updateCachedNodesCountVisibility() {
+    const cachedNodes = $('#cachedNodes').is(':checked');
+    const cacheNodes = $('#cacheNodes').is(':checked');
+    
+    if (cachedNodes && cacheNodes) {
+        $('#cachedNodesCountRow').show();
+    } else if (cachedNodes) {
+        $('#cachedNodesCountRow').hide();
+    } else {
+        $('#cachedNodesCountRow').hide();
+    }
+}
+
+function showCacheWarning() {
+    const cacheData = window.currentCacheData;
+    if (!cacheData || !cacheData.node_cache || !cacheData.node_cache.exists) {
+        $('#cacheWarning').show();
+        $('#cacheWarningText').text('No cache files detected. You may need to generate cache first.');
+        return;
     }
     
-    // Auto-enable I-value visualization
-    config.enable_ivalue_viz = true;
+    const useCached = $('#cachedNodes').is(':checked');
+    const cacheNodes = $('#cacheNodes').is(':checked');
+    const fairTrain = $('#fairTrain').is(':checked');
+    const fairTest = $('#fairTest').is(':checked');
     
-    // Clean up temporary fields used only for UI
-    delete config.second_traversal_type;
-    delete config.third_traversal_type;
-    delete config.switch_epoch;
-    delete config.second_switch_epoch;
+    let warningText = '';
     
-    return config;
+    if (useCached && cacheNodes) {
+        warningText = 'Using cached nodes AND caching new nodes will override existing cache.';
+    } else if (useCached) {
+        const trainData = cacheData.node_cache.train;
+        if (trainData) {
+            const hasBalanced = trainData.balanced_count;
+            const hasFull = trainData.node_count;
+            
+            if (fairTrain && !hasBalanced) {
+                warningText = 'Fair training selected but no balanced cache available.';
+            } else if (!fairTrain && !hasFull) {
+                warningText = 'Full training selected but no full cache available.';
+            }
+        }
+    }
+    
+    if (warningText) {
+        $('#cacheWarning').show();
+        $('#cacheWarningText').text(warningText);
+    } else {
+        $('#cacheWarning').hide();
+    }
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatDate(timestamp) {
+    return new Date(timestamp * 1000).toLocaleString();
+}
+
+function generateCacheStatusHtml(data) {
+    if (!data || !data.node_cache) {
+        return '<div class="alert alert-warning">No cache data available</div>';
+    }
+    
+    const nodeCache = data.node_cache;
+    const graphCache = data.graph_cache;
+    const existingGraphCaches = data.existing_graph_caches || {};
+    
+    let html = '<div class="mb-3">';
+    html += '<h6 class="text-primary">Node Cache</h6>';
+    
+    if (nodeCache.exists) {
+        html += '<div class="table-responsive">';
+        html += '<table class="table table-sm">';
+        html += '<thead><tr><th>Split</th><th>Full</th><th>Balanced</th><th>Status</th></tr></thead><tbody>';
+        
+        for (const split of ['train', 'val', 'test']) {
+            const splitData = nodeCache[split];
+            if (splitData) {
+                const fullCount = splitData.node_count || 'N/A';
+                const balancedCount = splitData.balanced_count || 'N/A';
+                html += `<tr>
+                    <td>${split}</td>
+                    <td>${fullCount}</td>
+                    <td>${balancedCount}</td>
+                    <td><span class="badge bg-success">Available</span></td>
+                </tr>`;
+            } else {
+                html += `<tr>
+                    <td>${split}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td><span class="badge bg-warning">No Data</span></td>
+                </tr>`;
+            }
+        }
+        html += '</tbody></table></div>';
+        
+        html += `<small class="text-muted">
+            <i class="fas fa-clock me-1"></i>Modified: ${formatDate(nodeCache.last_modified)}
+            <br><i class="fas fa-hdd me-1"></i>Size: ${formatFileSize(nodeCache.size)}
+        </small>`;
+    } else {
+        html += '<div class="alert alert-danger">Node cache not found</div>';
+    }
+    
+    html += '</div>';
+    
+    html += '<div class="mb-3">';
+    html += '<h6 class="text-info">Graph Cache Overview</h6>';
+    
+    if (Object.keys(existingGraphCaches).length > 0) {
+        // Count caches by split
+        const splitCounts = {};
+        const totalCaches = Object.keys(existingGraphCaches).length;
+        
+        for (const [configKey, cacheInfo] of Object.entries(existingGraphCaches)) {
+            const split = cacheInfo.split || 'unknown';
+            splitCounts[split] = (splitCounts[split] || 0) + 1;
+        }
+        
+        html += '<div class="table-responsive">';
+        html += '<table class="table table-sm">';
+        html += '<thead><tr><th>Split</th><th>Available Configurations</th><th>Status</th></tr></thead><tbody>';
+        
+        for (const split of ['train', 'val', 'test']) {
+            const count = splitCounts[split] || 0;
+            let statusBadge;
+            if (count > 0) {
+                statusBadge = `<span class="badge bg-success">${count} config(s)</span>`;
+            } else {
+                statusBadge = '<span class="badge bg-danger">None</span>';
+            }
+            
+            html += `<tr>
+                <td>${split}</td>
+                <td>${count}</td>
+                <td>${statusBadge}</td>
+            </tr>`;
+        }
+        html += '</tbody></table></div>';
+        
+        html += `<small class="text-muted">
+            <i class="fas fa-info-circle me-1"></i>Total: ${totalCaches} graph cache configurations available
+        </small>`;
+    } else {
+        html += '<div class="alert alert-warning">No graph cache files found</div>';
+    }
+    
+    html += '</div>';
+    
+    // Add Configuration Compatibility Section
+    html += '<div class="mb-3">';
+    html += '<h6 class="text-success">Configuration Compatibility</h6>';
+    html += '<div id="configCompatibilityContent">';
+    html += '<div class="text-center">';
+    html += '<div class="spinner-border spinner-border-sm text-primary" role="status">';
+    html += '<span class="visually-hidden">Checking...</span>';
+    html += '</div>';
+    html += '<small class="text-muted">Checking compatibility...</small>';
+    html += '</div>';
+    html += '</div>';
+    html += '</div>';
+    
+    // Add Existing Graph Caches Section
+    if (Object.keys(existingGraphCaches).length > 0) {
+        html += '<div class="mb-3">';
+        html += '<h6 class="text-secondary">Available Graph Cache Configurations</h6>';
+        
+        // Group by split for better organization
+        const cachesBySplit = {};
+        for (const [configKey, cacheInfo] of Object.entries(existingGraphCaches)) {
+            const split = cacheInfo.split || 'unknown';
+            if (!cachesBySplit[split]) {
+                cachesBySplit[split] = [];
+            }
+            cachesBySplit[split].push({ configKey, cacheInfo });
+        }
+        
+        for (const split of ['train', 'val', 'test']) {
+            const splitCaches = cachesBySplit[split] || [];
+            if (splitCaches.length > 0) {
+                html += `<div class="mb-2"><strong>${split.charAt(0).toUpperCase() + split.slice(1)} Split:</strong></div>`;
+                html += '<div class="table-responsive mb-3">';
+                html += '<table class="table table-sm">';
+                html += '<thead><tr><th>Configuration</th><th>Nodes</th><th>Thresholds</th><th>Status</th></tr></thead><tbody>';
+                
+                for (const { configKey, cacheInfo } of splitCaches) {
+                    const status = (cacheInfo.cache_files && cacheInfo.cache_files.length > 0) ? 
+                        '<span class="badge bg-success">Available</span>' : 
+                        '<span class="badge bg-danger">Missing</span>';
+                    
+                    // Extract configuration details from configKey
+                    // Format: dataset_split_balancing_nodes_count_qX.XXX_sX.XXX_eX.XXX
+                    // Example: ai-face_train_balanced_10000_q0.500_s0.300_e0.700
+                    const parts = configKey.split('_');
+                    
+                    // Handle dataset names that may contain hyphens
+                    let balancing, nodeCount, qThresh, sThresh, eThresh;
+                    
+                    if (parts.length >= 7) {
+                        // Find the split position (should be one of train/val/test)
+                        let splitIndex = -1;
+                        for (let i = 0; i < parts.length; i++) {
+                            if (['train', 'val', 'test'].includes(parts[i])) {
+                                splitIndex = i;
+                                break;
+                            }
+                        }
+                        
+                        if (splitIndex >= 0 && splitIndex + 4 < parts.length) {
+                            balancing = parts[splitIndex + 1] || 'unknown';
+                            nodeCount = parts[splitIndex + 2] || 'unknown';
+                            qThresh = parts[splitIndex + 3] || 'unknown';
+                            sThresh = parts[splitIndex + 4] || 'unknown';
+                            eThresh = parts[splitIndex + 5] || 'unknown';
+                        } else {
+                            balancing = 'unknown';
+                            nodeCount = 'unknown';
+                            qThresh = 'unknown';
+                            sThresh = 'unknown';
+                            eThresh = 'unknown';
+                        }
+                    } else {
+                        balancing = 'unknown';
+                        nodeCount = 'unknown';
+                        qThresh = 'unknown';
+                        sThresh = 'unknown';
+                        eThresh = 'unknown';
+                    }
+                    
+                    html += `<tr>
+                        <td><small class="text-muted">${balancing}</small></td>
+                        <td><small>${nodeCount}</small></td>
+                        <td><small>q${qThresh} s${sThresh} e${eThresh}</small></td>
+                        <td>${status}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table></div>';
+            }
+        }
+        html += '</div>';
+    }
+    
+    return html;
+}
+
+function refreshCacheStatus() {
+    const statusElement = document.getElementById('cacheStatusContent');
+    statusElement.innerHTML = `
+        <div class="text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    `;
+    
+    fetch('/api/cache/status')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            window.currentCacheData = data;
+            const html = generateCacheStatusHtml(data);
+            statusElement.innerHTML = html;
+            showCacheWarning();
+            
+            // Trigger compatibility check immediately after cache status is loaded
+            checkConfigurationCompatibility();
+        })
+        .catch(error => {
+            console.error('Error fetching cache status:', error);
+            statusElement.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Error loading cache status: ${error.message}
+                </div>
+            `;
+        });
 }
 
 function saveConfiguration() {
@@ -589,6 +975,273 @@ function loadTemplate() {
 
 function validateConfiguration() {
     alert('Validation feature coming soon!');
+}
+
+// Function to check configuration compatibility with available cache files
+function checkConfigurationCompatibility() {
+    const config = getFormData();
+    const cacheData = window.currentCacheData;
+    const compatibilityElement = document.getElementById('configCompatibilityContent');
+    
+    if (!cacheData || !compatibilityElement) {
+        return;
+    }
+    
+    let compatibilityHtml = '';
+    let hasIssues = false;
+    
+    // Check node cache compatibility
+    if (cacheData.node_cache && cacheData.node_cache.exists) {
+        const nodeCache = cacheData.node_cache;
+        
+        // Check if fair training is selected but no balanced cache available
+        if (config.fair_train && nodeCache.train && !nodeCache.train.balanced_count) {
+            compatibilityHtml += '<div class="alert alert-warning mb-2">';
+            compatibilityHtml += '<i class="fas fa-exclamation-triangle me-2"></i>';
+            compatibilityHtml += '<strong>Fair Training Issue:</strong> Fair training is selected but no balanced cache is available.';
+            compatibilityHtml += '</div>';
+            hasIssues = true;
+        }
+        
+        // Check if fair testing is selected but no balanced cache available
+        if (config.fair_test && nodeCache.val && !nodeCache.val.balanced_count) {
+            compatibilityHtml += '<div class="alert alert-warning mb-2">';
+            compatibilityHtml += '<i class="fas fa-exclamation-triangle me-2"></i>';
+            compatibilityHtml += '<strong>Fair Testing Issue:</strong> Fair testing is selected but no balanced cache is available.';
+            compatibilityHtml += '</div>';
+            hasIssues = true;
+        }
+        
+        // Check if using cached nodes but cache doesn't exist
+        if (config.cached_nodes && !nodeCache.exists) {
+            compatibilityHtml += '<div class="alert alert-danger mb-2">';
+            compatibilityHtml += '<i class="fas fa-times-circle me-2"></i>';
+            compatibilityHtml += '<strong>Cache Missing:</strong> Using cached nodes is selected but no node cache exists.';
+            compatibilityHtml += '</div>';
+            hasIssues = true;
+        }
+    } else if (config.cached_nodes) {
+        compatibilityHtml += '<div class="alert alert-danger mb-2">';
+        compatibilityHtml += '<i class="fas fa-times-circle me-2"></i>';
+        compatibilityHtml += '<strong>Cache Missing:</strong> Using cached nodes is selected but no node cache exists.';
+        compatibilityHtml += '</div>';
+        hasIssues = true;
+    }
+    
+    // Check graph cache compatibility
+    if (cacheData.existing_graph_caches && Object.keys(cacheData.existing_graph_caches).length > 0) {
+        const graphCaches = cacheData.existing_graph_caches;
+        
+        // Check if there are compatible graph caches for the current configuration
+        const graphType = config.graph_type || 'clustered';
+        const qualityThreshold = config.quality_threshold || 0.8;
+        const symmetryThreshold = config.symmetry_threshold || 0.75;
+        const embeddingThreshold = config.embedding_threshold || 0.7;
+        
+        let hasCompatibleGraphCache = false;
+        let compatibleCacheInfo = '';
+        
+        for (const [configKey, cacheInfo] of Object.entries(graphCaches)) {
+            // Check if the cache matches the current graph type and thresholds
+            if (configKey.includes(graphType) && 
+                configKey.includes(`q${qualityThreshold.toFixed(3)}`) &&
+                configKey.includes(`s${symmetryThreshold.toFixed(3)}`) &&
+                configKey.includes(`e${embeddingThreshold.toFixed(3)}`)) {
+                hasCompatibleGraphCache = true;
+                compatibleCacheInfo = configKey;
+                break;
+            }
+        }
+        
+        if (!hasCompatibleGraphCache) {
+            compatibilityHtml += '<div class="alert alert-info mb-2">';
+            compatibilityHtml += '<i class="fas fa-info-circle me-2"></i>';
+            compatibilityHtml += '<strong>Graph Cache:</strong> No compatible graph cache found for current settings. Graph will be built from scratch.';
+            compatibilityHtml += '</div>';
+        } else {
+            compatibilityHtml += '<div class="alert alert-success mb-2">';
+            compatibilityHtml += '<i class="fas fa-check-circle me-2"></i>';
+            compatibilityHtml += '<strong>Graph Cache:</strong> Compatible graph cache found.';
+            compatibilityHtml += '</div>';
+        }
+    }
+    
+    // If no issues found, show success message
+    if (!hasIssues && compatibilityHtml === '') {
+        compatibilityHtml += '<div class="alert alert-success mb-2">';
+        compatibilityHtml += '<i class="fas fa-check-circle me-2"></i>';
+        compatibilityHtml += '<strong>Configuration Compatible:</strong> All settings are compatible with available cache files.';
+        compatibilityHtml += '</div>';
+    }
+    
+    compatibilityElement.innerHTML = compatibilityHtml;
+}
+
+function getFormData() {
+    const config = {};
+    
+    // Basic fields
+    const formElements = document.querySelectorAll('#configForm input, #configForm select');
+    formElements.forEach(element => {
+        if (element.name && element.name !== 'architectures' && element.name !== 'dqn-model') {
+            if (element.type === 'checkbox') {
+                config[element.name] = element.checked;
+            } else if (element.type === 'number' || element.type === 'range') {
+                config[element.name] = parseFloat(element.value);
+            } else {
+                config[element.name] = element.value;
+            }
+        }
+    });
+    
+    // Handle architecture checkboxes
+    const selectedArchitectures = [];
+    document.querySelectorAll('#architectureCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        selectedArchitectures.push(cb.value);
+    });
+    config.architectures = selectedArchitectures.join(',');
+
+    // Handle DQN model checkboxes
+    const selectedDqns = [];
+    document.querySelectorAll('#dqnModelCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        selectedDqns.push(cb.value);
+    });
+    config['dqn-model'] = selectedDqns.join(',');
+    
+    // Handle I-value traversal mapping based on graph type
+    const graphType = config.graph_type || 'clustered';
+    if (config.traversal_type === 'i-value') {
+        config.traversal_type = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
+    }
+    
+    // Handle traversal switching
+    if (config.enable_traversal_switching) {
+        const traversalSequence = [config.traversal_type];
+        const switchEpochs = [];
+        
+        if (config.second_traversal_type) {
+            // Map I-value traversal for second traversal
+            let secondTraversal = config.second_traversal_type;
+            if (secondTraversal === 'i-value') {
+                secondTraversal = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
+            }
+            traversalSequence.push(secondTraversal);
+            switchEpochs.push(config.switch_epoch.toString());
+        }
+        
+        if (config.third_traversal_type) {
+            // Map I-value traversal for third traversal
+            let thirdTraversal = config.third_traversal_type;
+            if (thirdTraversal === 'i-value') {
+                thirdTraversal = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
+            }
+            traversalSequence.push(thirdTraversal);
+            switchEpochs.push(config.second_switch_epoch.toString());
+        }
+        
+        config.traversal_sequence = traversalSequence.join(',');
+        config.switch_epochs = switchEpochs.join(',');
+        // Add disconnected_switching flag if checked
+        config.disconnected_switching = document.getElementById('disconnectedSwitching').checked;
+    }
+    
+    // Auto-enable I-value visualization
+    config.enable_ivalue_viz = true;
+    
+    // Ensure use_dynamic_cache is included as boolean
+    config.use_dynamic_cache = $('#useDynamicCache').is(':checked');
+    
+    // Ensure graph_type is included (from select element)
+    config.graph_type = $('#graphType').val();
+    
+    // Clean up temporary fields used only for UI
+    delete config.second_traversal_type;
+    delete config.third_traversal_type;
+    delete config.switch_epoch;
+    delete config.second_switch_epoch;
+    
+    return config;
+}
+
+function updatePreview() {
+    const config = getFormData();
+    let preview = '';
+    
+    // Add basic configuration
+    if (config.architectures) {
+        preview += `<div class="mb-2"><strong>Architectures:</strong> ${config.architectures}</div>`;
+    }
+    
+    if (config.num_epochs) {
+        preview += `<div class="mb-2"><strong>Epochs:</strong> ${config.num_epochs}</div>`;
+    }
+    
+    if (config.batch_size) {
+        preview += `<div class="mb-2"><strong>Batch Size:</strong> ${config.batch_size}</div>`;
+    }
+    
+    // Add graph type configuration
+    if (config.graph_type) {
+        const graphTypeLabel = config.graph_type === 'clustered' ? 'Clustered (Race-Gender)' : 
+                                config.graph_type === 'nonclustered' ? 'Non-Clustered (All Nodes)' : 
+                                config.graph_type === 'subclustered' ? 'Subclustered (Louvain)' : 'Unknown';
+        preview += `<div class="mb-2"><strong>Graph Type:</strong> ${graphTypeLabel}</div>`;
+    }
+    
+    // Add traversal configuration (show the actual traversal type that will be used)
+    if (config.traversal_type) {
+        let traversalLabel = config.traversal_type;
+        if (config.traversal_type === 'i-value-cluster-hop') {
+            traversalLabel = 'I-Value Cluster Hop';
+        } else if (config.traversal_type === 'i-value') {
+            traversalLabel = 'I-Value (Standard)';
+        } else if (config.traversal_type === 'i-value-subcluster') {
+            traversalLabel = 'I-Value (Subcluster)';
+        } else if (config.traversal_type === 'i-value-cluster-hop-subcluster') {
+            traversalLabel = 'I-Value Cluster Hop (Subcluster)';
+        }
+        preview += `<div class="mb-2"><strong>Traversal:</strong> ${traversalLabel}</div>`;
+    }
+    
+    if (config.enable_traversal_switching) {
+        preview += `<div class="mb-2"><strong>Traversal Switching:</strong> Enabled</div>`;
+        if (config.traversal_sequence) {
+            // Show the actual traversal sequence that will be used
+            const sequenceParts = config.traversal_sequence.split(',');
+            const sequenceLabels = sequenceParts.map(t => {
+                if (t === 'i-value-cluster-hop') return 'I-Value Cluster Hop';
+                if (t === 'i-value') return 'I-Value (Standard)';
+                if (t === 'i-value-subcluster') return 'I-Value (Subcluster)';
+                if (t === 'i-value-cluster-hop-subcluster') return 'I-Value Cluster Hop (Subcluster)';
+                return t;
+            });
+            preview += `<div class="mb-2"><strong>Sequence:</strong> ${sequenceLabels.join(' → ')}</div>`;
+        }
+        if (config.switch_epochs) {
+            preview += `<div class="mb-2"><strong>Switch Epochs:</strong> ${config.switch_epochs}</div>`;
+        }
+    }
+    
+    // Add threshold configuration
+    if (config.quality_threshold || config.symmetry_threshold || config.embedding_threshold) {
+        preview += `<div class="mb-2"><strong>Thresholds:</strong> Q:${config.quality_threshold || 'N/A'} S:${config.symmetry_threshold || 'N/A'} E:${config.embedding_threshold || 'N/A'}</div>`;
+    }
+    
+    // Add cache configuration
+    if (config.cached_nodes) {
+        preview += `<div class="mb-2"><strong>Cache:</strong> Using cached nodes</div>`;
+    }
+    
+    if (config.fair_train || config.fair_test) {
+        preview += `<div class="mb-2"><strong>Fairness:</strong> Train:${config.fair_train ? 'Yes' : 'No'} Test:${config.fair_test ? 'Yes' : 'No'}</div>`;
+    }
+    
+    // If no preview content, show JSON
+    if (!preview) {
+        preview = JSON.stringify(config, null, 2);
+    }
+    
+    $('#configPreview').html(preview);
 }
 </script>
 {% endblock %} 

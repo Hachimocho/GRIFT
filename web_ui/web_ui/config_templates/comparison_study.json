@@ -2,7 +2,6 @@
   "name": "Comparison Study",
   "description": "Test all traversal types for comparison",
   "config": {
-    "trainer_mode": "adaptive",
     "test_all_traversals": true,
     "architectures": "resnestdf,efficientnet",
     "num_epochs": 25,

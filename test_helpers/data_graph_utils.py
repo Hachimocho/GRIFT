@@ -458,8 +458,60 @@ def load_and_prepare_data_splits(args, data_root):
 
     node_loading_start = time.time()
 
+    # Debug output for cache loading
+    print(f"DEBUG: load_and_prepare_data_splits called with:")
+    print(f"  args.use_cached: {getattr(args, 'use_cached', 'Not set')}")
+    print(f"  args.cache_file: {getattr(args, 'cache_file', 'Not set')}")
+    print(f"  args.cached_nodes: {getattr(args, 'cached_nodes', 'Not set')}")
+    print(f"  args.dynamic_cache_detection: {getattr(args, 'dynamic_cache_detection', 'Not set')}")
+
     if args.use_cached:
         print(f"Attempting to load nodes from cache: {args.cache_file}")
+        
+        # Check if cache file exists
+        if not os.path.exists(args.cache_file):
+            print(f"ERROR: Cache file does not exist: {args.cache_file}")
+            print("Falling back to direct dataset loading")
+            args.use_cached = False
+        else:
+            print(f"Cache file exists: {args.cache_file}")
+        
+        # Check if dynamic cache detection is enabled
+        if hasattr(args, 'dynamic_cache_detection') and args.dynamic_cache_detection:
+            print("Dynamic cache detection enabled - will auto-detect cache size")
+            # Load cache to determine available node counts
+            try:
+                with open(args.cache_file, 'rb') as f:
+                    cache_data = dill.load(f)
+                
+                # Determine the appropriate node count based on fairness settings
+                train_data = cache_data.get('train', {})
+                if isinstance(train_data, dict):
+                    # New cache format with separate full/balanced data
+                    if args.fair_train and 'balanced' in train_data:
+                        detected_count = len(train_data['balanced'])
+                        print(f"Detected {detected_count} balanced training nodes from cache")
+                    elif not args.fair_train and 'full' in train_data:
+                        detected_count = len(train_data['full'])
+                        print(f"Detected {detected_count} full training nodes from cache")
+                    else:
+                        # Fallback to total count
+                        detected_count = len(train_data.get('full', train_data.get('balanced', [])))
+                        print(f"Detected {detected_count} training nodes from cache (fallback)")
+                else:
+                    # Old cache format - direct list
+                    detected_count = len(train_data) if train_data else 1000
+                    print(f"Detected {detected_count} training nodes from cache (legacy format)")
+                
+                # Update the cached_nodes argument with detected count
+                args.cached_nodes = detected_count
+                print(f"Auto-detected cache size: {detected_count} nodes")
+                
+            except Exception as e:
+                print(f"Warning: Could not auto-detect cache size: {e}")
+                print("Falling back to default cache size of 1000")
+                args.cached_nodes = 1000
+        
         train_nodes = load_cached_nodes(args.cache_file, 'train', balanced=args.fair_train)
         val_nodes = load_cached_nodes(args.cache_file, 'val', balanced=args.fair_test)
         test_nodes = load_cached_nodes(args.cache_file, 'test', balanced=args.fair_test)
@@ -475,6 +527,11 @@ def load_and_prepare_data_splits(args, data_root):
             train_nodes_full = train_nodes # Placeholder if full not separately cached/loaded
             val_nodes_full = val_nodes   # Placeholder
             test_nodes_full = test_nodes  # Placeholder
+            
+            # Return early when cache loading succeeds to prevent unnecessary cache regeneration
+            node_loading_time = time.time() - node_loading_start
+            print(f"Node loading/preparation (from cache) time: {node_loading_time:.2f} seconds")
+            return train_nodes, val_nodes, test_nodes, train_nodes_full, val_nodes_full, test_nodes_full, node_loading_time
 
     if not args.use_cached:
         print("Loading nodes directly from dataset...")
@@ -508,3 +565,151 @@ def load_and_prepare_data_splits(args, data_root):
     print(f"Node loading/preparation (incl. balancing for graph use) time: {node_loading_time:.2f} seconds")
 
     return train_nodes, val_nodes, test_nodes, train_nodes_full, val_nodes_full, test_nodes_full, node_loading_time
+
+def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_cache"):
+    """
+    Check for exact graph cache file matches based on configuration.
+    
+    Returns:
+        dict: Information about exact cache file matches for each split
+    """
+    import hashlib
+    import glob
+    import os
+    
+    # Extract configuration parameters
+    quality_threshold = config.get('quality_threshold', 0.5)
+    symmetry_threshold = config.get('symmetry_threshold', 0.3)
+    embedding_threshold = config.get('embedding_threshold', 0.7)
+    fair_train = config.get('fair_train', False)
+    fair_test = config.get('fair_test', False)
+    
+    # Get actual node counts from existing cache if available
+    node_cache_file = os.path.join(os.path.dirname(graph_cache_dir), 'node_cache', 'cached_nodes.pkl')
+    actual_node_counts = {}
+    
+    try:
+        if os.path.exists(node_cache_file):
+            with open(node_cache_file, 'rb') as f:
+                cache_data = dill.load(f)
+            
+            # Use the same dynamic cache detection logic as load_and_prepare_data_splits
+            for split in ['train', 'val', 'test']:
+                split_data = cache_data.get(split, {})
+                if isinstance(split_data, dict):
+                    # New cache format with separate full/balanced data
+                    if split == 'train' and fair_train and 'balanced' in split_data:
+                        actual_node_counts[split] = len(split_data['balanced'])
+                    elif split in ['val', 'test'] and fair_test and 'balanced' in split_data:
+                        actual_node_counts[split] = len(split_data['balanced'])
+                    elif 'full' in split_data:
+                        actual_node_counts[split] = len(split_data['full'])
+                    else:
+                        # Fallback to any available data
+                        actual_node_counts[split] = len(split_data.get('full', split_data.get('balanced', [])))
+                else:
+                    # Old cache format - direct list
+                    actual_node_counts[split] = len(split_data) if split_data else 1000
+        else:
+            # No cache file, use default values
+            actual_node_counts = {
+                'train': config.get('cached_nodes_count', 1000),
+                'val': config.get('cached_nodes_count', 1000),
+                'test': config.get('cached_nodes_count', 1000)
+            }
+    except Exception as e:
+        # Fallback to config values if cache reading fails
+        actual_node_counts = {
+            'train': config.get('cached_nodes_count', 1000),
+            'val': config.get('cached_nodes_count', 1000),
+            'test': config.get('cached_nodes_count', 1000)
+        }
+    
+    # Format threshold strings
+    q_thresh_str = f"{quality_threshold:.3f}"
+    s_thresh_str = f"{symmetry_threshold:.3f}"
+    e_thresh_str = f"{embedding_threshold:.3f}"
+    
+    # Determine balancing status (this matches the test script logic)
+    train_suffix = "balanced" if fair_train else "full"
+    val_suffix = "balanced" if fair_test else "full"
+    test_suffix = "balanced" if fair_test else "full"
+    
+    # Extract dataset name
+    dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
+    
+    cache_info = {
+        'train': {'exact_match': None, 'expected_filename': None},
+        'val': {'exact_match': None, 'expected_filename': None},
+        'test': {'exact_match': None, 'expected_filename': None}
+    }
+    
+    # Check each split
+    for split_name, suffix in [('train', train_suffix), ('val', val_suffix), ('test', test_suffix)]:
+        # Use actual node count for this split
+        node_count = actual_node_counts.get(split_name, 1000)
+        
+        # Pattern for exact match (including node count, but excluding hash since we don't know it)
+        exact_pattern = os.path.join(
+            graph_cache_dir,
+            f"{dataset_name}_{split_name}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_*_graph.pkl"
+        )
+        
+        # Find exact matches
+        exact_matches = glob.glob(exact_pattern)
+        if exact_matches:
+            cache_info[split_name]['exact_match'] = exact_matches[0]
+        
+        # Store expected filename pattern (without hash) for UI display
+        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_graph.pkl"
+    
+    return cache_info
+
+def find_existing_graph_caches(graph_cache_dir="graph_cache"):
+    """
+    Find all existing graph cache files and analyze their configurations.
+    
+    Returns:
+        dict: Information about all existing graph cache files
+    """
+    import glob
+    import os
+    import re
+    
+    cache_files = glob.glob(os.path.join(graph_cache_dir, "*_graph.pkl"))
+    
+    cache_analysis = {}
+    for cache_file in cache_files:
+        filename = os.path.basename(cache_file)
+        
+        # Parse filename to extract configuration
+        # Format: dataset_split_balancing_nodes_count_qX.XXX_sX.XXX_eX.XXX_hash[hashvalue]_graph.pkl
+        pattern = r"(.+)_(train|val|test)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_graph\.pkl"
+        match = re.match(pattern, filename)
+        
+        if match:
+            dataset, split, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash = match.groups()
+            
+            config_key = f"{dataset}_{split}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
+            
+            if config_key not in cache_analysis:
+                cache_analysis[config_key] = {
+                    'dataset': dataset,
+                    'split': split,
+                    'balancing': balancing,
+                    'node_count': int(node_count),
+                    'quality_threshold': float(q_thresh),
+                    'symmetry_threshold': float(s_thresh),
+                    'embedding_threshold': float(e_thresh),
+                    'cache_files': []
+                }
+            
+            cache_analysis[config_key]['cache_files'].append({
+                'filename': filename,
+                'full_path': cache_file,
+                'node_hash': node_hash,
+                'file_size': os.path.getsize(cache_file),
+                'modified_time': os.path.getmtime(cache_file)
+            })
+    
+    return cache_analysis

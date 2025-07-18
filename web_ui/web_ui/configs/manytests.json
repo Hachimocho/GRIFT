@@ -1,0 +1,33 @@
+{
+  "name": "manytests",
+  "created": "2025-07-01T03:21:21.069923",
+  "modified": "2025-07-01T03:21:21.069953",
+  "config": {
+    "name": "manytests",
+    "num_epochs": 20,
+    "bias_hop_period": 5,
+    "batch_size": 32,
+    "seed": 42,
+    "quality_threshold": 0.5,
+    "symmetry_threshold": 0.3,
+    "embedding_threshold": 0.7,
+    "traversal_type": "comprehensive",
+    "enable_traversal_switching": true,
+    "disconnected_switching": true,
+    "cached_nodes": true,
+    "cache_nodes": false,
+    "cached_nodes_count": 1000,
+    "use_dynamic_cache": false,
+    "fair_train": true,
+    "fair_test": true,
+    "bias_loss_weight": 0.1,
+    "num_workers": 0,
+    "viz_track_nodes": 50,
+    "viz_sample_size": 200,
+    "architectures": "resnestdf,effnetdf,xceptiondf",
+    "dqn-model": "basic,residual,attention,conv_embedding,ensemble",
+    "traversal_sequence": "comprehensive,i-value-cluster-hop",
+    "switch_epochs": "10",
+    "enable_ivalue_viz": true
+  }
+}
