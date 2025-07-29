@@ -222,8 +222,6 @@
                                 <option value="comprehensive">Comprehensive</option>
                                 <option value="random">Random</option>
                                 <option value="i-value">I-Value</option>
-                                <option value="i-value-subcluster">I-Value (Subcluster)</option>
-                                <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                             </select>
                             <div class="form-text">Graph traversal strategy (I-Value automatically adapts to graph type)</div>
                         </div>
@@ -246,8 +244,6 @@
                                     <option value="comprehensive">Comprehensive</option>
                                     <option value="random">Random</option>
                                     <option value="i-value">I-Value</option>
-                                    <option value="i-value-subcluster">I-Value (Subcluster)</option>
-                                    <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                                 </select>
                             </div>
                             <div class="col-md-4 mb-3">
@@ -263,8 +259,6 @@
                                     <option value="comprehensive">Comprehensive</option>
                                     <option value="random">Random</option>
                                     <option value="i-value">I-Value</option>
-                                    <option value="i-value-subcluster">I-Value (Subcluster)</option>
-                                    <option value="i-value-cluster-hop-subcluster">I-Value Cluster Hop (Subcluster)</option>
                                 </select>
                             </div>
                         </div>
@@ -395,11 +389,66 @@
                             </div>
                             <div class="form-text">Weight for bias loss component</div>
                         </div>
+                        <!-- Per-Group Bias Weights -->
                         <div class="col-md-6 mb-3">
-                            <label for="numWorkers" class="form-label">Number of Workers</label>
-                            <input type="number" class="form-control" id="numWorkers" name="num_workers" 
-                                   value="0" min="0" max="16">
-                            <div class="form-text">DataLoader worker processes (0 = single-threaded)</div>
+                            <label class="form-label">Bias Weights by Attribute Group</label>
+                            <div id="groupBiasWeights">
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_Gender" class="form-label">Gender</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_Gender" name="bias_group_weights[Gender]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_Gender" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_Race" class="form-label">Race</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_Race" name="bias_group_weights[Race]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_Race" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_Age" class="form-label">Age</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_Age" name="bias_group_weights[Age]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_Age" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_Emotion" class="form-label">Emotion</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_Emotion" name="bias_group_weights[Emotion]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_Emotion" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_Quality" class="form-label">Quality</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_Quality" name="bias_group_weights[Quality]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_Quality" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="bias_group_weight_FaceEmbedding" class="form-label">Face Embedding</label>
+                                    <input type="range" class="form-range" id="bias_group_weight_FaceEmbedding" name="bias_group_weights[FaceEmbedding]" min="0" max="2" step="0.01" value="1.0">
+                                    <div class="d-flex justify-content-between">
+                                        <small>0.0</small>
+                                        <span id="bias_group_weight_value_FaceEmbedding" class="fw-bold">1.00</span>
+                                        <small>2.0</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-text">Set weights for each attribute group (default 1.0).</div>
                         </div>
                     </div>
                 </div>
@@ -440,10 +489,11 @@
                     <label for="graphType" class="form-label">Graph Type</label>
                     <select class="form-select" id="graphType" name="graph_type" required>
                         <option value="clustered">Clustered (Race-Gender)</option>
+                        <option value="clustered_subclustered">Clustered (Race-Gender) + Subclustering</option>
                         <option value="nonclustered">Non-Clustered (All Nodes)</option>
-                        <option value="subclustered">Subclustered (Louvain)</option>
+                        <option value="nonclustered_subclustered">Non-Clustered + Subclustering</option>
                     </select>
-                    <div class="form-text">How to construct the graph for each split</div>
+                    <div class="form-text">How to construct the graph for each split. Subclustering uses Louvain community detection.</div>
                 </div>
             </div>
         </form>
@@ -593,6 +643,18 @@ $(document).ready(function() {
         
         updatePreview();
         checkConfigurationCompatibility();
+    });
+    
+    // Update per-attribute bias weight values on slider input
+    $('#attributeBiasWeights').on('input', 'input[type="range"]', function() {
+        const attrName = $(this).attr('id').replace('bias_weight_', '');
+        $('#bias_weight_value_' + attrName).text(parseFloat($(this).val()).toFixed(2));
+    });
+
+    // Update per-group bias weight values on slider input
+    $('#groupBiasWeights').on('input', 'input[type="range"]', function() {
+        const groupName = $(this).attr('name').replace('bias_group_weights[', '').replace(']', '');
+        $('#bias_group_weight_value_' + groupName).text(parseFloat($(this).val()).toFixed(2));
     });
     
     // Initialize visibility
@@ -1120,22 +1182,12 @@ function getFormData() {
         const switchEpochs = [];
         
         if (config.second_traversal_type) {
-            // Map I-value traversal for second traversal
-            let secondTraversal = config.second_traversal_type;
-            if (secondTraversal === 'i-value') {
-                secondTraversal = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
-            }
-            traversalSequence.push(secondTraversal);
+            traversalSequence.push(config.second_traversal_type);
             switchEpochs.push(config.switch_epoch.toString());
         }
         
         if (config.third_traversal_type) {
-            // Map I-value traversal for third traversal
-            let thirdTraversal = config.third_traversal_type;
-            if (thirdTraversal === 'i-value') {
-                thirdTraversal = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
-            }
-            traversalSequence.push(thirdTraversal);
+            traversalSequence.push(config.third_traversal_type);
             switchEpochs.push(config.second_switch_epoch.toString());
         }
         
@@ -1153,6 +1205,22 @@ function getFormData() {
     
     // Ensure graph_type is included (from select element)
     config.graph_type = $('#graphType').val();
+    
+    // Collect per-attribute bias weights
+    const biasWeights = {};
+    document.querySelectorAll('#attributeBiasWeights input[type="range"]').forEach(element => {
+        const attrName = element.name.match(/bias_weights\[(.*)\]/)[1];
+        biasWeights[attrName] = parseFloat(element.value);
+    });
+    config.bias_weights = biasWeights;
+
+    // Collect per-group bias weights
+    const groupBiasWeights = {};
+    document.querySelectorAll('#groupBiasWeights input[type="range"]').forEach(element => {
+        const groupName = element.name.match(/bias_group_weights\[(.*)\]/)[1];
+        groupBiasWeights[groupName] = parseFloat(element.value);
+    });
+    config.bias_group_weights = groupBiasWeights;
     
     // Clean up temporary fields used only for UI
     delete config.second_traversal_type;
@@ -1183,8 +1251,9 @@ function updatePreview() {
     // Add graph type configuration
     if (config.graph_type) {
         const graphTypeLabel = config.graph_type === 'clustered' ? 'Clustered (Race-Gender)' : 
+                                config.graph_type === 'clustered_subclustered' ? 'Clustered (Race-Gender) + Subclustering' : 
                                 config.graph_type === 'nonclustered' ? 'Non-Clustered (All Nodes)' : 
-                                config.graph_type === 'subclustered' ? 'Subclustered (Louvain)' : 'Unknown';
+                                config.graph_type === 'nonclustered_subclustered' ? 'Non-Clustered + Subclustering' : 'Unknown';
         preview += `<div class="mb-2"><strong>Graph Type:</strong> ${graphTypeLabel}</div>`;
     }
     
@@ -1234,6 +1303,23 @@ function updatePreview() {
     
     if (config.fair_train || config.fair_test) {
         preview += `<div class="mb-2"><strong>Fairness:</strong> Train:${config.fair_train ? 'Yes' : 'No'} Test:${config.fair_test ? 'Yes' : 'No'}</div>`;
+    }
+
+    // Add bias weights preview
+    if (config.bias_weights) {
+        preview += '<div class="mb-2"><strong>Per-Attribute Bias Weights:</strong><br>';
+        for (const attrName in config.bias_weights) {
+            preview += `${attrName}: ${config.bias_weights[attrName].toFixed(2)}<br>`;
+        }
+        preview += '</div>';
+    }
+
+    if (config.bias_group_weights) {
+        preview += '<div class="mb-2"><strong>Per-Group Bias Weights:</strong><br>';
+        for (const groupName in config.bias_group_weights) {
+            preview += `${groupName}: ${config.bias_group_weights[groupName].toFixed(2)}<br>`;
+        }
+        preview += '</div>';
     }
     
     // If no preview content, show JSON

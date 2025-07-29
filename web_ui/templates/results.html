@@ -71,8 +71,9 @@
                     <div class="d-flex justify-content-between">
                         <div>
                             {% set completed_runs = runs|selectattr('status', 'equalto', 'completed')|list %}
-                            {% if completed_runs %}
-                            <h4 class="card-title">{{ "%.1f%%"|format(completed_runs|map(attribute='accuracy')|max * 100) }}</h4>
+                            {% set runs_with_accuracy = completed_runs|selectattr('accuracy', 'defined')|list %}
+                            {% if runs_with_accuracy %}
+                            <h4 class="card-title">{{ "%.1f%%"|format(runs_with_accuracy|map(attribute='accuracy')|max * 100) }}</h4>
                             {% else %}
                             <h4 class="card-title">N/A</h4>
                             {% endif %}
@@ -107,8 +108,10 @@
                                     <div class="col-md-6 col-lg-4 mb-2">
                                         <div class="form-check">
                                             <input class="form-check-input" type="checkbox" value="{{ run.run_id }}" id="compare_{{ run.run_id }}">
-                                            <label class="form-check-label" for="compare_{{ run.run_id }}">
-                                                {{ run.config_name }} - {{ "%.1f%%"|format(run.accuracy * 100) }}
+                                            <label class="form-check-label text-truncate" for="compare_{{ run.run_id }}" 
+                                                   title="{{ run.config_name }} - {% if run.accuracy %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}"
+                                                   style="max-width: 100%; display: block;">
+                                                {{ run.config_name }} - {% if run.accuracy %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}
                                             </label>
                                         </div>
                                     </div>
@@ -153,8 +156,11 @@
                                     <th>Traversal</th>
                                     <th>Status</th>
                                     <th>Accuracy</th>
+                                    <th>Race-Gender Bias</th>
+                                    <th>Gender Bias</th>
+                                    <th>Race Bias</th>
+                                    <th>Avg Bias</th>
                                     <th>Loss</th>
-                                    <th>Duration</th>
                                     <th>Started</th>
                                     <th>Actions</th>
                                 </tr>
@@ -201,15 +207,44 @@
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.loss %}
-                                        {{ "%.4f"|format(run.loss) }}
+                                        {% if run.results and run.results.race_gender_bias %}
+                                        <span class="badge bg-{% if run.results.race_gender_bias < 0.1 %}success{% elif run.results.race_gender_bias < 0.2 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.results.race_gender_bias * 100) }}
+                                        </span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.duration %}
-                                        {{ run.duration }}
+                                        {% if run.results and run.results.gender_bias %}
+                                        <span class="badge bg-{% if run.results.gender_bias < 0.05 %}success{% elif run.results.gender_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.results.gender_bias * 100) }}
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.results and run.results.race_bias %}
+                                        <span class="badge bg-{% if run.results.race_bias < 0.05 %}success{% elif run.results.race_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.results.race_bias * 100) }}
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.results and run.results.average_attribute_bias %}
+                                        <span class="badge bg-{% if run.results.average_attribute_bias < 0.05 %}success{% elif run.results.average_attribute_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.results.average_attribute_bias * 100) }}
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.loss %}
+                                        {{ "%.4f"|format(run.loss) }}
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
@@ -258,7 +293,7 @@
 
 <!-- Comparison Results Modal -->
 <div class="modal fade" id="comparisonModal" tabindex="-1" aria-labelledby="comparisonModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-xl">
+    <div class="modal-dialog modal-fullscreen-lg-down modal-xl">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="comparisonModalLabel">
@@ -349,6 +384,12 @@ function compareSelectedRuns() {
         }
         
         displayComparisonResults(data);
+        
+        // Initialize tooltips for the comparison table
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
     })
     .catch(error => {
         console.error('Error:', error);
@@ -358,28 +399,35 @@ function compareSelectedRuns() {
 }
 
 function displayComparisonResults(data) {
-    // Create comparison table
+    // Create comparison table with better handling of long names
     let html = `
         <div class="table-responsive">
-            <table class="table table-striped">
+            <table class="table table-striped table-sm">
                 <thead>
                     <tr>
-                        <th>Metric</th>
-                        ${data.runs.map(run => `<th>${run.config_name}</th>`).join('')}
+                        <th style="min-width: 120px;">Metric</th>
+                        ${data.runs.map((run, index) => {
+                            const shortName = run.config_name.length > 30 ? 
+                                run.config_name.substring(0, 27) + '...' : 
+                                run.config_name;
+                            return `<th style="min-width: 150px; max-width: 200px; word-wrap: break-word;" 
+                                     title="${run.config_name}" 
+                                     data-bs-toggle="tooltip" 
+                                     data-bs-placement="top">
+                                     <div class="text-truncate">${shortName}</div>
+                                     <small class="text-muted d-block">Run ${index + 1}</small>
+                                   </th>`;
+                        }).join('')}
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
                         <td><strong>Accuracy</strong></td>
-                        ${data.runs.map(run => `<td>${(run.accuracy * 100).toFixed(2)}%</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.accuracy ? (run.accuracy * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Loss</strong></td>
                         ${data.runs.map(run => `<td>${run.loss ? run.loss.toFixed(4) : 'N/A'}</td>`).join('')}
-                    </tr>
-                    <tr>
-                        <td><strong>Duration</strong></td>
-                        ${data.runs.map(run => `<td>${run.duration || 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Architecture</strong></td>
@@ -388,6 +436,22 @@ function displayComparisonResults(data) {
                     <tr>
                         <td><strong>Traversal</strong></td>
                         ${data.runs.map(run => `<td>${run.traversal_type || 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Race-Gender Bias</strong></td>
+                        ${data.runs.map(run => `<td>${run.race_gender_bias ? (run.race_gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Gender Bias</strong></td>
+                        ${data.runs.map(run => `<td>${run.gender_bias ? (run.gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Race Bias</strong></td>
+                        ${data.runs.map(run => `<td>${run.race_bias ? (run.race_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Avg Attribute Bias</strong></td>
+                        ${data.runs.map(run => `<td>${run.average_attribute_bias ? (run.average_attribute_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                 </tbody>
             </table>
@@ -401,9 +465,9 @@ function displayComparisonResults(data) {
                 <h6><i class="fas fa-chart-bar me-2"></i>Summary</h6>
                 <div class="alert alert-info">
                     <ul class="mb-0">
-                        <li><strong>Best Performer:</strong> ${data.summary.best_run} (${(data.summary.best_accuracy * 100).toFixed(2)}%)</li>
-                        <li><strong>Average Accuracy:</strong> ${(data.summary.average_accuracy * 100).toFixed(2)}%</li>
-                        <li><strong>Performance Range:</strong> ${((data.summary.max_accuracy - data.summary.min_accuracy) * 100).toFixed(2)}% difference</li>
+                        <li><strong>Best Performer:</strong> ${data.summary.best_run} (${data.summary.best_accuracy ? (data.summary.best_accuracy * 100).toFixed(2) + '%' : 'N/A'})</li>
+                        <li><strong>Average Accuracy:</strong> ${data.summary.average_accuracy ? (data.summary.average_accuracy * 100).toFixed(2) + '%' : 'N/A'}</li>
+                        <li><strong>Performance Range:</strong> ${data.summary.max_accuracy && data.summary.min_accuracy ? ((data.summary.max_accuracy - data.summary.min_accuracy) * 100).toFixed(2) + '%' : 'N/A'} difference</li>
                     </ul>
                 </div>
             </div>

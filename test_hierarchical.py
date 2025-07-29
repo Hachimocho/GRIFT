@@ -929,6 +929,15 @@ def main():
                 # --- Use run-specific directory for all visualizations ---
                 config_output_dir = run_output_dir / config['description']
                 config_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Export node/edge CSVs with subcluster info if enabled
+                if getattr(args, 'export_csv_per_run', True):
+                    graph = getattr(train_manager, 'graph', None)
+                    if graph is not None and hasattr(graph, 'export_csv_with_subclusters'):
+                        node_csv_path = config_output_dir / 'nodes.csv'
+                        edge_csv_path = config_output_dir / 'edges.csv'
+                        graph.export_csv_with_subclusters(str(node_csv_path), str(edge_csv_path))
+                        print(f"[Quanty] Exported node/edge CSVs with subcluster info to {config_output_dir}")
                 if args.enable_ivalue_viz and uses_ivalue_traversal:
                     print(f"\n📊 Initializing I-value visualization tracking...")
                     viz_save_dir = config_output_dir / "ivalue"

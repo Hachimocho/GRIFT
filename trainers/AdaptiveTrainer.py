@@ -15,6 +15,8 @@ from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.RandomTraversal import RandomTraversal
 from traversals.IValueTraversal import IValueTraversal
 from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop
+from traversals.IValueTraversal import IValueTraversalSubcluster
+from traversals.IValueTraversalClusterHop import IValueTraversalClusterHopSubcluster
 
 
 class AdaptiveTrainer(Trainer):
@@ -25,7 +27,7 @@ class AdaptiveTrainer(Trainer):
     tags = ["adaptive"]
     
     def __init__(self, graphmanager, models, device, attribute_metadata=None, 
-                 loss_fn=None, **kwargs):
+                 loss_fn=None, attribute_weights=None, bias_group_weights=None, **kwargs):
         """Initialize the adaptive trainer with capability management."""
         super().__init__(graphmanager, None, models, attribute_metadata=attribute_metadata)
         
@@ -67,11 +69,41 @@ class AdaptiveTrainer(Trainer):
         
         # Set bias loss weight on BiasCapability if provided (store for later if not available yet)
         self.bias_loss_weight = kwargs.get('bias_loss_weight', None)
-        if self.bias_loss_weight is not None and hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
-            self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
-            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} on BiasCapability.")
-        elif self.bias_loss_weight is not None:
-            print(f"[DEBUG] BiasCapability not initialized yet; will set bias_loss_weight={self.bias_loss_weight} when available.")
+        self.attribute_weights = attribute_weights
+        self.bias_group_weights = bias_group_weights
+        # Map group weights to per-attribute weights if group weights are provided
+        if self.bias_group_weights is not None and self.attribute_metadata is not None:
+            group_map = {
+                'Gender': ['Ground Truth Gender'],
+                'Race': ['Ground Truth Race'],
+                'Age': ['Ground Truth Age'],
+                'Emotion': [
+                    'emotion_angry', 'emotion_disgust', 'emotion_fear', 'emotion_happy',
+                    'emotion_sad', 'emotion_surprise', 'emotion_neutral'
+                ],
+                'Quality': ['blur', 'brightness', 'contrast', 'compression'],
+                'FaceEmbedding': ['face_embedding']
+            }
+            attr_weights = {}
+            for group, attrs in group_map.items():
+                weight = self.bias_group_weights.get(group, 1.0)
+                for attr in attrs:
+                    attr_weights[attr] = weight
+            # For any attribute not in a group, default to 1.0
+            for attr in self.attribute_metadata:
+                name = attr['name'] if isinstance(attr, dict) else attr.name
+                if name not in attr_weights:
+                    attr_weights[name] = 1.0
+            self.attribute_weights = attr_weights
+        if hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
+            if self.bias_loss_weight is not None:
+                self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
+            if self.attribute_weights is not None:
+                self.capabilities.bias_capability.attribute_weights = self.attribute_weights
+                self.capabilities.bias_capability._initialize_bias_loss()
+            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} and attribute weights to {self.attribute_weights} on BiasCapability.")
+        elif self.bias_loss_weight is not None or self.attribute_weights is not None:
+            print(f"[DEBUG] BiasCapability not initialized yet; will set bias_loss_weight={self.bias_loss_weight} and attribute_weights={self.attribute_weights} when available.")
             
     def set_traversal(self, traversal_instance, traversal_type):
         """Dynamically set traversal and enable required capabilities."""
@@ -81,10 +113,14 @@ class AdaptiveTrainer(Trainer):
         # Enable required capabilities based on traversal type
         self.capabilities.configure_for_traversal(traversal_type)
 
-        # Ensure bias loss weight is set if capability is now available
-        if self.bias_loss_weight is not None and hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
-            self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
-            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} on BiasCapability (post-initialization).")
+        # Ensure bias loss weight and attribute weights are set if capability is now available
+        if hasattr(self.capabilities, 'bias_capability') and self.capabilities.bias_capability is not None:
+            if self.bias_loss_weight is not None:
+                self.capabilities.bias_capability.bias_weight = self.bias_loss_weight
+            if self.attribute_weights is not None:
+                self.capabilities.bias_capability.attribute_weights = self.attribute_weights
+                self.capabilities.bias_capability._initialize_bias_loss()
+            print(f"[DEBUG] Set bias loss weight to {self.bias_loss_weight} and attribute weights to {self.attribute_weights} on BiasCapability (post-initialization).")
         
         # Set trainer reference in traversal if needed
         if hasattr(traversal_instance, 'trainer'):
@@ -121,23 +157,34 @@ class AdaptiveTrainer(Trainer):
         self.set_traversal(new_traversal, new_traversal_type)
         
     def _create_traversal(self, traversal_type, **kwargs):
-        """Factory method to create traversal instances."""
+        """
+        Factory method to create traversal instances.
+        Automatically selects the correct I-value traversal variant based on graph type and subclustering.
+        """
         graph = kwargs.get('graph', self.graphmanager.get_graph())
         num_pointers = kwargs.get('num_pointers', 1)
         num_steps = kwargs.get('num_steps', 1000)
-        
-        if traversal_type == "comprehensive":
+        # Try to infer graph_type from graph, else use kwarg, else default to clustered
+        graph_type = getattr(graph, 'graph_type', None) or kwargs.get('graph_type', None) or 'clustered'
+        # Detect subclustering: True if graph.subclusters exists and is not None, or if subclustering kwarg is set
+        subclustering = (hasattr(graph, 'subclusters') and getattr(graph, 'subclusters', None) is not None) or kwargs.get('subclustering', False)
+
+        # Map generic I-value traversal to the correct variant
+        if traversal_type == "i-value":
+            if graph_type == "clustered" and subclustering:
+                bias_hop_period = kwargs.get('bias_hop_period', 2)
+                return IValueTraversalClusterHopSubcluster(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
+            elif graph_type == "clustered":
+                bias_hop_period = kwargs.get('bias_hop_period', 2)
+                return IValueTraversalClusterHop(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
+            elif subclustering:
+                return IValueTraversalSubcluster(graph, num_pointers, num_steps, trainer=self)
+            else:
+                return IValueTraversal(graph, num_pointers, num_steps, trainer=self)
+        elif traversal_type == "comprehensive":
             return ComprehensiveTraversal(graph, num_pointers, num_steps)
         elif traversal_type == "random":
             return RandomTraversal(graph, num_pointers, num_steps)
-        elif traversal_type == "i-value":
-            return IValueTraversal(graph, num_pointers, num_steps, trainer=self)
-        elif traversal_type == "i-value-cluster-hop":
-            bias_hop_period = kwargs.get('bias_hop_period', 2)
-            return IValueTraversalClusterHop(
-                graph, num_pointers, num_steps, trainer=self, 
-                bias_hop_period=bias_hop_period
-            )
         else:
             raise ValueError(f"Unknown traversal type: {traversal_type}")
         

@@ -107,7 +107,13 @@ def parse_args():
 
     # Graph construction type
     parser.add_argument('--graph-type', type=str, default='clustered',
-                        choices=['clustered', 'nonclustered', 'subclustered'],
-                        help='Type of graph construction: clustered (race-gender groups) or nonclustered (all nodes) (default: clustered)')
+                        choices=['clustered', 'clustered_subclustered', 'nonclustered', 'nonclustered_subclustered'],
+                        help='Type of graph construction: clustered (race-gender groups), nonclustered (all nodes), and/or with subclustering (Louvain) (default: clustered)')
+
+    parser.add_argument('--export-csv-per-run', dest='export_csv_per_run', action='store_true',
+                        help='Export node/edge CSVs with subcluster info for each run (default: True)')
+    parser.add_argument('--no-export-csv-per-run', dest='export_csv_per_run', action='store_false',
+                        help='Do not export node/edge CSVs for each run')
+    parser.set_defaults(export_csv_per_run=True)
 
     return parser.parse_args()

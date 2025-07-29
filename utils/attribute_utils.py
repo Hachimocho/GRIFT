@@ -15,20 +15,17 @@ class AttributeMetadata:
 
 class AttributeBiasLoss(nn.Module):
     """Calculates a bias loss based on the difference in average predictions
-    across different values of sensitive attributes.
-    """
-    def __init__(self, attribute_metadata_list, attr_map):
-        """
-        Args:
-            attribute_metadata_list (list[AttributeMetadata]): List of metadata objects for attributes.
-            attr_map (dict): A mapping from attribute name to AttributeMetadata object (or index).
-                           Used to quickly check if an attribute should be considered for bias.
-        """
+    across different values of sensitive attributes, with per-attribute weights."""
+    def __init__(self, attribute_metadata_list, attr_map, attribute_weights=None):
         super().__init__()
-        # Store the metadata and map for reference within forward pass
         self.attribute_metadata = attribute_metadata_list
         self.attr_map = attr_map
-        print("Initialized bias loss module.")
+        # Set up per-attribute weights (default 1.0)
+        if attribute_weights is None:
+            self.attribute_weights = {attr.name: 1.0 for attr in attribute_metadata_list}
+        else:
+            self.attribute_weights = attribute_weights
+        print(f"Initialized bias loss module with attribute weights: {self.attribute_weights}")
 
     def forward(self, predictions, labels, nodes):
         """Calculate bias loss based on attribute predictions.
@@ -89,41 +86,30 @@ class AttributeBiasLoss(nn.Module):
 
         total_loss = torch.tensor(0.0, device=predictions.device, requires_grad=True)
         num_comparisons = 0
+        total_weight = 0.0
 
         # Second pass: calculate bias loss between different attribute values
         for attr_name, value_preds in attr_predictions.items():
-            if len(value_preds) < 2:  # Need at least 2 different values to compare
+            if len(value_preds) < 2:
                 continue
-
-            # Calculate mean prediction for each attribute value
             value_means = {}
             for value, preds_list in value_preds.items():
                 if preds_list:
-                    # Ensure preds_list contains tensors before stacking
                     valid_preds = [p for p in preds_list if isinstance(p, torch.Tensor)]
                     if valid_preds:
-                         # Detach to treat means as constants in this comparison phase if needed,
-                         # but keep grad for the loss calculation itself.
-                         value_means[value] = torch.stack(valid_preds).mean()
-
+                        value_means[value] = torch.stack(valid_preds).mean()
             values = list(value_means.keys())
-            if len(values) >= 2: # Check if there are at least two groups to compare
-                # Calculate pairwise differences
+            if len(values) >= 2:
+                attr_weight = self.attribute_weights.get(attr_name, 1.0)
                 for i, val1 in enumerate(values):
                     for val2 in values[i+1:]:
                         mean1, mean2 = value_means[val1], value_means[val2]
-
-                        # Bias loss is the squared difference between means (MSE)
-                        # Ensure requires_grad=True propagates if needed
                         current_loss = F.mse_loss(mean1, mean2)
-                        # Accumulate the loss properly to maintain computation graph
-                        total_loss = total_loss + current_loss
+                        total_loss = total_loss + attr_weight * current_loss
                         num_comparisons += 1
-
-        # Return average bias loss, handle division by zero
-        if num_comparisons > 0:
-            avg_loss = total_loss / num_comparisons
+                        total_weight += attr_weight
+        if num_comparisons > 0 and total_weight > 0:
+            avg_loss = total_loss / total_weight
             return avg_loss
         else:
-            # Return zero tensor that requires grad if no comparisons were made
             return torch.zeros(1, device=predictions.device, requires_grad=True)

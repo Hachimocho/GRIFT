@@ -465,7 +465,22 @@ def generate_cache_background(
                     silent_mode=True
                 )
                 graph_type_str = 'nonclustered'
-            elif graph_type == 'subclustered':
+                subclustering = False
+            elif graph_type == 'nonclustered_subclustered':
+                dataloader = UnclusteredDeepfakeDataloader(
+                    datasets=[],
+                    edge_class=Edge,
+                    test_mode=False,
+                    visualize=False,
+                    show_viz=False,
+                    quality_threshold=quality_threshold,
+                    symmetry_threshold=symmetry_threshold,
+                    embedding_threshold=embedding_threshold,
+                    silent_mode=True
+                )
+                graph_type_str = 'nonclustered_subclustered'
+                subclustering = True
+            elif graph_type == 'clustered_subclustered':
                 dataloader = HierarchicalDeepfakeDataloader(
                     datasets=[],
                     edge_class=Edge,
@@ -477,7 +492,8 @@ def generate_cache_background(
                     embedding_threshold=embedding_threshold,
                     silent_mode=True
                 )
-                graph_type_str = 'subclustered'
+                graph_type_str = 'clustered_subclustered'
+                subclustering = True
             else:
                 dataloader = HierarchicalDeepfakeDataloader(
                     datasets=[],
@@ -491,6 +507,7 @@ def generate_cache_background(
                     silent_mode=True
                 )
                 graph_type_str = 'clustered'
+                subclustering = False
             
             # Generate graphs for each split
             for split_name, nodes_to_use in [
@@ -527,10 +544,29 @@ def generate_cache_background(
 @app.route('/configure', methods=['GET', 'POST'])
 def configure():
     """Configuration page for test settings."""
-    if request.method == 'POST':
-        # Handle form submission
-        pass
-    return render_template('configure.html')
+    # Provide default attribute_metadata for new configs
+    default_attribute_metadata = [
+        {'name': 'Ground Truth Gender', 'type': 'categorical', 'possible_values': [0, 1]},
+        {'name': 'Ground Truth Race', 'type': 'categorical', 'possible_values': [0, 1, 2, 3]},
+        {'name': 'Ground Truth Age', 'type': 'categorical', 'possible_values': [0, 1, 2, 3]},
+        {'name': 'blur', 'type': 'continuous'},
+        {'name': 'brightness', 'type': 'continuous'},
+        {'name': 'contrast', 'type': 'continuous'},
+        {'name': 'compression', 'type': 'continuous'},
+        {'name': 'symmetry_eye', 'type': 'continuous'},
+        {'name': 'symmetry_mouth', 'type': 'continuous'},
+        {'name': 'symmetry_nose', 'type': 'continuous'},
+        {'name': 'symmetry_overall', 'type': 'continuous'},
+        {'name': 'emotion_angry', 'type': 'continuous'},
+        {'name': 'emotion_disgust', 'type': 'continuous'},
+        {'name': 'emotion_fear', 'type': 'continuous'},
+        {'name': 'emotion_happy', 'type': 'continuous'},
+        {'name': 'emotion_sad', 'type': 'continuous'},
+        {'name': 'emotion_surprise', 'type': 'continuous'},
+        {'name': 'emotion_neutral', 'type': 'continuous'},
+        {'name': 'face_embedding', 'type': 'continuous'}
+    ]
+    return render_template('configure.html', attribute_metadata=default_attribute_metadata)
 
 @app.route('/configure/<config_name>')
 def edit_config(config_name):
@@ -538,7 +574,31 @@ def edit_config(config_name):
     config = config_manager.load_configuration(config_name)
     if not config:
         return redirect(url_for('configure'))
-    return render_template('configure.html', config=config, config_name=config_name)
+    # Try to get attribute_metadata from config, else use default
+    attribute_metadata = config.get('attribute_metadata') if config else None
+    if not attribute_metadata:
+        attribute_metadata = [
+            {'name': 'Ground Truth Gender', 'type': 'categorical', 'possible_values': [0, 1]},
+            {'name': 'Ground Truth Race', 'type': 'categorical', 'possible_values': [0, 1, 2, 3]},
+            {'name': 'Ground Truth Age', 'type': 'categorical', 'possible_values': [0, 1, 2, 3]},
+            {'name': 'blur', 'type': 'continuous'},
+            {'name': 'brightness', 'type': 'continuous'},
+            {'name': 'contrast', 'type': 'continuous'},
+            {'name': 'compression', 'type': 'continuous'},
+            {'name': 'symmetry_eye', 'type': 'continuous'},
+            {'name': 'symmetry_mouth', 'type': 'continuous'},
+            {'name': 'symmetry_nose', 'type': 'continuous'},
+            {'name': 'symmetry_overall', 'type': 'continuous'},
+            {'name': 'emotion_angry', 'type': 'continuous'},
+            {'name': 'emotion_disgust', 'type': 'continuous'},
+            {'name': 'emotion_fear', 'type': 'continuous'},
+            {'name': 'emotion_happy', 'type': 'continuous'},
+            {'name': 'emotion_sad', 'type': 'continuous'},
+            {'name': 'emotion_surprise', 'type': 'continuous'},
+            {'name': 'emotion_neutral', 'type': 'continuous'},
+            {'name': 'face_embedding', 'type': 'continuous'}
+        ]
+    return render_template('configure.html', config=config, config_name=config_name, attribute_metadata=attribute_metadata)
 
 @app.route('/api/configurations', methods=['GET'])
 def api_list_configurations():
@@ -677,6 +737,8 @@ def api_get_run_logs(run_id):
 def runs():
     """Test runs management page."""
     runs = gpu_queue_manager.list_runs()
+    # Sort runs by created time (most recent first)
+    runs.sort(key=lambda x: x.get('created', ''), reverse=True)
     return render_template('runs.html', runs=runs)
 
 @app.route('/runs/<run_id>')
@@ -693,15 +755,47 @@ def view_run(run_id):
 def results():
     """Results comparison page."""
     completed_runs = [run for run in gpu_queue_manager.list_runs() if run.get('status') == 'completed']
-    # Patch: promote results.final_accuracy to accuracy for template compatibility
+    
+    # Sort runs by end_time (most recent first)
+    completed_runs.sort(key=lambda x: x.get('end_time', ''), reverse=True)
+    
+    # Debug logging (commented out to avoid broken pipe errors)
+    # print(f"DEBUG: Found {len(completed_runs)} completed runs")
+    # for i, run in enumerate(completed_runs):
+    #     print(f"DEBUG: Run {i}: {run.get('run_id')} - status: {run.get('status')}")
+    #     print(f"DEBUG: Run {i}: has 'results': {'results' in run}")
+    #     if 'results' in run:
+    #         print(f"DEBUG: Run {i}: results keys: {list(run['results'].keys())}")
+    #         print(f"DEBUG: Run {i}: final_accuracy: {run['results'].get('final_accuracy')}")
+    #     print(f"DEBUG: Run {i}: has 'accuracy': {'accuracy' in run}")
+    #     if 'accuracy' in run:
+    #         print(f"DEBUG: Run {i}: accuracy value: {run['accuracy']}")
+    
+    # Flatten results data for template compatibility
     for run in completed_runs:
-        if 'accuracy' not in run:
-            # Try to get from results.final_accuracy
-            accuracy = None
-            if 'results' in run and isinstance(run['results'], dict):
-                accuracy = run['results'].get('final_accuracy')
-            if accuracy is not None:
-                run['accuracy'] = accuracy / 100.0 if accuracy > 1.5 else accuracy  # If stored as percent, convert to 0-1
+        if 'results' in run and run['results']:
+            # Flatten accuracy
+            if 'final_accuracy' in run['results']:
+                run['accuracy'] = run['results']['final_accuracy']
+            # Flatten loss and duration
+            if 'loss' in run['results']:
+                run['loss'] = run['results']['loss']
+            if 'duration' in run['results']:
+                run['duration'] = run['results']['duration']
+            # Flatten architecture and traversal
+            if 'architecture' in run['results']:
+                run['architecture'] = run['results']['architecture']
+            if 'traversal_type' in run['results']:
+                run['traversal_type'] = run['results']['traversal_type']
+        
+        # Add architecture and traversal from configuration (fallback)
+        if 'config' in run and run['config']:
+            config = run['config']
+            if 'architecture' not in run and 'architecture' in config:
+                run['architecture'] = config['architecture']
+            if 'traversal_type' not in run and 'traversal_type' in config:
+                run['traversal_type'] = config['traversal_type']
+    
     return render_template('results.html', runs=completed_runs)
 
 @app.route('/api/results/compare', methods=['POST'])
@@ -723,6 +817,38 @@ def api_compare_results():
     for run_id in run_ids:
         run = gpu_queue_manager.get_run(run_id)
         if run:
+            # Flatten results data for easier access in comparison
+            if 'results' in run and run['results']:
+                # Copy bias metrics to top level for comparison
+                if 'race_gender_bias' in run['results']:
+                    run['race_gender_bias'] = run['results']['race_gender_bias']
+                if 'gender_bias' in run['results']:
+                    run['gender_bias'] = run['results']['gender_bias']
+                if 'race_bias' in run['results']:
+                    run['race_bias'] = run['results']['race_bias']
+                if 'average_attribute_bias' in run['results']:
+                    run['average_attribute_bias'] = run['results']['average_attribute_bias']
+                # Also flatten accuracy, loss, and duration for consistency
+                if 'final_accuracy' in run['results']:
+                    run['accuracy'] = run['results']['final_accuracy']
+                if 'loss' in run['results']:
+                    run['loss'] = run['results']['loss']
+                if 'duration' in run['results']:
+                    run['duration'] = run['results']['duration']
+                # Also flatten architecture and traversal from results
+                if 'architecture' in run['results']:
+                    run['architecture'] = run['results']['architecture']
+                if 'traversal_type' in run['results']:
+                    run['traversal_type'] = run['results']['traversal_type']
+            
+            # Add architecture and traversal from configuration (fallback)
+            if 'config' in run and run['config']:
+                config = run['config']
+                if 'architecture' not in run and 'architecture' in config:
+                    run['architecture'] = config['architecture']
+                if 'traversal_type' not in run and 'traversal_type' in config:
+                    run['traversal_type'] = config['traversal_type']
+            
             comparison['runs'].append(run)
     
     return jsonify(comparison)
@@ -840,6 +966,91 @@ def api_check_orphaned_runs():
             'success': False,
             'error': 'Failed to check for orphaned runs',
             'details': str(e)
+        }), 500
+
+@app.route('/api/results/extract', methods=['POST'])
+def api_extract_results():
+    """API endpoint to extract results from completed runs that don't have results."""
+    try:
+        # Get all completed runs
+        all_runs = gpu_queue_manager.list_runs()
+        completed_runs = [run for run in all_runs if run.get('status') == 'completed']
+        
+        extracted_count = 0
+        for run in completed_runs:
+            run_id = run.get('run_id')
+            # Always try to extract results (for bias metrics even if accuracy exists)
+            gpu_queue_manager._extract_results(run_id)
+            extracted_count += 1
+        
+        return jsonify({
+            'success': True,
+            'extracted_count': extracted_count,
+            'total_completed': len(completed_runs),
+            'message': f'Extracted results for {extracted_count} runs'
+        })
+    except Exception as e:
+        logger.error(f"Error extracting results: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/runs/fix-status', methods=['POST'])
+def api_fix_run_status():
+    """API endpoint to fix run status based on log analysis."""
+    try:
+        # Get all runs
+        all_runs = gpu_queue_manager.list_runs()
+        
+        fixed_count = 0
+        status_changes = []
+        
+        for run in all_runs:
+            run_id = run.get('run_id')
+            current_status = run.get('status')
+            
+            # Analyze log to determine correct status
+            correct_status = gpu_queue_manager._analyze_run_status_from_log(run_id)
+            
+            if correct_status and correct_status != current_status:
+                # Update the run status
+                metadata = gpu_queue_manager._load_run_metadata(run_id)
+                if metadata:
+                    old_status = metadata.get('status')
+                    metadata['status'] = correct_status
+                    metadata['last_updated'] = datetime.now().isoformat()
+                    
+                    # Add error information if changing to failed
+                    if correct_status == 'failed':
+                        metadata['error'] = f'Status corrected from {old_status} to failed based on log analysis'
+                    
+                    gpu_queue_manager._save_run_metadata(run_id, metadata)
+                    
+                    # Update in-memory metadata if present
+                    if run_id in gpu_queue_manager.run_metadata:
+                        gpu_queue_manager.run_metadata[run_id] = metadata
+                    
+                    fixed_count += 1
+                    status_changes.append({
+                        'run_id': run_id,
+                        'old_status': old_status,
+                        'new_status': correct_status
+                    })
+                    logger.info(f"Fixed status for {run_id}: {old_status} -> {correct_status}")
+        
+        return jsonify({
+            'success': True,
+            'fixed_count': fixed_count,
+            'total_runs': len(all_runs),
+            'status_changes': status_changes,
+            'message': f'Fixed status for {fixed_count} runs'
+        })
+    except Exception as e:
+        logger.error(f"Error fixing run status: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
         }), 500
 
 if __name__ == '__main__':

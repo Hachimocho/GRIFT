@@ -380,7 +380,7 @@ class GPUQueueManager:
                 if run_id not in [r['run_id'] for r in runs]:
                     metadata = self._load_run_metadata(run_id)
                     if metadata:
-                        runs.append({
+                        run_info = {
                             'run_id': run_id,
                             'config_name': metadata.get('config_name'),
                             'status': metadata.get('status', 'unknown'),
@@ -388,7 +388,16 @@ class GPUQueueManager:
                             'end_time': metadata.get('end_time'),
                             'created': metadata.get('created', metadata.get('start_time', '')),
                             'last_updated': metadata.get('last_updated', metadata.get('end_time', ''))
-                        })
+                        }
+                        
+                        # Include results for completed runs
+                        if metadata.get('status') == 'completed' and 'results' in metadata:
+                            run_info['results'] = metadata['results']
+                            logger.info(f"DEBUG: Added results for {run_id}: {metadata['results']}")
+                        elif metadata.get('status') == 'completed':
+                            logger.info(f"DEBUG: Completed run {run_id} has no results field")
+                        
+                        runs.append(run_info)
         
         return runs
     
@@ -518,6 +527,10 @@ class GPUQueueManager:
                 })
                 if error:
                     metadata["error"] = error
+                
+                # Extract results if run completed successfully
+                if status == "completed":
+                    self._extract_results(run_id)
                 
                 self._save_run_metadata(run_id, metadata)
             
@@ -671,6 +684,196 @@ class GPUQueueManager:
                 logger.error(f"Error stopping process on GPU {gpu_id}: {e}")
         
         logger.info("GPU Queue Manager shutdown complete")
+    
+    def _extract_results(self, run_id: str):
+        """Extract results from completed test run."""
+        logger.info(f"DEBUG: _extract_results called for run {run_id}")
+        try:
+            metadata = self.run_metadata.get(run_id)
+            if not metadata:
+                # Try to load from file
+                metadata = self._load_run_metadata(run_id)
+                if not metadata:
+                    logger.warning(f"Could not load metadata for run {run_id}")
+                    return
+            
+            # Try to extract final accuracy and bias metrics from logs
+            log_file = metadata.get('log_file')
+            logger.info(f"DEBUG: log_file for {run_id}: {log_file}")
+            logger.info(f"DEBUG: log_file exists: {log_file and os.path.exists(log_file)}")
+            if log_file and os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r') as f:
+                        log_content = f.read()
+                    logger.info(f"DEBUG: log_content length for {run_id}: {len(log_content)}")
+                    
+                    # Initialize results dict if not present
+                    if "results" not in metadata:
+                        metadata["results"] = {}
+                    
+                    # Look for final test results
+                    if "Final Test Results" in log_content:
+                        # Extract accuracy from log using regex
+                        import re
+                        acc_match = re.search(r'Final Test Results: Accuracy=([0-9.]+)%', log_content)
+                        if acc_match:
+                            # Store as decimal (0.8044) instead of percentage (80.44)
+                            metadata["results"]["final_accuracy"] = float(acc_match.group(1)) / 100.0
+                            logger.info(f"Extracted accuracy {acc_match.group(1)}% (stored as {float(acc_match.group(1)) / 100.0}) for run {run_id}")
+                        else:
+                            logger.warning(f"Could not extract accuracy from log for run {run_id}")
+                        
+                        # Extract loss if available (from Final Test Results)
+                        loss_match = re.search(r'Final Test Results: Accuracy=[0-9.]+%, Avg Loss=([0-9.]+)', log_content)
+                        if loss_match:
+                            metadata["results"]["loss"] = float(loss_match.group(1))
+                            logger.info(f"Extracted loss {loss_match.group(1)} for run {run_id}")
+                        
+                        # Extract duration if available (look for various time patterns)
+                        duration_match = re.search(r'Training completed in\s*([0-9.]+)\s*seconds', log_content)
+                        if not duration_match:
+                            duration_match = re.search(r'Total time:\s*([0-9.]+)\s*seconds', log_content)
+                        if not duration_match:
+                            duration_match = re.search(r'Elapsed time:\s*([0-9.]+)\s*seconds', log_content)
+                        if duration_match:
+                            duration_seconds = float(duration_match.group(1))
+                            # Convert to human readable format
+                            if duration_seconds < 60:
+                                duration_str = f"{duration_seconds:.1f}s"
+                            elif duration_seconds < 3600:
+                                duration_str = f"{duration_seconds/60:.1f}m"
+                            else:
+                                duration_str = f"{duration_seconds/3600:.1f}h"
+                            metadata["results"]["duration"] = duration_str
+                            logger.info(f"Extracted duration {duration_str} for run {run_id}")
+                        
+                        # Extract architecture and traversal from configuration section
+                        config_match = re.search(r'"architectures":\s*"([^"]+)"', log_content)
+                        if config_match:
+                            metadata["results"]["architecture"] = config_match.group(1)
+                            logger.info(f"Extracted architecture {config_match.group(1)} for run {run_id}")
+                        
+                        traversal_match = re.search(r'"traversal_type":\s*"([^"]+)"', log_content)
+                        if traversal_match:
+                            metadata["results"]["traversal_type"] = traversal_match.group(1)
+                            logger.info(f"Extracted traversal_type {traversal_match.group(1)} for run {run_id}")
+                    else:
+                        logger.warning(f"No 'Final Test Results' found in log for run {run_id}")
+                    
+                    # Always try to extract bias metrics, regardless of whether accuracy was found
+                    # Extract bias metrics using simple regex patterns
+                    # Look for the specific bias values in the log
+                    
+                    # Debug: check if bias_metrics section exists
+                    if '"bias_metrics"' in log_content:
+                        logger.info(f"Found bias_metrics section in log for {run_id}")
+                        # Find the bias_metrics section
+                        bias_start = log_content.find('"bias_metrics"')
+                        bias_section = log_content[bias_start:min(bias_start + 2000, len(log_content))]
+                        logger.info(f"Bias section preview: {bias_section[:500]}")
+                    else:
+                        logger.warning(f"No bias_metrics section found in log for {run_id}")
+                    
+                    race_gender_match = re.search(r'"race_gender_overall_bias":\s*([0-9.]+)', log_content)
+                    gender_match = re.search(r'"Ground Truth Gender":\s*([0-9.]+)', log_content)
+                    race_match = re.search(r'"Ground Truth Race":\s*([0-9.]+)', log_content)
+                    avg_bias_match = re.search(r'"average_attribute_bias":\s*([0-9.]+)', log_content)
+                    
+                    # Debug: log what we found
+                    logger.info(f"Bias extraction debug for {run_id}:")
+                    logger.info(f"  race_gender_match: {race_gender_match}")
+                    logger.info(f"  gender_match: {gender_match}")
+                    logger.info(f"  race_match: {race_match}")
+                    logger.info(f"  avg_bias_match: {avg_bias_match}")
+                    
+                    # Also try looking for the values in the per_attribute_bias section
+                    if not gender_match:
+                        gender_match = re.search(r'"per_attribute_bias":\s*{[^}]*"Ground Truth Gender":\s*([0-9.]+)', log_content)
+                    if not race_match:
+                        race_match = re.search(r'"per_attribute_bias":\s*{[^}]*"Ground Truth Race":\s*([0-9.]+)', log_content)
+                    
+                    if race_gender_match or gender_match or race_match or avg_bias_match:
+                        # Extract bias metrics
+                        if race_gender_match:
+                            metadata["results"]["race_gender_bias"] = float(race_gender_match.group(1))
+                        if gender_match:
+                            metadata["results"]["gender_bias"] = float(gender_match.group(1))
+                        if race_match:
+                            metadata["results"]["race_bias"] = float(race_match.group(1))
+                        if avg_bias_match:
+                            metadata["results"]["average_attribute_bias"] = float(avg_bias_match.group(1))
+                        
+                        logger.info(f"Extracted bias metrics for run {run_id}: race_gender={metadata['results'].get('race_gender_bias')}, gender={metadata['results'].get('gender_bias')}, race={metadata['results'].get('race_bias')}, avg={metadata['results'].get('average_attribute_bias')}")
+                    else:
+                        logger.warning(f"No bias metrics found in log for run {run_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Error extracting results from log for {run_id}: {e}")
+            else:
+                logger.warning(f"Log file not found for run {run_id}: {log_file}")
+            
+            # Save updated metadata
+            self._save_run_metadata(run_id, metadata)
+            
+        except Exception as e:
+            logger.error(f"Error extracting results for {run_id}: {e}")
+    
+    def _analyze_run_status_from_log(self, run_id: str) -> Optional[str]:
+        """Analyze run status from log file to detect failed runs that exited with code 0."""
+        try:
+            import re
+            
+            metadata = self.run_metadata.get(run_id)
+            if not metadata:
+                metadata = self._load_run_metadata(run_id)
+                if not metadata:
+                    return None
+            
+            log_file = metadata.get('log_file')
+            if not log_file:
+                logger.warning(f"No log file path found for run {run_id}")
+                return "failed"  # No log file means the run failed
+            
+            if not os.path.exists(log_file):
+                logger.warning(f"Log file not found for run {run_id}: {log_file}")
+                return "failed"  # Missing log file means the run failed
+            
+            with open(log_file, 'r') as f:
+                log_content = f.read()
+            
+            # Check for error patterns that indicate failure
+            error_patterns = [
+                r'Exception occurred:',
+                r'Error in configuration',
+                r'Traceback \(most recent call last\):',
+                r'AttributeError:',
+                r'RuntimeError:',
+                r'ValueError:',
+                r'ImportError:',
+                r'ModuleNotFoundError:',
+                r'FileNotFoundError:',
+                r'PermissionError:',
+                r'MemoryError:',
+                r'CUDA out of memory',
+                r'Killed',
+                r'Segmentation fault'
+            ]
+            
+            for pattern in error_patterns:
+                if re.search(pattern, log_content, re.IGNORECASE):
+                    logger.info(f"Detected error pattern '{pattern}' in log for run {run_id}")
+                    return "failed"
+            
+            # Check if the run actually completed successfully
+            if "Final Test Results" in log_content:
+                return "completed"
+            
+            # If no clear success or failure indicators, return None (unknown)
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error analyzing run status from log for {run_id}: {e}")
+            return None
     
     def check_orphaned_queued_runs(self) -> List[str]:
         """Check for runs marked as 'queued' that are no longer in the actual queue and mark them as failed."""

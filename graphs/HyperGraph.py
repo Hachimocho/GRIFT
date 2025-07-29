@@ -415,3 +415,31 @@ class HyperGraph():
         ax.axis('off')
         fig.savefig(path, dpi=300, bbox_inches='tight')
         plt.close(fig)
+
+    def export_csv_with_subclusters(self, node_path, edge_path):
+        """
+        Export nodes and edges to CSV, including subcluster info for Cosmograph or similar tools.
+        Args:
+            node_path (str): Path to save the node CSV.
+            edge_path (str): Path to save the edge CSV.
+        """
+        import csv
+        # Export nodes
+        with open(node_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['node_id', 'subcluster', 'label'])  # Add more columns as needed
+            for node in self.nodes:
+                subcluster = self.subclusters.get(node.node_id) if self.subclusters else None
+                label = getattr(node, 'label', getattr(node, 'name', ''))
+                writer.writerow([node.node_id, subcluster, label])
+        # Export edges
+        with open(edge_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['source', 'target'])
+            for node in self.nodes:
+                if hasattr(node, 'edges'):
+                    for edge in node.edges:
+                        n1, n2 = edge.get_nodes()
+                        # Only write each edge once
+                        if n1.node_id < n2.node_id:
+                            writer.writerow([n1.node_id, n2.node_id])

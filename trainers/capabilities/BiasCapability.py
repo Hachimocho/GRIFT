@@ -5,7 +5,7 @@ from utils.attribute_utils import AttributeMetadata, AttributeBiasLoss
 class BiasCapability:
     """Encapsulates bias measurement and correction functionality."""
     
-    def __init__(self, trainer):
+    def __init__(self, trainer, attribute_weights=None):
         self.trainer = trainer
         self.device = trainer.device
         self.attribute_metadata = trainer.attribute_metadata
@@ -14,6 +14,7 @@ class BiasCapability:
         self.bias_loss = None
         self.attr_map = {}
         self.bias_weight = 1.0
+        self.attribute_weights = attribute_weights
         
         if self.attribute_metadata:
             self._initialize_bias_loss()
@@ -41,10 +42,14 @@ class BiasCapability:
             # Create attribute map for efficient lookup
             self.attr_map = {attr.name: attr for attr in processed_metadata}
             
-            # Initialize bias loss function
-            self.bias_loss = AttributeBiasLoss(processed_metadata, self.attr_map).to(self.device)
+            # Set up per-attribute weights (default 1.0 for all attributes)
+            if self.attribute_weights is None:
+                self.attribute_weights = {attr.name: 1.0 for attr in processed_metadata}
             
-            print(f"BiasCapability: Initialized bias loss for {len(processed_metadata)} attributes")
+            # Initialize bias loss function
+            self.bias_loss = AttributeBiasLoss(processed_metadata, self.attr_map, self.attribute_weights).to(self.device)
+            
+            print(f"BiasCapability: Initialized bias loss for {len(processed_metadata)} attributes with weights: {self.attribute_weights}")
             
         except Exception as e:
             print(f"BiasCapability: Error initializing bias loss: {e}")
