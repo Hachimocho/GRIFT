@@ -136,7 +136,20 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                             # (assumes model.current_mode is set to 'eval' correctly)
                             img_tensor = model.transform(img)
                             batch_images_loaded.append(img_tensor)
-                            batch_labels_loaded.append(float(label))
+                            
+                            # Handle tuple labels safely
+                            try:
+                                if isinstance(label, (tuple, list)):
+                                    # If label is a tuple or list, take the first element
+                                    label_value = float(label[0])
+                                else:
+                                    label_value = float(label)
+                                batch_labels_loaded.append(label_value)
+                            except (ValueError, TypeError, IndexError) as e:
+                                print(f"Warning: Invalid label {label} for node {getattr(node, 'node_id', 'N/A')}: {e}")
+                                # Skip this node if label is invalid
+                                batch_images_loaded.pop()  # Remove the image we just added
+                                continue
                             batch_nodes_loaded.append(node) # Add node if data loaded
                         else:
                             # print(f"DEBUG: Img or Label is None for node {node.node_id}")
@@ -164,6 +177,21 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             # Perform inference
             try:                
                 outputs = model(batch_images_tensor)
+                
+                # Safety check: Handle unexpected output types
+                if isinstance(outputs, tuple):
+                    print(f"WARNING: Model returned tuple instead of tensor: {type(outputs)}, length: {len(outputs)}")
+                    # Try to extract the first element if it's a tensor
+                    if len(outputs) > 0 and hasattr(outputs[0], 'size'):
+                        print(f"Using first element of tuple: {outputs[0].shape}")
+                        outputs = outputs[0]
+                    else:
+                        print(f"ERROR: Cannot extract valid tensor from tuple: {[type(x) for x in outputs]}")
+                        continue
+                elif not hasattr(outputs, 'size'):
+                    print(f"WARNING: Model output has no .size() method: {type(outputs)}")
+                    continue
+                    
                 preds = (torch.sigmoid(outputs) > 0.5).float()
 
                 correct = (preds == batch_labels_tensor).sum().item()
@@ -184,6 +212,9 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                         total_bias_loss += 0.0 # Add 0 on error for this batch
             except Exception as e_inf:
                  print(f"\nError during model inference or loss calculation in {desc}: {e_inf}")
+                 # Clear GPU cache on error to prevent memory buildup
+                 if torch.cuda.is_available():
+                     torch.cuda.empty_cache()
                  # Potentially skip batch or handle error appropriately
                  continue # Skip batch on inference error
 
@@ -192,6 +223,10 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             current_labels = batch_labels_tensor.cpu().numpy().astype(int)
             all_predictions.extend(predictions.astype(int))
             all_labels.extend(current_labels)
+            
+            # Clear GPU cache periodically to prevent memory buildup
+            if i % 10 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             # --- Associate predictions/labels with nodes for bias calc ---
             node_results = {}

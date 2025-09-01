@@ -36,6 +36,14 @@
   "last_updated": "2025-06-23T16:54:08.798790",
   "end_time": "2025-06-23T16:54:08.798656",
   "results": {
-    "final_accuracy": 81.06
+    "final_accuracy": 0.8106,
+    "race_gender_bias": 0.12873931623931623,
+    "gender_bias": 0.023767758338359757,
+    "race_bias": 0.07077790002461015,
+    "average_attribute_bias": 0.047272829181484954,
+    "loss": 0.453,
+    "duration": "486306.9h",
+    "architecture": "resnestdf",
+    "traversal_type": "comprehensive"
   }
 }

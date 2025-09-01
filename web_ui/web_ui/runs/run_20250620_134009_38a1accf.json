@@ -30,10 +30,10 @@
   },
   "command": "python test_hierarchical.py --traversal-type comprehensive --enable-traversal-switching --traversal-sequence comprehensive,i-value-cluster-hop --switch-epochs 10 --architectures resnestdf --num-epochs 20 --batch-size 32 --bias_hop_period 5 --seed 42 --quality-threshold 0.5 --symmetry-threshold 0.3 --embedding-threshold 0.7 --fair-train --fair-test --enable-ivalue-viz --viz-track-nodes 50 --viz-sample-size 200 --bias_loss_weight 0.1 --num-workers 0 --use-cached --cached-nodes 1000 --cache-file node_cache/cached_nodes.pkl",
   "start_time": "2025-06-20T13:40:09.918189",
-  "status": "stopped",
+  "status": "failed",
   "log_file": "web_ui/runs/run_20250620_134009_38a1accf.log",
   "created": "2025-06-20T13:40:09.918196",
-  "last_updated": "2025-06-20T13:44:06.403943",
+  "last_updated": "2025-07-28T17:18:04.093706",
   "end_time": "2025-06-20T13:44:06.403826",
-  "error": "Process exited with code -15"
+  "error": "Status corrected from stopped to failed based on log analysis"
 }

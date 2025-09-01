@@ -33,14 +33,15 @@
   },
   "priority": 0,
   "queued_time": "2025-07-16T10:52:08.336628",
-  "status": "completed",
+  "status": "failed",
   "estimated_gpu_memory": 2.0,
   "created": "2025-07-16T10:52:08.336634",
-  "last_updated": "2025-07-16T11:18:22.263140",
+  "last_updated": "2025-07-28T17:18:04.276138",
   "gpu_id": 1,
   "start_time": "2025-07-16T11:06:20.888957",
   "log_file": "web_ui/runs/run_20250716_105208_ef1063ea.log",
   "command": "python test_hierarchical.py --traversal-type comprehensive --enable-traversal-switching --traversal-sequence comprehensive,i-value-cluster-hop --switch-epochs 10 --architectures mesonetdf --num-epochs 20 --batch-size 32 --bias_hop_period 100 --seed 42 --quality-threshold 0.5 --symmetry-threshold 0.3 --embedding-threshold 0.7 --cached-nodes 1000 --fair-train --fair-test --enable-ivalue-viz --viz-track-nodes 50 --viz-sample-size 200 --bias_loss_weight 0.1 --num-workers 0 --dqn-model basic --graph-type clustered --run-id run_20250716_105208_ef1063ea",
   "end_time": "2025-07-16T11:18:22.263128",
-  "exit_code": 0
+  "exit_code": 0,
+  "error": "Status corrected from completed to failed based on log analysis"
 }

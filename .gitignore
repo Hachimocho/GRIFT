@@ -194,3 +194,4 @@ run_outputs
 web_ui/web_ui/configs/*
 web_ui/web_ui/runs/*
 @quanty_vault
+outdated/

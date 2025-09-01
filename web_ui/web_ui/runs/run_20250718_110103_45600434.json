@@ -33,14 +33,15 @@
   },
   "priority": 0,
   "queued_time": "2025-07-18T11:01:03.340166",
-  "status": "completed",
+  "status": "failed",
   "estimated_gpu_memory": 2.0,
   "created": "2025-07-18T11:01:03.340212",
-  "last_updated": "2025-07-18T11:07:40.859037",
+  "last_updated": "2025-07-28T17:18:04.163477",
   "gpu_id": 0,
   "start_time": "2025-07-18T11:01:03.451255",
   "log_file": "web_ui/runs/run_20250718_110103_45600434.log",
   "command": "python test_hierarchical.py --traversal-type comprehensive --enable-traversal-switching --traversal-sequence comprehensive,i-value-subcluster --switch-epochs 10 --architectures resnestdf --num-epochs 20 --batch-size 32 --bias_hop_period 100 --seed 42 --quality-threshold 0.5 --symmetry-threshold 0.3 --embedding-threshold 0.7 --use-cached --cached-nodes 1000 --fair-train --fair-test --enable-ivalue-viz --viz-track-nodes 50 --viz-sample-size 200 --bias_loss_weight 0.1 --num-workers 0 --dqn-model basic --graph-type subclustered --use-cached --run-id run_20250718_110103_45600434",
   "end_time": "2025-07-18T11:07:40.859029",
-  "exit_code": 0
+  "exit_code": 0,
+  "error": "Status corrected from completed to failed based on log analysis"
 }

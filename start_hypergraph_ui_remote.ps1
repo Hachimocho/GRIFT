@@ -49,7 +49,7 @@ if ($testPort -ne $originalPort) {
 Write-Host "[INFO] Access the UI at: http://localhost:$testPort" -ForegroundColor Magenta
 
 # Create the remote command with environment setup
-$remoteCommand = "cd /major/bryce_python_workspace/GraphWork/HyperGraph && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin/python start_ui.py"
+$remoteCommand = "cd /major/bryce_python_workspace/GraphWork/HyperGraph && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin/python start_ui.py"
 
 # Start tunnel and UI in one command
 Write-Host "[CONNECT] Connecting and starting UI..." -ForegroundColor Green

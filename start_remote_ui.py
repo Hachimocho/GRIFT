@@ -242,7 +242,7 @@ pkill -f "ssh.*-L.*{local_port}:localhost:{remote_port}" 2>/dev/null
 
 # Start tunnel and UI in one command
 ssh -L {local_port}:localhost:{remote_port} {username}@{server_host} \\
-    "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin/python start_ui.py"
+    "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin/python start_ui.py"
 '''
     
     # Create PowerShell script for Windows
@@ -297,7 +297,7 @@ if ($testPort -ne $originalPort) {{
 Write-Host "[INFO] Access the UI at: http://localhost:$testPort" -ForegroundColor Magenta
 
 # Create the remote command with environment setup
-$remoteCommand = "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin/python start_ui.py"
+$remoteCommand = "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin/python start_ui.py"
 
 # Start tunnel and UI in one command
 Write-Host "[CONNECT] Connecting and starting UI..." -ForegroundColor Green
@@ -317,7 +317,7 @@ echo.
 REM Start tunnel and UI in one command
 echo [CONNECT] Connecting and starting UI...
 ssh -L {local_port}:localhost:{remote_port} {username}@{server_host} ^
-    "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/DeepEARL_new/bin/python start_ui.py"
+    "cd {current_dir} && export PATH=/home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin:$PATH && /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin/python start_ui.py"
 '''
     
     # Save all scripts

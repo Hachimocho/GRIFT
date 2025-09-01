@@ -95,7 +95,7 @@ class CNNModel(Model):
 
     def __call__(self, x):
         """Forward pass through the model"""
-        return self.model.model(x)
+        return self.model(x)
 
     def train(self):
         """Set model to training mode"""

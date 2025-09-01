@@ -30,14 +30,25 @@
   },
   "priority": 0,
   "queued_time": "2025-06-24T13:55:34.416299",
-  "status": "failed",
+  "status": "completed",
   "estimated_gpu_memory": 2.0,
   "created": "2025-06-24T13:55:34.416345",
-  "last_updated": "2025-06-24T13:55:36.246845",
+  "last_updated": "2025-07-28T17:18:03.455872",
   "gpu_id": 0,
   "start_time": "2025-06-24T13:55:36.246810",
   "log_file": "web_ui/runs/run_20250624_135534_e5531587.log",
   "command": "python test_hierarchical.py --traversal-type comprehensive --enable-traversal-switching --traversal-sequence comprehensive,i-value-cluster-hop --switch-epochs 10 --architectures resnestdf --num-epochs 20 --batch-size 32 --bias_hop_period 5 --seed 42 --quality-threshold 0.5 --symmetry-threshold 0.3 --embedding-threshold 0.7 --use-cached --cached-nodes 1000 --fair-train --fair-test --enable-ivalue-viz --viz-track-nodes 50 --viz-sample-size 200 --bias_loss_weight 0.1 --num-workers 0 --use-cached --run-id run_20250624_135534_e5531587",
   "end_time": "2025-06-24T14:03:11.875838",
-  "error": "Process status unknown on server restart"
+  "error": "Process status unknown on server restart",
+  "results": {
+    "final_accuracy": 0.773,
+    "race_gender_bias": 0.132396449704142,
+    "gender_bias": 0.04224018325988754,
+    "race_bias": 0.07817459276552208,
+    "average_attribute_bias": 0.06020738801270481,
+    "loss": 0.4835,
+    "duration": "486329.9h",
+    "architecture": "resnestdf",
+    "traversal_type": "comprehensive"
+  }
 }

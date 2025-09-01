@@ -41,5 +41,16 @@
   "log_file": "web_ui/runs/run_20250701_032122_de97a75b.log",
   "command": "python test_hierarchical.py --traversal-type comprehensive --enable-traversal-switching --traversal-sequence comprehensive,i-value-cluster-hop --switch-epochs 10 --architectures resnestdf --num-epochs 20 --batch-size 32 --bias_hop_period 5 --seed 42 --quality-threshold 0.5 --symmetry-threshold 0.3 --embedding-threshold 0.7 --use-cached --cached-nodes 1000 --fair-train --fair-test --enable-ivalue-viz --viz-track-nodes 50 --viz-sample-size 200 --bias_loss_weight 0.1 --num-workers 0 --dqn-model attention --use-cached --run-id run_20250701_032122_de97a75b",
   "end_time": "2025-07-01T07:23:29.221748",
-  "exit_code": 0
+  "exit_code": 0,
+  "results": {
+    "final_accuracy": 0.8192,
+    "race_gender_bias": 0.1777874902874903,
+    "gender_bias": 0.02680134200569706,
+    "race_bias": 0.09804276387220057,
+    "average_attribute_bias": 0.06242205293894881,
+    "loss": 0.4423,
+    "duration": "486489.4h",
+    "architecture": "resnestdf",
+    "traversal_type": "comprehensive"
+  }
 }
