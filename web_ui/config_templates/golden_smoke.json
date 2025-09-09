@@ -1,0 +1,29 @@
+{
+  "name": "Golden Smoke (200 nodes, fast)",
+  "description": "Fast smoke configuration: 200 balanced nodes per split, 1 epoch, minimal viz.",
+  "config": {
+    "traversal_type": "comprehensive",
+    "enable_traversal_switching": false,
+    "architectures": "resnestdf",
+    "num_epochs": 1,
+    "batch_size": 32,
+    "bias_hop_period": 100,
+    "seed": 42,
+    "quality_threshold": 0.500,
+    "symmetry_threshold": 0.300,
+    "embedding_threshold": 0.700,
+    "cached_nodes": false,
+    "cache_nodes": false,
+    "cached_nodes_count": 200,
+    "cache_file": "node_cache/cached_nodes.pkl",
+    "use_dynamic_cache": false,
+    "fair_train": true,
+    "fair_test": true,
+    "enable_ivalue_viz": false,
+    "viz_track_nodes": 20,
+    "viz_sample_size": 100,
+    "bias_loss_weight": 0.0,
+    "num_workers": 0
+  }
+}
+

@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import uuid
 import psutil
 import logging
+import requests
 
 try:
     import GPUtil
@@ -47,6 +48,27 @@ class GPUQueueManager:
     def __init__(self, runs_dir: str = "web_ui/runs"):
         self.runs_dir = Path(runs_dir)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Paths and configuration
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.lock_dir = self.repo_root / ".grift"
+        self.lock_file = self.lock_dir / "lock.json"
+        self.protected_paths = [
+            "models/",
+            "trainers/",
+            "graphs/",
+            "dataloaders/",
+            "datasets/",
+            "edges/",
+            "nodes/",
+            "managers/",
+            "test_helpers/",
+            "test_hierarchical.py"
+        ]
+        self.slack_webhook_url = os.environ.get(
+            "SLACK_WEBHOOK_URL",
+            "https://hooks.slack.com/services/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"
+        )
         
         # GPU management
         self.gpu_allocations = {}  # {gpu_id: run_id}
@@ -88,6 +110,57 @@ class GPUQueueManager:
         self.gpu_monitor_thread.start()
         
         logger.info("GPU Queue Manager background threads started")
+
+    def _notify_slack(self, message: str) -> None:
+        """Send a simple text message to Slack. Fail-safe: never raise."""
+        try:
+            if not self.slack_webhook_url:
+                return
+            requests.post(self.slack_webhook_url, json={"text": message}, timeout=5)
+        except Exception as e:
+            logger.debug(f"Slack notification failed: {e}")
+
+    def _write_run_lock(self, trigger_run_id: str) -> None:
+        """Create or update a repository run-lock to protect critical paths."""
+        try:
+            self.lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_payload = {
+                "active": True,
+                "created_at": datetime.now().isoformat(),
+                "owner": "gpu_queue_manager",
+                "reason": f"Run {trigger_run_id} active",
+                "protected_paths": self.protected_paths,
+            }
+            # If a lock exists, preserve earliest created_at and aggregate reasons
+            if self.lock_file.exists():
+                try:
+                    existing = json.loads(self.lock_file.read_text())
+                    if existing.get("active"):
+                        lock_payload["created_at"] = existing.get("created_at", lock_payload["created_at"])
+                        lock_payload["reason"] = existing.get("reason", lock_payload["reason"])
+                except Exception:
+                    pass
+            self.lock_file.write_text(json.dumps(lock_payload, indent=2))
+        except Exception as e:
+            logger.warning(f"Failed to write run lock: {e}")
+
+    def _clear_run_lock_if_needed(self) -> None:
+        """Clear the run-lock if there are no active runs left."""
+        try:
+            if not self.active_runs and self.lock_file.exists():
+                try:
+                    data = json.loads(self.lock_file.read_text())
+                    data["active"] = False
+                    data["cleared_at"] = datetime.now().isoformat()
+                    self.lock_file.write_text(json.dumps(data, indent=2))
+                except Exception:
+                    # As a fallback, remove the file
+                    try:
+                        self.lock_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"Failed to clear run lock: {e}")
     
     def get_gpu_info(self) -> List[Dict[str, Any]]:
         """Get information about all available GPUs."""
@@ -205,6 +278,7 @@ class GPUQueueManager:
             self.run_queue.sort(key=lambda x: x[3], reverse=True)
         
         logger.info(f"Queued run {run_id} with priority {priority}")
+        self._notify_slack(f"🧪 Queued run {run_id} for config '{config_name}' (priority {priority}).")
         return run_id
     
     def start_run(self, run_id: str, gpu_id: int) -> bool:
@@ -265,6 +339,13 @@ class GPUQueueManager:
             self.gpu_processes[gpu_id] = process
             self.active_runs[run_id] = metadata
             
+            # Write run lock on first active run
+            if len(self.active_runs) == 1:
+                self._write_run_lock(run_id)
+                self._notify_slack(f"🚀 Started run {run_id} on GPU {gpu_id} — config '{metadata.get('config_name')}'.")
+            else:
+                self._notify_slack(f"🚀 Started run {run_id} on GPU {gpu_id} — config '{metadata.get('config_name')}'.")
+            
             # Start monitoring thread
             monitor_thread = threading.Thread(
                 target=self._monitor_run_process,
@@ -279,6 +360,7 @@ class GPUQueueManager:
             
         except Exception as e:
             logger.error(f"Error starting run {run_id}: {e}")
+            self._notify_slack(f"❌ Failed to start run {run_id}: {e}")
             return False
     
     def stop_run(self, run_id: str) -> bool:
@@ -315,6 +397,7 @@ class GPUQueueManager:
             
             # Clean up GPU allocation
             self._release_gpu(gpu_id, run_id, "stopped")
+            self._notify_slack(f"🛑 Stopped run {run_id} on GPU {gpu_id}.")
             return True
             
         except Exception as e:
@@ -533,6 +616,22 @@ class GPUQueueManager:
                     self._extract_results(run_id)
                 
                 self._save_run_metadata(run_id, metadata)
+                # Notify Slack with optional summary
+                summary = ""
+                try:
+                    res = metadata.get("results", {}) or {}
+                    acc = res.get("final_accuracy")
+                    loss = res.get("loss")
+                    if acc is not None:
+                        summary += f" | acc={acc:.3f}"
+                    if loss is not None:
+                        summary += f" | loss={loss:.4f}"
+                except Exception:
+                    pass
+                if status == "completed":
+                    self._notify_slack(f"✅ Completed run {run_id}{summary}.")
+                elif status == "failed":
+                    self._notify_slack(f"❗ Run {run_id} failed (exit_code={exit_code}).")
             
             # Clean up GPU allocation
             if gpu_id in self.gpu_allocations:
@@ -545,6 +644,8 @@ class GPUQueueManager:
                 del self.active_runs[run_id]
             
             logger.info(f"Released GPU {gpu_id} from run {run_id} (status: {status})")
+            # Possibly clear the lock if no active runs left
+            self._clear_run_lock_if_needed()
             
         except Exception as e:
             logger.error(f"Error releasing GPU {gpu_id}: {e}")
