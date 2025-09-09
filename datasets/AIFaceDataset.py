@@ -12,7 +12,7 @@ import json
 import re
 import random
 import time
-from profiler import profiler
+from utils.profiler import profiler
 
 class AIFaceDataset(Dataset):
     tags = ["deepfakes", "image", "attributes"]

@@ -1,7 +1,0 @@
-When passing new arguments to a function or object, always check the function/object to ensure it can handle the new arguments.
-There is a strict limitation on how large your code edits can be. If you need to make a large edit, break it up into smaller edits.
-Double-check any imports you add/edit to ensure they are valid and not hallucinated.
-Do not make any changes to the code that are not directly related to the task at hand.
-Do not remove any code that is not directly related to the task at hand.
-Once you have finished all of your edits, update updates.md to reflect the changes you have made.
-If you have learned any significant new information about the code architecture or implementation, save it as a memory.

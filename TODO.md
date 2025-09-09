@@ -1,8 +1,0 @@
-- Check on how batching affects traversal with I-value calculation
-- Verify fair clustering details
-- Fix graph construction time measurement bug
-- Clean up unused code/imports/files
-- Make sure yaml file is up to date
-- Add post-training I-value retraining support
-- Add graph-wide I-Value measurement and visualization
-- Add more clustering options
