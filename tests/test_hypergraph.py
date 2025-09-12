@@ -25,8 +25,9 @@ def test_hypergraph_edge_list_and_add_edges_from_list():
     el2 = set(graph.get_edge_list())
     assert tuple(sorted((nodes[0].node_id, nodes[2].node_id))) in el2
 
-    # Build a fresh graph and add edges from list
-    g2 = HyperGraph(nodes=list(nodes))
+    # Build a fresh graph with fresh Node objects (no prior edges)
+    fresh_nodes = [Node(n.node_id, 'train', {}, [], 0) for n in nodes]
+    g2 = HyperGraph(nodes=fresh_nodes)
     g2.add_edges_from_list(list(initial_edges))
     assert set(g2.get_edge_list()) == initial_edges
 
