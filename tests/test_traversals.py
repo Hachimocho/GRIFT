@@ -1,6 +1,6 @@
 import pytest
 
-from .conftest import build_dummy_graph, get_traversal_classes
+from conftest import build_dummy_graph, get_traversal_classes
 
 
 def test_random_and_comprehensive_traversals_collect_nodes():

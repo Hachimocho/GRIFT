@@ -3,7 +3,7 @@ import inspect
 from nodes.Node import Node
 from edges.Edge import Edge
 
-from .conftest import get_node_classes, get_edge_classes
+from conftest import get_node_classes, get_edge_classes
 
 
 def _construct_with_signature(cls, base_kwargs):

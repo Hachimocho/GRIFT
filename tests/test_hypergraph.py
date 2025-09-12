@@ -2,7 +2,7 @@ from graphs.HyperGraph import HyperGraph
 from nodes.Node import Node
 from edges.Edge import Edge
 
-from .conftest import build_dummy_graph
+from conftest import build_dummy_graph
 
 
 def test_hypergraph_len_and_nodes():

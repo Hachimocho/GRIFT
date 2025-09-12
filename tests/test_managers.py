@@ -4,7 +4,7 @@ from managers.GraphManager import GraphManager
 from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
 
-from .conftest import build_dummy_graph
+from conftest import build_dummy_graph
 
 
 def test_graph_manager_interface():
