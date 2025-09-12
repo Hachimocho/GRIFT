@@ -1,8 +1,14 @@
 import inspect
+import os
+import sys
 import random
 from typing import Dict, List, Tuple, Type
 
 import numpy as np
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from nodes.Node import Node
 from edges.Edge import Edge
