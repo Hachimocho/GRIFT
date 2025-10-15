@@ -1,0 +1,18 @@
+title: Example Feature Title
+business_goal: Why this matters to users/business
+acceptance_criteria:
+  - Given X when Y then Z
+scope:
+  in: [services/module_a, services/module_b]
+  out: [legacy]
+repos:
+  - owner: your-org
+    repo: your-org/your-repo
+    branch: dev
+constraints: [security, performance]
+dependencies: []
+migration: {schema: [], rollout: staged}
+test_strategy: {unit: true, e2e: login_flow, performance: p95<200ms}
+success_metrics: [reduction in errors, faster response]
+
+

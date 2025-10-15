@@ -141,11 +141,11 @@ def get_face_models():
 # Configuration for attribute calculation
 ATTRIBUTE_CONFIG = {
     'face_embedding': {
-        'enabled': True,
+        'enabled': False,
         'description': 'Calculate face embeddings using FaceNet'
     },
     'quality_metrics': {
-        'enabled': True,
+        'enabled': False,
         'description': 'Calculate image quality metrics (blur, brightness, contrast, compression)',
         'components': {
             'blur': True,
@@ -154,11 +154,11 @@ ATTRIBUTE_CONFIG = {
         }
     },
     'alignment': {
-        'enabled': True,
+        'enabled': False,
         'description': 'Calculate face alignment angles (yaw, pitch, roll)'
     },
     'symmetry': {
-        'enabled': True,
+        'enabled': False,
         'description': 'Calculate facial symmetry metrics',
         'components': {
             'eyes': True,
@@ -167,16 +167,18 @@ ATTRIBUTE_CONFIG = {
         }
     },
     'emotions': {
-        'enabled': True,
+        'enabled': False,
         'description': 'Calculate emotion scores using FER'
     },
     'deepface': {
-        'enabled': False,
+        'enabled': True,
         'description': 'Calculate age, gender, and race using DeepFace',
         'components': {
             'age': True,
+            'age_group': True,
             'gender': True,
-            'race': True
+            'race': True,
+            'emotion': True
         }
     }
 }
@@ -964,7 +966,7 @@ def process_single_image(image_path: str) -> Dict[str, Any]:
                 try:
                     attributes = DeepFace.analyze(
                         img, 
-                        actions=['age', 'gender', 'race'] if all(ATTRIBUTE_CONFIG['deepface']['components'].values())
+                        actions=['age', 'age_group', 'gender', 'race', 'emotion'] if all(ATTRIBUTE_CONFIG['deepface']['components'].values())
                                else [k for k, v in ATTRIBUTE_CONFIG['deepface']['components'].items() if v],
                         enforce_detection=False,
                         detector_backend='opencv'

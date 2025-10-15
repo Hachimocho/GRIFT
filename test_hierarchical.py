@@ -25,6 +25,11 @@ from datetime import datetime
 import dill
 import numpy as np
 import argparse
+import faulthandler
+import signal
+import resource
+import psutil
+import os
 
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
@@ -487,6 +492,32 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
 
 def main():
     args = parse_args() # Parse args first
+    # Enable faulthandler for hard crashes
+    try:
+        faulthandler.enable()
+        print("Faulthandler enabled for crash diagnostics.")
+    except Exception as e:
+        print(f"Warning: Could not enable faulthandler: {e}")
+
+    # Install signal handlers to log abrupt termination
+    def _signal_handler(signum, frame):
+        print(f"\n[Signal] Received signal {signum}. Potential abrupt termination.")
+        faulthandler.dump_traceback()
+    try:
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            signal.signal(sig, _signal_handler)
+    except Exception as e:
+        print(f"Warning: Could not set signal handlers: {e}")
+
+    # Log memory and CPU info at startup
+    try:
+        vm = psutil.virtual_memory()
+        print(f"System memory: total={vm.total/1e9:.2f}GB, available={vm.available/1e9:.2f}GB, used={vm.used/1e9:.2f}GB")
+        print(f"CPU count: {psutil.cpu_count(logical=True)}")
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        print(f"Process address space limits: soft={soft}, hard={hard}")
+    except Exception as e:
+        print(f"Warning: Could not query system resources: {e}")
 
     # --- Check for PYTHONHASHSEED --- 
     if 'PYTHONHASHSEED' not in os.environ:
@@ -498,6 +529,24 @@ def main():
         print(f"Using PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
 
     set_seed(args.seed) # Use args.seed
+    # GPU override: optionally force a single GPU via env and torch device
+    try:
+        if getattr(args, 'gpu_override', False):
+            gpu_id = int(getattr(args, 'gpu_id', 0))
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            print(f"[GPU] Single-GPU override enabled. Forcing CUDA_VISIBLE_DEVICES={gpu_id}")
+            if torch.cuda.is_available():
+                try:
+                    # Set device 0 of the now-restricted visible devices
+                    torch.cuda.set_device(0)
+                    print(f"[GPU] torch.cuda.set_device(0) successful (maps to physical GPU {gpu_id})")
+                except Exception as e:
+                    print(f"[GPU][Warning] Failed torch.cuda.set_device(0): {e}")
+            else:
+                print("[GPU][Warning] CUDA not available after override; falling back to CPU")
+    except Exception as e:
+        print(f"[GPU][Error] Failed to apply GPU override: {e}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -645,57 +694,73 @@ def main():
         node_ids = sorted([node.node_id for node in nodes_to_use])
         node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
         
-        cache_filename = os.path.join(
+        cache_base = f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}"
+        pickle_cache_filename = os.path.join(
             graph_cache_dir,
-            # Include the graph type, balancing status and node hash in the cache filename
-            f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_graph.pkl"
+            f"{cache_base}_graph.pkl"
+        )
+        edges_csv_filename = os.path.join(
+            graph_cache_dir,
+            f"{cache_base}_edges.csv.gz"
         )
 
         # Check/Load Graph Cache
         graph = None
         loaded_from_cache = False
 
-        if os.path.exists(cache_filename):
+        if os.path.exists(edges_csv_filename) or os.path.exists(pickle_cache_filename):
             try:
-                print(f"\nFound edge cache file: {cache_filename}. Attempting to load.")
                 # 1. Load Nodes (ensure nodes are loaded for the split)
                 split_nodes = train_nodes_full if split_name == 'train' else val_nodes_full if split_name == 'val' else test_nodes_full
                 if not split_nodes:
                     raise ValueError(f"Nodes for split '{split_name}' not found or loaded.")
-                
-                # 2. Load Edge List
-                with open(cache_filename, 'rb') as f:
-                    edge_list = dill.load(f)
-                    
-                # 3. Create node ID set for validation
-                nodes_to_use_ids = set(node.node_id for node in nodes_to_use)
-                print(f"Nodes to use for {split_name}: {len(nodes_to_use_ids)} unique node IDs")
-                
-                # 4. Validate edge compatibility
-                edge_node_ids = set()
-                for id1, id2 in edge_list:
-                    edge_node_ids.add(id1)
-                    edge_node_ids.add(id2)
-                
-                missing_nodes = edge_node_ids - nodes_to_use_ids
-                print(f"Edge cache contains {len(edge_list)} edges referencing {len(edge_node_ids)} unique nodes")
-                print(f"Missing nodes in current node set: {len(missing_nodes)} ({len(missing_nodes)/len(edge_node_ids)*100:.1f}% of edge nodes)")
-                
-                if len(missing_nodes) > len(edge_node_ids) * 0.1:  # More than 10% missing
-                    print(f"WARNING: Cache incompatible - too many missing nodes ({len(missing_nodes)}). Regenerating graph.")
-                    graph = None  # Force regeneration
-                else:
-                    # 5. Reconstruct Graph - Use nodes_to_use to match cache creation
+
+                # Prefer streaming CSV cache if present
+                if os.path.exists(edges_csv_filename):
+                    print(f"\nFound streaming edge cache: {edges_csv_filename}. Attempting to load.")
                     print(f"Creating graph shell for {split_name} with {len(nodes_to_use)} nodes.")
                     graph = HyperGraph(nodes_to_use)
-                    print(f"Adding {len(edge_list)} edges from cache...")
-                    graph.add_edges_from_list(edge_list)
-                    
-                    print(f"Successfully loaded and reconstructed {split_name} graph from edge cache.")
+                    added = graph.load_edges_from_csv(edges_csv_filename)
+                    print(f"Loaded {added} edges from CSV cache for {split_name}.")
                     loaded_from_cache = True
-                
+                else:
+                    print(f"\nFound edge cache file: {pickle_cache_filename}. Attempting to load.")
+                    # 2. Load Edge List (legacy pickle)
+                    with open(pickle_cache_filename, 'rb') as f:
+                        edge_list = dill.load(f)
+
+                    # 3. Create node ID set for validation
+                    nodes_to_use_ids = set(node.node_id for node in nodes_to_use)
+                    print(f"Nodes to use for {split_name}: {len(nodes_to_use_ids)} unique node IDs")
+
+                    # 4. Validate edge compatibility (only for pickle; CSV is streamed)
+                    edge_node_ids = set()
+                    for id1, id2 in edge_list:
+                        edge_node_ids.add(id1)
+                        edge_node_ids.add(id2)
+
+                    missing_nodes = edge_node_ids - nodes_to_use_ids
+                    print(f"Edge cache contains {len(edge_list)} edges referencing {len(edge_node_ids)} unique nodes")
+                    print(f"Missing nodes in current node set: {len(missing_nodes)} ({len(missing_nodes)/len(edge_node_ids)*100:.1f}% of edge nodes)")
+
+                    if len(missing_nodes) > len(edge_node_ids) * 0.1:  # More than 10% missing
+                        print(f"WARNING: Cache incompatible - too many missing nodes ({len(missing_nodes)}). Regenerating graph.")
+                        graph = None  # Force regeneration
+                    else:
+                        # 5. Reconstruct Graph - Use nodes_to_use to match cache creation
+                        print(f"Creating graph shell for {split_name} with {len(nodes_to_use)} nodes.")
+                        graph = HyperGraph(nodes_to_use)
+                        print(f"Adding {len(edge_list)} edges from legacy pickle cache...")
+                        graph.add_edges_from_list(edge_list)
+
+                        print(f"Successfully loaded and reconstructed {split_name} graph from edge cache.")
+                        loaded_from_cache = True
+
             except Exception as e:
-                print(f"\nError loading/reconstructing {split_name} graph from edge cache {cache_filename}: {e}. Regenerating.")
+                which = edges_csv_filename if os.path.exists(edges_csv_filename) else pickle_cache_filename
+                print(f"\nError loading/reconstructing {split_name} graph from edge cache {which}: {e}. Regenerating.")
+                import traceback
+                traceback.print_exc()
                 graph = None # Ensure regeneration if loading fails
 
         # --- Build Graph if not loaded from cache --- 
@@ -728,17 +793,16 @@ def main():
             else:
                  graph = graph_build_result
             
-            # --- Save Edge List to Cache --- 
+            # --- Save Edges to Cache (streaming CSV preferred) --- 
             if graph: # Only save if graph build was successful
                 try:
-                    print(f"Extracting edge list for {split_name} graph...")
-                    edge_list_to_save = graph.get_edge_list()
-                    print(f"Saving {len(edge_list_to_save)} edges for {split_name} graph to cache: {cache_filename}")
-                    with open(cache_filename, 'wb') as f:
-                        dill.dump(edge_list_to_save, f) # Save the list, no recurse needed
-                    print(f"Saved {split_name} edge list to cache.")
+                    print(f"Saving edges for {split_name} graph to streaming cache: {edges_csv_filename}")
+                    written = graph.export_edges_csv(edges_csv_filename)
+                    print(f"Saved {written} edges for {split_name} to CSV cache.")
                 except Exception as e:
-                    print(f"Error extracting or saving {split_name} edge list to cache file {cache_filename}: {e}")
+                    print(f"Error saving {split_name} edges to CSV cache {edges_csv_filename}: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"Skipping cache save for {split_name} due to build failure.")
 
@@ -881,8 +945,15 @@ def main():
         print(f"Val: {val_size} nodes") 
         print(f"Test: {test_size} nodes")
         
-        train_steps = 1000
-        val_steps = 1000
+        # Steps config: allow explicit counts or match number of nodes
+        if getattr(args, 'train_steps_equal_nodes', False):
+            train_steps = len(train_manager.graph.get_nodes())
+        else:
+            train_steps = getattr(args, 'train_steps', 1000)
+        if getattr(args, 'val_steps_equal_nodes', False):
+            val_steps = len(val_manager.graph.get_nodes())
+        else:
+            val_steps = getattr(args, 'val_steps', 1000)
         
         # --- Setup run-specific output directory ---
         import string

@@ -354,6 +354,28 @@
                             <div class="form-text">Save nodes to cache for future use (--cache-nodes)</div>
                         </div>
                     </div>
+
+                    <!-- Cache all / use full cache options -->
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="cacheFull" name="cache_full">
+                                <label class="form-check-label" for="cacheFull">
+                                    Cache Full Dataset
+                                </label>
+                            </div>
+                            <div class="form-text">Cache all nodes per split (also stores balanced subset if count is set). (--cache-full)</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="useFullCache" name="use_full_cache">
+                                <label class="form-check-label" for="useFullCache">
+                                    Use Full Cached Dataset
+                                </label>
+                            </div>
+                            <div class="form-text">When loading from cache, prefer the full set rather than a subset. (--use-full-cache)</div>
+                        </div>
+                    </div>
                     
                     <!-- Conditionally visible cached nodes count field -->
                     <div class="row" id="cachedNodesCountRow" style="display: none;">
@@ -507,6 +529,38 @@
                     </select>
                     <div class="form-text">How to construct the graph for each split. Subclustering uses Louvain community detection.</div>
                 </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label d-block">GPU Override (Single GPU)</label>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="gpuOverride" name="gpu_override">
+                        <label class="form-check-label" for="gpuOverride">Enable single-GPU override</label>
+                    </div>
+                    <div class="mt-2" id="gpuIdContainer" style="display:none;">
+                        <label for="gpuId" class="form-label">GPU ID</label>
+                        <input type="number" class="form-control" id="gpuId" name="gpu_id" value="0" min="0">
+                        <div class="form-text">If enabled, the run will be forced to use only this GPU.</div>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label d-block">Traversal Steps</label>
+                    <div class="input-group mb-2">
+                        <span class="input-group-text">Train Steps</span>
+                        <input type="number" class="form-control" id="trainSteps" name="train_steps" value="1000" min="1">
+                        <div class="input-group-text">
+                            <input class="form-check-input mt-0" type="checkbox" id="trainStepsEqualNodes" name="train_steps_equal_nodes">
+                        </div>
+                        <span class="input-group-text">= # Train Nodes</span>
+                    </div>
+                    <div class="input-group">
+                        <span class="input-group-text">Val Steps</span>
+                        <input type="number" class="form-control" id="valSteps" name="val_steps" value="1000" min="1">
+                        <div class="input-group-text">
+                            <input class="form-check-input mt-0" type="checkbox" id="valStepsEqualNodes" name="val_steps_equal_nodes">
+                        </div>
+                        <span class="input-group-text">= # Val Nodes</span>
+                    </div>
+                    <div class="form-text">Set fixed step counts or match number of nodes in graph.</div>
+                </div>
             </div>
         </form>
     </div>
@@ -558,6 +612,14 @@ $(document).ready(function() {
     
     // Add event listeners for form changes
     $('#configForm input, #configForm select').on('change', updatePreview);
+    $('#gpuOverride').on('change', function() {
+        if (this.checked) {
+            $('#gpuIdContainer').show();
+        } else {
+            $('#gpuIdContainer').hide();
+        }
+        updatePreview();
+    });
     
     // Add event listener for graph type changes to handle I-value traversal adaptation
     $('#graphType').on('change', function() {
@@ -613,7 +675,7 @@ $(document).ready(function() {
     });
     
     // Add event listeners for cache settings
-    $('#cachedNodes, #cacheNodes').on('change', function() {
+    $('#cachedNodes, #cacheNodes, #cacheFull, #useFullCache').on('change', function() {
         updateCachedNodesCountVisibility();
         showCacheWarning();
         updatePreview();
@@ -686,8 +748,9 @@ function updateIValueTraversalForGraphType(graphType, elementId = 'traversalType
 function updateCachedNodesCountVisibility() {
     const cachedNodes = $('#cachedNodes').is(':checked');
     const cacheNodes = $('#cacheNodes').is(':checked');
+    const cacheFull = $('#cacheFull').is(':checked');
     
-    if (cachedNodes && cacheNodes) {
+    if (cachedNodes && cacheNodes && !cacheFull) {
         $('#cachedNodesCountRow').show();
     } else if (cachedNodes) {
         $('#cachedNodesCountRow').hide();
@@ -1167,6 +1230,15 @@ function getFormData() {
             }
         }
     });
+
+    // Ensure GPU override fields are coerced to expected types
+    config.gpu_override = document.getElementById('gpuOverride').checked;
+    if (config.gpu_override) {
+        const gpuIdVal = document.getElementById('gpuId').value;
+        config.gpu_id = parseInt(gpuIdVal, 10);
+    } else {
+        delete config.gpu_id;
+    }
     
     // Handle architecture checkboxes
     const selectedArchitectures = [];
@@ -1307,10 +1379,27 @@ function updatePreview() {
     if (config.quality_threshold || config.symmetry_threshold || config.embedding_threshold) {
         preview += `<div class="mb-2"><strong>Thresholds:</strong> Q:${config.quality_threshold || 'N/A'} S:${config.symmetry_threshold || 'N/A'} E:${config.embedding_threshold || 'N/A'}</div>`;
     }
+
+    // Traversal steps preview
+    const trainStepsLabel = config.train_steps_equal_nodes ? '# Train Nodes' : (config.train_steps || '1000');
+    const valStepsLabel = config.val_steps_equal_nodes ? '# Val Nodes' : (config.val_steps || '1000');
+    preview += `<div class="mb-2"><strong>Traversal Steps:</strong> Train=${trainStepsLabel}, Val=${valStepsLabel}</div>`;
+
+    // GPU override preview
+    if (config.gpu_override) {
+        preview += `<div class="mb-2"><strong>GPU Override:</strong> Enabled (GPU ${config.gpu_id})</div>`;
+    } else {
+        preview += `<div class="mb-2"><strong>GPU Override:</strong> Disabled</div>`;
+    }
     
     // Add cache configuration
     if (config.cached_nodes) {
-        preview += `<div class="mb-2"><strong>Cache:</strong> Using cached nodes</div>`;
+        const cacheMode = config.use_full_cache ? 'Use Full Cache' : 'Use Balanced/Subset Cache';
+        preview += `<div class="mb-2"><strong>Cache:</strong> Using cached nodes (${cacheMode})</div>`;
+    }
+    if (config.cache_nodes) {
+        const saveMode = config.cache_full ? 'Cache Full Dataset' : 'Cache Balanced Subset';
+        preview += `<div class="mb-2"><strong>Cache Save:</strong> ${saveMode}</div>`;
     }
     
     if (config.fair_train || config.fair_test) {

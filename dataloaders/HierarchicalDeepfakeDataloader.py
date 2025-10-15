@@ -71,6 +71,13 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         "symmetry_threshold": 0.9,  # Similarity threshold for facial symmetry
         "silent_mode": False,  # When True, disables internal progress bars
         "age_split_threshold": 1000,  # Threshold for age-based subgrouping
+        # Sparse edge generation on very large subgroups
+        "sparse_mode": True,
+        "sparse_k_neighbors": 20,
+        "sparse_batch_size": 50000,
+        "sparse_subgroup_threshold": 5000,
+        # Disable heavy Louvain by default on huge graphs
+        "assign_subclusters": False,
     }
 
     def __init__(self, datasets, edge_class, **kwargs):
@@ -146,16 +153,19 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         for node in nodes:
             emb = node.attributes.get('face_embedding')
             if emb is not None and isinstance(emb, np.ndarray):
-                embeddings.append(emb)
+                if emb.dtype != np.float32:
+                    embeddings.append(emb.astype(np.float32, copy=False))
+                else:
+                    embeddings.append(emb)
             else:
                 # Default to zeros if missing
-                embeddings.append(np.zeros(512))  # Standard face embedding size
+                embeddings.append(np.zeros(512, dtype=np.float32))  # Standard face embedding size
         
-        embeddings_matrix = np.array(embeddings)
+        embeddings_matrix = np.asarray(embeddings, dtype=np.float32)
         
         # Quality metrics matrix - [n_nodes, n_metrics]
         quality_attrs = ['blur', 'brightness', 'contrast', 'compression']
-        quality_matrix = np.zeros((len(nodes), len(quality_attrs)))
+        quality_matrix = np.zeros((len(nodes), len(quality_attrs)), dtype=np.float32)
         
         for i, node in enumerate(nodes):
             for j, attr in enumerate(quality_attrs):
@@ -164,7 +174,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         
         # Symmetry metrics matrix - [n_nodes, n_metrics]
         symmetry_attrs = ['symmetry_eye', 'symmetry_mouth', 'symmetry_nose', 'symmetry_overall']
-        symmetry_matrix = np.zeros((len(nodes), len(symmetry_attrs)))
+        symmetry_matrix = np.zeros((len(nodes), len(symmetry_attrs)), dtype=np.float32)
         
         for i, node in enumerate(nodes):
             for j, attr in enumerate(symmetry_attrs):
@@ -1205,11 +1215,12 @@ class HierarchicalDeepfakeDataloader(Dataloader):
 
         # Create the HyperGraph object
         graph = HyperGraph(nodes=all_nodes)
-        # Assign Louvain subclusters (if available)
-        try:
-            graph.assign_louvain_subclusters()
-        except Exception as e:
-            logger.warning(f"Louvain subcluster assignment failed: {e}")
+        # Assign Louvain subclusters (if enabled)
+        if self.hyperparameters.get("assign_subclusters", False):
+            try:
+                graph.assign_louvain_subclusters()
+            except Exception as e:
+                logger.warning(f"Louvain subcluster assignment failed: {e}")
         return graph
         
     def _build_graph_standard(self, nodes, split_name):
@@ -1267,27 +1278,74 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         
         logger.info(f"Generated subgroup mapping for {len(node_index_to_subgroup_id)} nodes across {len(set(node_index_to_subgroup_id.values()))} subgroups.")
 
-        # Step 2.5: Create initial edges STRICTLY within final subgroups
+        # Step 2.5: Create initial candidate edges within final subgroups using sparse k-NN for large subgroups
         all_edges = []
         nodes_by_subgroup = defaultdict(list)
         for node_idx, subgroup_id in node_index_to_subgroup_id.items():
             nodes_by_subgroup[subgroup_id].append(node_idx)
 
-        # DEBUG: Log largest subgroup size
         if nodes_by_subgroup:
             max_subgroup_size = max(len(indices) for indices in nodes_by_subgroup.values())
             logger.info(f"Largest subgroup size: {max_subgroup_size}")
         else:
             logger.info("No subgroups found.")
 
-        for subgroup_id, nodes_in_subgroup in nodes_by_subgroup.items():
-            if len(nodes_in_subgroup) > 1:
-                all_edges.extend(combinations(nodes_in_subgroup, 2))
+        def _generate_knn_edges_for_subgroup(subgroup_indices):
+            n = len(subgroup_indices)
+            if n <= 1:
+                return []
+            k = self.hyperparameters.get("sparse_k_neighbors", 20)
+            k = min(k, n - 1)
 
-        # DEBUG: Log initial edge count explicitly
-        logger.info(f"Created {len(all_edges)} initial edges strictly within {len(nodes_by_subgroup)} subgroups.")
-        initial_edge_count = len(all_edges)
-        logger.info(f"Total initial edges before filtering: {initial_edge_count}")
+            # Build embeddings matrix for this subgroup
+            emb_list = []
+            for idx in subgroup_indices:
+                emb = nodes[idx].attributes.get('face_embedding')
+                if isinstance(emb, np.ndarray):
+                    emb_list.append(emb.astype(np.float32, copy=False) if emb.dtype != np.float32 else emb)
+                else:
+                    emb_list.append(np.zeros(512, dtype=np.float32))
+            emb_matrix = np.asarray(emb_list, dtype=np.float32)
+
+            # Fit NN
+            try:
+                nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto', metric='cosine', n_jobs=-1)
+                nn.fit(emb_matrix)
+            except Exception as e:
+                logger.warning(f"NearestNeighbors fit failed for subgroup size {n}: {e}. Skipping.")
+                return []
+
+            edges_set = set()
+            try:
+                distances, indices_knn = nn.kneighbors(emb_matrix, n_neighbors=k + 1, return_distance=True)
+                for i_local, neighs in enumerate(indices_knn):
+                    src = subgroup_indices[i_local]
+                    for j_local in neighs:
+                        dst = subgroup_indices[int(j_local)]
+                        if dst == src:
+                            continue
+                        a, b = (src, dst) if src < dst else (dst, src)
+                        edges_set.add((a, b))
+            except Exception as e:
+                logger.warning(f"kneighbors failed for subgroup size {n}: {e}")
+                return []
+            return list(edges_set)
+
+        sparse_mode = self.hyperparameters.get("sparse_mode", True)
+        threshold = self.hyperparameters.get("sparse_subgroup_threshold", 5000)
+
+        for subgroup_id, nodes_in_subgroup in nodes_by_subgroup.items():
+            n_sub = len(nodes_in_subgroup)
+            if n_sub <= 1:
+                continue
+            if sparse_mode and n_sub > threshold:
+                logger.info(f"Generating sparse k-NN edges for subgroup {subgroup_id} (size {n_sub})")
+                subgroup_edges = _generate_knn_edges_for_subgroup(nodes_in_subgroup)
+            else:
+                subgroup_edges = list(combinations(nodes_in_subgroup, 2))
+            all_edges.extend(subgroup_edges)
+
+        logger.info(f"Created {len(all_edges)} initial candidate edges across {len(nodes_by_subgroup)} subgroups (sparse_mode={sparse_mode}).")
         
         # Step 3: Apply attribute filtering - PASS THE MAP
         # Ensure _apply_attribute_filtering accepts and potentially uses the map if needed

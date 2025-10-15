@@ -1,0 +1,8 @@
+title: Test Feature
+business_goal: Testing the orchestrator
+acceptance_criteria:
+  - Given a test request when submitted then tasks are created
+repos:
+  - owner: test-org
+    repo: test-repo
+    branch: dev
