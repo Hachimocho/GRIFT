@@ -1145,7 +1145,7 @@ def main():
                     
                     # Evaluate training bias metrics periodically
                     train_metrics_full = None
-                    if epoch % 5 == 0 or epoch == args.num_epochs - 1:  # Every 5 epochs and last epoch
+                    if (getattr(args, 'enable_train_bias_inference', False)) and (epoch % 5 == 0 or epoch == args.num_epochs - 1):  # gated
                         print(f"  Evaluating training bias metrics...")
                         model_to_eval = trainer.models[0] if trainer.models else None
                         if model_to_eval:
@@ -1166,7 +1166,7 @@ def main():
                             )
                     
                     # Validation step
-                    if val_nodes_from_graph:
+                    if val_nodes_from_graph and getattr(args, 'enable_val_bias_inference', False):
                         model_to_eval = trainer.models[0] if trainer.models else None
                         if not model_to_eval:
                             print(f"ERROR: No model found in trainer. Skipping validation.")

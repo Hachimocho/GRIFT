@@ -132,4 +132,10 @@ def parse_args():
     parser.add_argument('--val-steps-equal-nodes', action='store_true',
                         help='If set, validation steps will equal the number of nodes in the validation graph')
 
+    # Bias inference controls (default disabled for performance on large graphs)
+    parser.add_argument('--enable-train-bias-inference', action='store_true',
+                        help='Enable training bias inference (disabled by default)')
+    parser.add_argument('--enable-val-bias-inference', action='store_true',
+                        help='Enable validation bias inference (disabled by default)')
+
     return parser.parse_args()
