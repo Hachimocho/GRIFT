@@ -451,7 +451,8 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
         device=device,
         attribute_metadata=attribute_metadata,
         loss_fn=criterion,
-        bias_loss_weight=args.bias_loss_weight
+        bias_loss_weight=args.bias_loss_weight,
+        dqn_model_type=getattr(args, 'dqn_model', 'basic')
     )
     return trainer
 
@@ -826,6 +827,7 @@ def main():
         print(f"\nTraversal Configuration:")
         print(f"  Trainer mode: {traversal_config['trainer_mode']}")
         print(f"  Architectures: {traversal_config['architectures']}")
+        print(f"  DQN model type: {args.dqn_model}")
         
         if traversal_config['enable_switching']:
             print(f"  Traversal switching enabled")
