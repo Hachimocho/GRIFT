@@ -36,6 +36,9 @@ class AdaptiveTrainer(Trainer):
             raise ValueError("loss_fn must be provided to AdaptiveTrainer")
         self.criterion = loss_fn
         self.attribute_metadata = attribute_metadata
+        # Selected DQN model type for I-value prediction (e.g., 'basic', 'residual', ...)
+        self.dqn_model_type = kwargs.get('dqn_model_type', 'basic')
+        print(f"AdaptiveTrainer: DQN model type set to '{self.dqn_model_type}'")
         
         # Initialize capability components
         self.capabilities = CapabilityManager(self)

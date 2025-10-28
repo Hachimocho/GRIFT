@@ -19,6 +19,9 @@ class DQNCapability:
         self.trainer = trainer
         self.device = trainer.device
         self.attribute_metadata = trainer.attribute_metadata
+        # Respect selected DQN model type on the trainer (default to 'basic')
+        self.dqn_model_type = getattr(trainer, 'dqn_model_type', 'basic')
+        print(f"DQNCapability: Using DQN model type '{self.dqn_model_type}'")
         
         # DQN settings
         self.embedding_dim = 512
@@ -41,7 +44,7 @@ class DQNCapability:
             print("DQNCapability: No attribute metadata provided. DQN not initialized.")
             
     def _initialize_dqns(self):
-        """Initialize DQN models based on attribute metadata."""
+        """Initialize DQN models based on attribute metadata and selected model type."""
         try:
             # Get a sample node to determine feature dimensions
             sample_nodes = list(self.trainer.graphmanager.get_graph().get_nodes())
@@ -60,13 +63,52 @@ class DQNCapability:
             
             # Initialize DQN for each model
             for i, model in enumerate(self.trainer.models):
-                dqn = DQNModel(
-                    feature_dim=self.feature_dim,
-                    embedding_dim=self.embedding_dim,
-                    device=self.device
-                )
+                # Select model class based on configuration
+                dqn = None
+                model_type = (self.dqn_model_type or 'basic').lower()
+                if model_type == 'basic':
+                    dqn = DQNModel(
+                        feature_dim=self.feature_dim,
+                        embedding_dim=self.embedding_dim,
+                        device=self.device
+                    )
+                elif model_type == 'residual':
+                    from models.EnhancedDQNModels import ResidualDQNModel
+                    dqn = ResidualDQNModel(
+                        feature_dim=self.feature_dim,
+                        device=self.device,
+                        embedding_dim=self.embedding_dim
+                    )
+                elif model_type == 'attention':
+                    from models.EnhancedDQNModels import AttentionDQNModel
+                    dqn = AttentionDQNModel(
+                        feature_dim=self.feature_dim,
+                        device=self.device,
+                        embedding_dim=self.embedding_dim
+                    )
+                elif model_type == 'conv_embedding':
+                    from models.EnhancedDQNModels import ConvEmbeddingDQN
+                    dqn = ConvEmbeddingDQN(
+                        feature_dim=self.feature_dim,
+                        device=self.device,
+                        embedding_dim=self.embedding_dim
+                    )
+                elif model_type == 'ensemble':
+                    from models.EnhancedDQNModels import EnsembleDQNModel
+                    dqn = EnsembleDQNModel(
+                        feature_dim=self.feature_dim,
+                        device=self.device,
+                        embedding_dim=self.embedding_dim
+                    )
+                else:
+                    print(f"DQNCapability: Unknown dqn_model_type '{self.dqn_model_type}', falling back to 'basic'.")
+                    dqn = DQNModel(
+                        feature_dim=self.feature_dim,
+                        embedding_dim=self.embedding_dim,
+                        device=self.device
+                    )
                 self.dqns.append(dqn)
-                print(f"DQNCapability: Initialized DQN {i} with feature_dim={self.feature_dim}")
+                print(f"DQNCapability: Initialized DQN {i} (type={model_type}) with feature_dim={self.feature_dim}")
                 
         except Exception as e:
             print(f"DQNCapability: Error initializing DQN: {e}. DQN not initialized.")
