@@ -19,6 +19,7 @@ import threading
 import subprocess
 import signal
 from datetime import datetime
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import uuid
@@ -230,8 +231,19 @@ class GPUQueueManager:
                 f.write(f"GPU ID: {gpu_id}\n")
                 f.write(f"Config Name: {metadata['config_name']}\n")
                 f.write(f"Configuration: {json.dumps(config, indent=2)}\n")
+                f.write(f"Python: {sys.executable} ({sys.version.split()[0]})\n")
+                f.write(f"Working Directory: {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}\n")
                 f.write(f"Command: {' '.join(cmd_args)}\n")
                 f.write(f"=== End Debug Information ===\n\n")
+                try:
+                    # Quick GPU snapshot
+                    f.write("[GPU Snapshot] nvidia-smi -L\n")
+                    subprocess.run(["nvidia-smi", "-L"], stdout=f, stderr=subprocess.STDOUT, check=False)
+                    f.write("\n[GPU Snapshot] nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv,noheader\n")
+                    subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,memory.free", "--format=csv,noheader"], stdout=f, stderr=subprocess.STDOUT, check=False)
+                    f.write("\n")
+                except Exception as e:
+                    f.write(f"[Warning] nvidia-smi not available or failed: {e}\n\n")
             
             # Update metadata
             metadata.update({
@@ -250,6 +262,7 @@ class GPUQueueManager:
             with open(log_file, 'a') as f:
                 env = os.environ.copy()
                 env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+                env['PYTHONUNBUFFERED'] = '1'
                 
                 process = subprocess.Popen(
                     cmd_args,
@@ -448,13 +461,30 @@ class GPUQueueManager:
                         required_memory = self.estimate_gpu_memory_requirement(config)
                         available_gpus = self.get_available_gpus(required_memory)
                         
-                        if available_gpus:
-                            # Start the run on the first available GPU
-                            gpu_id = available_gpus[0]
-                            if self.start_run(run_id, gpu_id):
+                        # Respect explicit GPU override if requested
+                        preferred_gpu = None
+                        try:
+                            if bool(config.get('gpu_override', False)):
+                                preferred_gpu = int(config.get('gpu_id', 0))
+                        except Exception:
+                            preferred_gpu = None
+
+                        chosen_gpu = None
+                        if preferred_gpu is not None:
+                            if preferred_gpu in available_gpus:
+                                chosen_gpu = preferred_gpu
+                            else:
+                                # Preferred GPU not available; skip this iteration and try later
+                                logger.info(f"Run {run_id} prefers GPU {preferred_gpu} which is not available. Waiting...")
+                        else:
+                            if available_gpus:
+                                chosen_gpu = available_gpus[0]
+                        
+                        if chosen_gpu is not None:
+                            if self.start_run(run_id, chosen_gpu):
                                 # Remove from queue
                                 self.run_queue.pop(0)
-                                logger.info(f"Started queued run {run_id} on GPU {gpu_id}")
+                                logger.info(f"Started queued run {run_id} on GPU {chosen_gpu}")
                             else:
                                 logger.error(f"Failed to start queued run {run_id}")
                 
@@ -557,7 +587,8 @@ class GPUQueueManager:
     
     def _build_command_args(self, config: Dict[str, Any], run_id: str = None, gpu_id: int = None) -> List[str]:
         """Build command line arguments from configuration."""
-        args = ["python", "test_hierarchical.py"]
+        # Use the current Python interpreter, enable unbuffered and faulthandler for early crash diagnostics
+        args = [sys.executable, "-u", "-X", "faulthandler", "test_hierarchical.py"]
         
         # Define argument mapping
         arg_mapping = {
@@ -595,7 +626,18 @@ class GPUQueueManager:
             "bias_loss_weight": "--bias_loss_weight",
             "num_workers": "--num-workers",
             "dqn_model": "--dqn-model",
-            "graph_type": "--graph-type"
+            "graph_type": "--graph-type",
+            # GPU override passthrough
+            "gpu_override": "--gpu-override",
+            "gpu_id": "--gpu-id",
+            # Cache full / use full cache
+            "cache_full": "--cache-full",
+            "use_full_cache": "--use-full-cache",
+            # Traversal steps configuration
+            "train_steps": "--train-steps",
+            "val_steps": "--val-steps",
+            "train_steps_equal_nodes": "--train-steps-equal-nodes",
+            "val_steps_equal_nodes": "--val-steps-equal-nodes"
         }
         
         # Add arguments based on configuration

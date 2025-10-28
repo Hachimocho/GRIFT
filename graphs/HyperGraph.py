@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 from nodes.Node import Node
 from edges.Edge import Edge
 import collections
+import csv
+import gzip
+import os
+import shutil
 
 # Optional: Louvain/Label Propagation imports (fail gracefully if not installed)
 try:
@@ -321,6 +325,136 @@ class HyperGraph():
         if edges_skipped_count > 0:
             success_rate = (edges_added_count / (edges_added_count + edges_skipped_count)) * 100
             print(f"Edge loading success rate: {success_rate:.1f}%")
+
+    def export_edges_csv(self, path, delimiter=",", include_header=True):
+        """
+        Stream edges to a CSV (optionally gzipped) without materializing all edges in memory.
+
+        Args:
+            path (str): Output file path. If it ends with '.gz', the file is gzip-compressed.
+            delimiter (str): CSV delimiter, default ','.
+            include_header (bool): Whether to write a header row.
+        """
+        if not self.nodes:
+            # Nothing to write
+            return 0
+
+        # Choose opener based on extension
+        open_fn = gzip.open if path.endswith('.gz') else open
+        mode = 'wt' if path.endswith('.gz') else 'w'
+
+        # Pre-flight: log destination directory and free space
+        try:
+            out_dir = os.path.dirname(path) or '.'
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir, exist_ok=True)
+            usage = shutil.disk_usage(out_dir)
+            print(f"[Cache] Exporting edges to {path} (free disk: {usage.free/1e9:.2f} GB)")
+        except Exception as e:
+            print(f"[Cache][Warning] Unable to check disk usage for {path}: {e}")
+
+        # Write streaming CSV of unique edges (source,target) by ordering node IDs
+        num_written = 0
+        progress_interval = 1_000_000
+        try:
+            with open_fn(path, mode, newline='') as f:
+                writer = csv.writer(f, delimiter=delimiter)
+                if include_header:
+                    writer.writerow(['source', 'target'])
+
+                for node in self.nodes:
+                    if hasattr(node, 'edges'):
+                        for edge in getattr(node, 'edges', []):
+                            try:
+                                n1, n2 = edge.get_nodes()
+                                id1 = getattr(n1, 'node_id', None)
+                                id2 = getattr(n2, 'node_id', None)
+                                if id1 is None or id2 is None:
+                                    continue
+                                # Only write each undirected edge once
+                                if id1 < id2:
+                                    writer.writerow([id1, id2])
+                                    num_written += 1
+                                    if num_written % progress_interval == 0:
+                                        print(f"[Cache] Export progress: {num_written} edges written...")
+                            except Exception as row_e:
+                                print(f"[Cache][Warning] Failed writing edge row: {row_e}")
+                                continue
+        except Exception as io_e:
+            print(f"[Cache][Error] Failed exporting edges to {path}: {io_e}")
+            return num_written
+
+        try:
+            size_bytes = os.path.getsize(path)
+            print(f"[Cache] Export complete: {num_written} edges -> {size_bytes/1e6:.1f} MB at {path}")
+        except Exception:
+            print(f"[Cache] Export complete: {num_written} edges -> size unknown (path: {path})")
+
+        return num_written
+
+    def load_edges_from_csv(self, path, delimiter=",", has_header=True):
+        """
+        Stream edges from a CSV (optionally gzipped) and add them to this graph without
+        building a large in-memory list.
+
+        Args:
+            path (str): Input CSV path. If it ends with '.gz', file is treated as gzip-compressed.
+            delimiter (str): CSV delimiter, default ','.
+            has_header (bool): Whether the first row is a header.
+
+        Returns:
+            int: Number of edges successfully added.
+        """
+        if not self._node_data_map:
+            self._node_data_map = {node.node_id: node for node in self.nodes}
+
+        open_fn = gzip.open if path.endswith('.gz') else open
+        mode = 'rt' if path.endswith('.gz') else 'r'
+
+        print(f"[Cache] Loading edges from {path} ...")
+        edges_added = 0
+        progress_interval = 1_000_000
+        line_no = 0
+        try:
+            with open_fn(path, mode, newline='') as f:
+                reader = csv.reader(f, delimiter=delimiter)
+                # Skip header when present
+                if has_header:
+                    try:
+                        next(reader)
+                        line_no += 1
+                    except StopIteration:
+                        print("[Cache][Warning] Edge CSV appears empty.")
+                        return 0
+
+                for row in reader:
+                    line_no += 1
+                    try:
+                        if not row or len(row) < 2:
+                            continue
+                        id1, id2 = row[0], row[1]
+                        node1 = self._node_data_map.get(id1)
+                        node2 = self._node_data_map.get(id2)
+                        if not node1 or not node2:
+                            # Skip edges whose nodes aren't present in this graph
+                            continue
+                        # Create and attach a simple Edge with no extra data
+                        new_edge = Edge(node1, node2, x=None)
+                        if hasattr(node1, 'add_edge') and hasattr(node2, 'add_edge'):
+                            node1.add_edge(new_edge)
+                            node2.add_edge(new_edge)
+                            edges_added += 1
+                            if edges_added % progress_interval == 0:
+                                print(f"[Cache] Load progress: {edges_added} edges added...")
+                    except Exception as row_e:
+                        print(f"[Cache][Warning] Error parsing row {line_no}: {row_e}")
+                        continue
+        except Exception as io_e:
+            print(f"[Cache][Error] Failed loading edges from {path} at line {line_no}: {io_e}")
+            return edges_added
+
+        print(f"[Cache] Load complete: {edges_added} edges from {path}")
+        return edges_added
 
     def num_edges(self):
         return len(self.get_edge_list())

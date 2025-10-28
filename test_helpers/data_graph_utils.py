@@ -583,6 +583,7 @@ def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_ca
     embedding_threshold = config.get('embedding_threshold', 0.7)
     fair_train = config.get('fair_train', False)
     fair_test = config.get('fair_test', False)
+    graph_type = config.get('graph_type', 'clustered')
     
     # Get actual node counts from existing cache if available
     node_cache_file = os.path.join(os.path.dirname(graph_cache_dir), 'node_cache', 'cached_nodes.pkl')
@@ -649,19 +650,34 @@ def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_ca
         # Use actual node count for this split
         node_count = actual_node_counts.get(split_name, 1000)
         
-        # Pattern for exact match (including node count, but excluding hash since we don't know it)
-        exact_pattern = os.path.join(
-            graph_cache_dir,
-            f"{dataset_name}_{split_name}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_*_graph.pkl"
-        )
-        
-        # Find exact matches
-        exact_matches = glob.glob(exact_pattern)
-        if exact_matches:
-            cache_info[split_name]['exact_match'] = exact_matches[0]
-        
+        # Build patterns (support legacy pkl and new streaming CSV, with graph_type in filename)
+        patterns = [
+            os.path.join(
+                graph_cache_dir,
+                f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_*_graph.pkl"
+            ),
+            os.path.join(
+                graph_cache_dir,
+                f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_*_edges.csv.gz"
+            ),
+            # Also accept legacy pattern without graph_type for backward compatibility
+            os.path.join(
+                graph_cache_dir,
+                f"{dataset_name}_{split_name}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_*_graph.pkl"
+            ),
+        ]
+
+        exact_match_path = None
+        for pat in patterns:
+            found = glob.glob(pat)
+            if found:
+                exact_match_path = found[0]
+                break
+        if exact_match_path:
+            cache_info[split_name]['exact_match'] = exact_match_path
+
         # Store expected filename pattern (without hash) for UI display
-        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_graph.pkl"
+        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_edges.csv.gz"
     
     return cache_info
 
@@ -676,26 +692,27 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
     import os
     import re
     
-    cache_files = glob.glob(os.path.join(graph_cache_dir, "*_graph.pkl"))
-    
+    cache_files = glob.glob(os.path.join(graph_cache_dir, "*_edges.csv.gz"))
+
     cache_analysis = {}
     for cache_file in cache_files:
         filename = os.path.basename(cache_file)
         
-        # Parse filename to extract configuration
-        # Format: dataset_split_balancing_nodes_count_qX.XXX_sX.XXX_eX.XXX_hash[hashvalue]_graph.pkl
-        pattern = r"(.+)_(train|val|test)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_graph\.pkl"
+        # Parse filename to extract configuration; only CSV.gz supported now
+        # ai-face_train_clustered_full_nodes_827339_q0.500_s0.300_e0.700_hashHASH_edges.csv.gz
+        pattern = r"(.+)_(train|val|test)_(clustered|nonclustered|clustered_subclustered|nonclustered_subclustered)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_edges\.csv\.gz$"
         match = re.match(pattern, filename)
         
         if match:
-            dataset, split, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash = match.groups()
+            dataset, split, graph_type, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash = match.groups()
             
-            config_key = f"{dataset}_{split}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
+            config_key = f"{dataset}_{split}_{graph_type}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
             
             if config_key not in cache_analysis:
                 cache_analysis[config_key] = {
                     'dataset': dataset,
                     'split': split,
+                    'graph_type': graph_type,
                     'balancing': balancing,
                     'node_count': int(node_count),
                     'quality_threshold': float(q_thresh),
@@ -711,5 +728,5 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
                 'file_size': os.path.getsize(cache_file),
                 'modified_time': os.path.getmtime(cache_file)
             })
-    
+
     return cache_analysis

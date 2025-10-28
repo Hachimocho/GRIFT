@@ -304,9 +304,12 @@ def get_graph_cache_status_basic():
     
     try:
         logger.info(f"Checking graph cache in: {graph_cache_dir}")
-        cache_pattern = os.path.join(graph_cache_dir, '*_graph.pkl')
-        cache_files = glob.glob(cache_pattern)
-        logger.info(f"Found {len(cache_files)} graph cache files")
+        pkl_pattern = os.path.join(graph_cache_dir, '*_graph.pkl')
+        csv_pattern = os.path.join(graph_cache_dir, '*_edges.csv.gz')
+        pkl_files = glob.glob(pkl_pattern)
+        csv_files = glob.glob(csv_pattern)
+        cache_files = pkl_files + csv_files
+        logger.info(f"Found {len(cache_files)} graph cache files (pkl={len(pkl_files)}, csv.gz={len(csv_files)})")
         
         for cache_file in cache_files:
             try:
@@ -331,15 +334,19 @@ def get_graph_cache_status_basic():
                         'file_path': cache_file
                     }
                     
-                    try:
-                        logger.info(f"Loading graph cache data for {split_match}...")
-                        with open(cache_file, 'rb') as f:
-                            edge_list = dill.load(f)
-                        logger.info(f"Successfully loaded graph cache data for {split_match}")
-                        split_status['edge_count'] = len(edge_list)
-                    except Exception as e:
-                        logger.error(f"Error loading graph cache data: {str(e)}", exc_info=True)
-                        split_status['load_error'] = str(e)
+                    # Only attempt to load pickled caches; for CSV.gz report presence only (could be huge)
+                    if cache_file.endswith('_graph.pkl'):
+                        try:
+                            logger.info(f"Loading graph cache data for {split_match}...")
+                            with open(cache_file, 'rb') as f:
+                                edge_list = dill.load(f)
+                            logger.info(f"Successfully loaded graph cache data for {split_match}")
+                            split_status['edge_count'] = len(edge_list)
+                        except Exception as e:
+                            logger.error(f"Error loading graph cache data: {str(e)}", exc_info=True)
+                            split_status['load_error'] = str(e)
+                    else:
+                        split_status['edge_count'] = None
                     
                     cache_status[split_match] = split_status
             except Exception as e:
