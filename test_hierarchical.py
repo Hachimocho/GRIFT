@@ -1022,8 +1022,6 @@ def main():
                 # Training setup
                 best_val_accuracy = 0.0
                 best_epoch = 0
-                best_model_checkpoint_path = f"checkpoints/{config['description']}_best.pth"
-                os.makedirs(os.path.dirname(best_model_checkpoint_path), exist_ok=True)
                 
                 # Initialize I-value visualization tracking if enabled
                 viz_tracker = None
@@ -1034,9 +1032,13 @@ def main():
                     uses_ivalue_traversal = config['traversal'] in ['i-value', 'i-value-cluster-hop']
                 else:  # switching mode
                     uses_ivalue_traversal = any(t in ['i-value', 'i-value-cluster-hop'] for t in config.get('traversal_sequence', []))
-                # --- Use run-specific directory for all visualizations ---
+                # --- Use run-specific directory for all outputs ---
                 config_output_dir = run_output_dir / config['description']
                 config_output_dir.mkdir(parents=True, exist_ok=True)
+                # Checkpoints: save uniquely per run/config/DQN type to avoid collisions
+                ckpt_dir = config_output_dir / "checkpoints"
+                ckpt_dir.mkdir(parents=True, exist_ok=True)
+                best_model_checkpoint_path = str(ckpt_dir / f"{args.dqn_model}_best.pth")
                 
                 # Export node/edge CSVs with subcluster info if enabled
                 if getattr(args, 'export_csv_per_run', True):
