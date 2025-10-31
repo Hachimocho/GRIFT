@@ -161,13 +161,28 @@ class DQNCapability:
                 print(f"Error converting features list to tensor: {e}. List: {features_list}")
                 features_tensor = None
 
-            # Handle embedding: convert to tensor or create zero tensor if missing/invalid
+            # Handle embedding: convert to tensor, then pad/truncate to expected dim
             embedding_tensor = None
             if embedding_data is not None:
                 try:
+                    # Convert and flatten if needed
                     embedding_tensor = torch.tensor(embedding_data, dtype=torch.float32)
+                    if embedding_tensor.ndim > 1:
+                        embedding_tensor = embedding_tensor.flatten()
+                    # Ensure fixed length equal to self.embedding_dim
+                    current_len = int(embedding_tensor.numel())
+                    target_len = int(self.embedding_dim)
+                    if target_len > 0 and current_len != target_len:
+                        if current_len > target_len:
+                            embedding_tensor = embedding_tensor[:target_len]
+                        else:
+                            pad_len = target_len - current_len
+                            embedding_tensor = torch.cat([
+                                embedding_tensor,
+                                torch.zeros(pad_len, dtype=torch.float32)
+                            ], dim=0)
                 except Exception as e:
-                    print(f"Error converting embedding to tensor: {e}. Using zeros.")
+                    print(f"Error converting/padding embedding to tensor: {e}. Using zeros of len {self.embedding_dim}.")
                     embedding_tensor = torch.zeros(self.embedding_dim, dtype=torch.float32)
 
             return features_tensor, embedding_tensor
