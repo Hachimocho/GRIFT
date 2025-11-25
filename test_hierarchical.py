@@ -1169,61 +1169,64 @@ def main():
                                 attribute_metadata=attribute_metadata
                             )
                     
-                    # Validation step
-                    if val_nodes_from_graph and getattr(args, 'enable_val_bias_inference', False):
+                    # Validation step - Always run validation to track accuracy and save best model
+                    if val_nodes_from_graph:
                         model_to_eval = trainer.models[0] if trainer.models else None
                         if not model_to_eval:
                             print(f"ERROR: No model found in trainer. Skipping validation.")
                             continue
                         
                         model_to_eval.eval()
+                        # Only calculate bias metrics if enable_val_bias_inference is True
+                        bias_loss_fn = getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None
                         val_metrics = evaluate_model(
                             model=model_to_eval,
                             nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
                             loss_fn=criterion,
                             batch_size=args.batch_size,
-                            bias_loss_fn=getattr(trainer, 'bias_loss', None),
+                            bias_loss_fn=bias_loss_fn,
                             device=device,
                             desc="Validation",
-                            attribute_metadata=attribute_metadata
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
                         )
                         
-                        # Log bias metrics for this epoch
-                        bias_tracker.log_bias_metrics(epoch=epoch, train_metrics=train_metrics_full, val_metrics=val_metrics)
-                        
-                        # Log validation bias metrics to bias hop visualizer if it exists
-                        if bias_hop_viz and val_metrics and 'bias_metrics' in val_metrics:
-                            # Calculate subgroup I-values for correlation analysis
-                            subgroup_i_values = {}
-                            if hasattr(trainer, 'attribute_metadata') and trainer.attribute_metadata:
-                                # Get a sample of validation nodes for I-value calculation
-                                val_sample = random.sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
-                                try:
-                                    for node in val_sample:
-                                        if hasattr(node, 'attributes') and node.attributes:
-                                            # Create race-gender subgroup key
-                                            gender = node.attributes.get('Ground Truth Gender')
-                                            race = node.attributes.get('Ground Truth Race')
-                                            if gender is not None and race is not None:
-                                                subgroup_key = f"Ground Truth Gender_{gender}_Ground Truth Race_{race}"
-                                                if subgroup_key not in subgroup_i_values:
-                                                    subgroup_i_values[subgroup_key] = []
-                                                i_value = trainer.get_i_value(node, 0) if hasattr(trainer, 'get_i_value') else 0
-                                                subgroup_i_values[subgroup_key].append(i_value)
-                                except Exception as e:
-                                    print(f"Warning: Error calculating subgroup I-values: {e}")
+                        # Log bias metrics for this epoch (only if bias inference is enabled)
+                        if getattr(args, 'enable_val_bias_inference', False):
+                            bias_tracker.log_bias_metrics(epoch=epoch, train_metrics=train_metrics_full, val_metrics=val_metrics)
                             
-                            # Average the I-values for each subgroup
-                            avg_subgroup_i_values = {}
-                            for subgroup, i_vals in subgroup_i_values.items():
-                                if i_vals:
-                                    avg_subgroup_i_values[subgroup] = np.mean(i_vals)
-                            
-                            bias_hop_viz.log_validation_bias_metrics(
-                                epoch=epoch, 
-                                bias_metrics=val_metrics['bias_metrics'],
-                                subgroup_i_values=avg_subgroup_i_values
-                            )
+                            # Log validation bias metrics to bias hop visualizer if it exists
+                            if bias_hop_viz and val_metrics and 'bias_metrics' in val_metrics:
+                                # Calculate subgroup I-values for correlation analysis
+                                subgroup_i_values = {}
+                                if hasattr(trainer, 'attribute_metadata') and trainer.attribute_metadata:
+                                    # Get a sample of validation nodes for I-value calculation
+                                    val_sample = random.sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
+                                    try:
+                                        for node in val_sample:
+                                            if hasattr(node, 'attributes') and node.attributes:
+                                                # Create race-gender subgroup key
+                                                gender = node.attributes.get('Ground Truth Gender')
+                                                race = node.attributes.get('Ground Truth Race')
+                                                if gender is not None and race is not None:
+                                                    subgroup_key = f"Ground Truth Gender_{gender}_Ground Truth Race_{race}"
+                                                    if subgroup_key not in subgroup_i_values:
+                                                        subgroup_i_values[subgroup_key] = []
+                                                    i_value = trainer.get_i_value(node, 0) if hasattr(trainer, 'get_i_value') else 0
+                                                    subgroup_i_values[subgroup_key].append(i_value)
+                                    except Exception as e:
+                                        print(f"Warning: Error calculating subgroup I-values: {e}")
+                                
+                                # Average the I-values for each subgroup
+                                avg_subgroup_i_values = {}
+                                for subgroup, i_vals in subgroup_i_values.items():
+                                    if i_vals:
+                                        avg_subgroup_i_values[subgroup] = np.mean(i_vals)
+                                
+                                bias_hop_viz.log_validation_bias_metrics(
+                                    epoch=epoch, 
+                                    bias_metrics=val_metrics['bias_metrics'],
+                                    subgroup_i_values=avg_subgroup_i_values
+                                )
                         
                         current_val_accuracy = val_metrics.get('accuracy', 0.0)
                         
@@ -1241,27 +1244,35 @@ def main():
                             print(f"Validation accuracy: {current_val_accuracy:.4f} (best: {best_val_accuracy:.4f} at epoch {best_epoch})")
                 
                 # Final testing
-                if args.num_epochs > 0 and os.path.exists(best_model_checkpoint_path):
-                    print(f"\n🔍 Loading best model from epoch {best_epoch} for final testing...")
-                    model_to_eval = trainer.models[0]
-                    model_to_eval.load_checkpoint(best_model_checkpoint_path)
-                    # Load additional checkpoints for AdaptiveTrainer
-                    trainer.load_capability_checkpoints(best_model_checkpoint_path)
-                    model_to_eval.eval()
-                    test_metrics = evaluate_model(
-                        model=trainer.models[0],
-                        nodes_to_evaluate=test_nodes_from_graph,
-                        loss_fn=criterion,
-                        batch_size=args.batch_size,
-                        bias_loss_fn=getattr(trainer, 'bias_loss', None),
-                        device=device,
-                        desc="Final Test",
-                        attribute_metadata=attribute_metadata
-                    )
-                    print("\n--- Final Test Results ---")
-                    print(json.dumps(test_metrics, indent=2))
-                    # Log final test bias metrics
-                    bias_tracker.log_bias_metrics(epoch=best_epoch-1, test_metrics=test_metrics)
+                if args.num_epochs > 0:
+                    model_to_eval = trainer.models[0] if trainer.models else None
+                    if not model_to_eval:
+                        print(f"ERROR: No model found in trainer. Skipping final testing.")
+                    else:
+                        if os.path.exists(best_model_checkpoint_path):
+                            print(f"\n🔍 Loading best model from epoch {best_epoch} for final testing...")
+                            model_to_eval.load_checkpoint(best_model_checkpoint_path)
+                            # Load additional checkpoints for AdaptiveTrainer
+                            trainer.load_capability_checkpoints(best_model_checkpoint_path)
+                        else:
+                            print(f"\n⚠️  No checkpoint found at {best_model_checkpoint_path}. Using current model state for final testing...")
+                        
+                        model_to_eval.eval()
+                        test_metrics = evaluate_model(
+                            model=model_to_eval,
+                            nodes_to_evaluate=test_nodes_from_graph,
+                            loss_fn=criterion,
+                            batch_size=args.batch_size,
+                            bias_loss_fn=getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None,
+                            device=device,
+                            desc="Final Test",
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
+                        )
+                        print("\n--- Final Test Results ---")
+                        print(json.dumps(test_metrics, indent=2))
+                        # Log final test bias metrics (only if bias inference is enabled)
+                        if getattr(args, 'enable_val_bias_inference', False):
+                            bias_tracker.log_bias_metrics(epoch=best_epoch-1 if best_epoch > 0 else args.num_epochs-1, test_metrics=test_metrics)
                 
                 # Generate I-value visualization plots and reports if tracking was enabled
                 if viz_tracker:
