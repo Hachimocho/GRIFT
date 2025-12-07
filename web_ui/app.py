@@ -614,7 +614,12 @@ def api_list_configurations():
 
 @app.route('/api/configurations', methods=['POST'])
 def api_save_configuration():
-    """API endpoint to save a configuration."""
+    """API endpoint to save a configuration.
+    
+    Saves the complete configuration dictionary exactly as provided. All fields
+    in the config dictionary are preserved and will be reused when running tests.
+    The full config dictionary is saved without modification or field filtering.
+    """
     data = request.get_json()
     name = data.get('name')
     config = data.get('config')
@@ -622,10 +627,16 @@ def api_save_configuration():
     if not name or not config:
         return jsonify({'error': 'Name and config are required'}), 400
     
+    # Log that we're saving the full config dictionary
+    logger.info(f"Saving configuration '{name}' with {len(config)} fields in config dictionary")
+    
+    # Save the complete config dictionary - all fields are preserved
     success = config_manager.save_configuration(name, config)
     if success:
+        logger.info(f"Successfully saved configuration '{name}' with full config dictionary")
         return jsonify({'message': 'Configuration saved successfully'})
     else:
+        logger.error(f"Failed to save configuration '{name}'")
         return jsonify({'error': 'Failed to save configuration'}), 500
 
 @app.route('/api/configurations/<config_name>', methods=['GET'])
@@ -648,21 +659,33 @@ def api_delete_configuration(config_name):
 
 @app.route('/api/test-runs', methods=['POST'])
 def api_start_test_run():
-    """API endpoint to start a test run (supports multiple architectures and DQN models)."""
+    """API endpoint to start a test run (supports multiple architectures and DQN models).
+    
+    This endpoint loads the full saved configuration dictionary and reuses it directly
+    for test runs. The saved config contains all fields and settings, which are preserved
+    exactly as saved. Only architectures and dqn-model are modified per-run to support
+    multiple model combinations.
+    """
     data = request.get_json()
     config_name = data.get('config_name')
     
     if not config_name:
         return jsonify({'error': 'Configuration name is required'}), 400
     
+    # Load the full saved configuration (includes metadata wrapper)
     config_data = config_manager.load_configuration(config_name)
     if not config_data:
         return jsonify({'error': 'Configuration not found'}), 404
     
-    # Extract the inner config object from the configuration data
+    # Extract the inner config object - this is the full saved config dictionary
+    # with all fields preserved exactly as they were saved
     config = config_data.get('config', config_data)
-
-    # Parse architectures and dqn-model as lists
+    
+    # Log that we're using the full saved config (for debugging)
+    logger.info(f"Starting test run with config '{config_name}': using full saved config dictionary with {len(config)} fields")
+    
+    # Parse architectures and dqn-model as lists for multi-run support
+    # Note: We read these from the saved config, but will override them per-run
     archs = config.get('architectures', None)
     dqn_models = config.get('dqn-model', config.get('dqn_model', None))
 
@@ -694,17 +717,23 @@ def api_start_test_run():
     run_ids = []
     for arch in arch_list:
         for dqn in dqn_list:
-            # Create a deep copy of the config for each run
+            # Create a deep copy of the FULL saved config for each run
+            # This preserves ALL fields from the saved configuration
             run_config = copy.deepcopy(config)
+            
+            # Only modify architectures and dqn-model for this specific run
+            # All other fields remain exactly as saved
             if arch is not None:
                 run_config['architectures'] = arch
             if dqn is not None:
                 run_config['dqn-model'] = dqn
                 run_config['dqn_model'] = dqn  # for compatibility with both keys
+            
             # Use a descriptive config name for each run
             run_config_name = f"{config_name}__{arch or 'default'}__{dqn or 'default'}"
             run_id = gpu_queue_manager.queue_run(run_config_name, run_config)
             run_ids.append(run_id)
+            logger.info(f"Queued run {run_id} with full config (preserving all {len(run_config)} saved fields)")
 
     if run_ids:
         return jsonify({'run_ids': run_ids, 'message': f'Queued {len(run_ids)} run(s) for all model/DQN combinations.'})
@@ -972,6 +1001,33 @@ def api_check_orphaned_runs():
         return jsonify({
             'success': False,
             'error': 'Failed to check for orphaned runs',
+            'details': str(e)
+        }), 500
+
+@app.route('/api/gpu/clear-queue', methods=['POST'])
+def api_clear_queue():
+    """API endpoint to clear the queue and stop all running runs."""
+    try:
+        result = gpu_queue_manager.clear_queue()
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'message': f'Cleared queue: stopped {result.get("total_stopped", 0)} running run(s) and cancelled {result.get("total_cleared", 0)} queued run(s)',
+                'stopped_runs': result.get('stopped_runs', []),
+                'cleared_runs': result.get('cleared_runs', [])
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to clear queue'),
+                'stopped_runs': result.get('stopped_runs', []),
+                'cleared_runs': result.get('cleared_runs', [])
+            }), 500
+    except Exception as e:
+        logger.error(f"Error clearing queue: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Failed to clear queue',
             'details': str(e)
         }), 500
 

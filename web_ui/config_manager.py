@@ -176,20 +176,44 @@ class ConfigManager:
             return None
     
     def save_configuration(self, name: str, config: Dict[str, Any]) -> bool:
-        """Save a test configuration."""
-        # Add metadata
+        """Save a test configuration.
+        
+        Saves the complete configuration dictionary exactly as provided. All fields
+        in the config dictionary are preserved without modification. The full config
+        dictionary is stored and will be reused exactly as saved when running tests.
+        
+        Args:
+            name: Configuration name
+            config: Complete configuration dictionary with all fields
+            
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        # Add metadata wrapper, preserving the full config dictionary
         config_data = {
             "name": name,
             "created": datetime.now().isoformat(),
             "modified": datetime.now().isoformat(),
-            "config": config
+            "config": config  # Full config dictionary - all fields preserved
         }
         
         config_file = self.configs_dir / f"{name}.json"
         return self._save_file(config_file, config_data)
     
     def load_configuration(self, name: str) -> Optional[Dict[str, Any]]:
-        """Load a test configuration."""
+        """Load a test configuration.
+        
+        Returns the full saved configuration including metadata. The inner 'config'
+        key contains the complete configuration dictionary with all saved fields.
+        
+        Args:
+            name: Configuration name
+            
+        Returns:
+            Dictionary with 'name', 'created', 'modified', and 'config' keys,
+            where 'config' contains the full saved configuration dictionary.
+            Returns None if configuration not found.
+        """
         config_file = self.configs_dir / f"{name}.json"
         return self._load_file(config_file)
     

@@ -974,4 +974,71 @@ class GPUQueueManager:
         except Exception as e:
             logger.error(f"Error checking for orphaned queued runs: {e}")
         
-        return orphaned_runs 
+        return orphaned_runs
+    
+    def clear_queue(self) -> Dict[str, Any]:
+        """Clear the queue and stop all running runs."""
+        stopped_runs = []
+        cleared_runs = []
+        
+        try:
+            # Stop all running runs
+            running_run_ids = list(self.active_runs.keys())
+            for run_id in running_run_ids:
+                if self.stop_run(run_id):
+                    stopped_runs.append(run_id)
+                    logger.info(f"Stopped running run {run_id} during queue clear")
+                else:
+                    logger.warning(f"Failed to stop run {run_id} during queue clear")
+            
+            # Clear the queue and mark queued runs as cancelled
+            with self.queue_lock:
+                for run_id, config_name, config, priority in self.run_queue:
+                    # Update metadata to mark as cancelled
+                    metadata = self.run_metadata.get(run_id)
+                    if metadata:
+                        metadata.update({
+                            "status": "cancelled",
+                            "end_time": datetime.now().isoformat(),
+                            "error": "Run was cancelled by queue clear",
+                            "last_updated": datetime.now().isoformat()
+                        })
+                        self._save_run_metadata(run_id, metadata)
+                        cleared_runs.append(run_id)
+                        logger.info(f"Marked queued run {run_id} as cancelled")
+                    else:
+                        # Try to load from file
+                        metadata = self._load_run_metadata(run_id)
+                        if metadata:
+                            metadata.update({
+                                "status": "cancelled",
+                                "end_time": datetime.now().isoformat(),
+                                "error": "Run was cancelled by queue clear",
+                                "last_updated": datetime.now().isoformat()
+                            })
+                            self._save_run_metadata(run_id, metadata)
+                            self.run_metadata[run_id] = metadata
+                            cleared_runs.append(run_id)
+                            logger.info(f"Marked queued run {run_id} as cancelled (loaded from file)")
+                
+                # Clear the queue
+                queue_length = len(self.run_queue)
+                self.run_queue.clear()
+                logger.info(f"Cleared {queue_length} runs from queue")
+            
+            return {
+                "success": True,
+                "stopped_runs": stopped_runs,
+                "cleared_runs": cleared_runs,
+                "total_stopped": len(stopped_runs),
+                "total_cleared": len(cleared_runs)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error clearing queue: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "stopped_runs": stopped_runs,
+                "cleared_runs": cleared_runs
+            } 

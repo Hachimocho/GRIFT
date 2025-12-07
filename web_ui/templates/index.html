@@ -103,7 +103,12 @@
                 <h5 class="card-title mb-0">
                     <i class="fas fa-play-circle text-success me-2"></i>Active & Queued Runs
                 </h5>
-                <span class="badge bg-success" id="active-badge">{{ active_runs.active_runs|length if active_runs.active_runs else 0 }}</span>
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-danger btn-sm" onclick="clearQueue()" title="Clear all queued runs and stop running runs">
+                        <i class="fas fa-trash"></i> Clear Queue
+                    </button>
+                    <span class="badge bg-success" id="active-badge">{{ active_runs.active_runs|length if active_runs.active_runs else 0 }}</span>
+                </div>
             </div>
             <div class="card-body">
                 <div id="active-runs-content">
@@ -302,6 +307,23 @@ function stopRun(runId) {
             error: function(xhr) {
                 const response = JSON.parse(xhr.responseText);
                 alert('Error stopping test run: ' + response.error);
+            }
+        });
+    }
+}
+
+function clearQueue() {
+    if (confirm('Are you sure you want to clear the queue? This will:\n\n- Stop all running runs\n- Cancel all queued runs\n\nThis action cannot be undone.')) {
+        $.ajax({
+            url: '/api/gpu/clear-queue',
+            method: 'POST',
+            success: function(response) {
+                alert(response.message || 'Queue cleared successfully');
+                location.reload();
+            },
+            error: function(xhr) {
+                const response = JSON.parse(xhr.responseText);
+                alert('Error: ' + (response.error || 'Failed to clear queue'));
             }
         });
     }
