@@ -625,6 +625,7 @@ class GPUQueueManager:
             "viz_save_dir": "--viz-save-dir",
             "bias_loss_weight": "--bias_loss_weight",
             "num_workers": "--num-workers",
+            "val_num_workers": "--val-num-workers",
             "dqn_model": "--dqn-model",
             "graph_type": "--graph-type",
             # GPU override passthrough

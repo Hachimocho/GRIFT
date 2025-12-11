@@ -137,5 +137,9 @@ def parse_args():
                         help='Enable training bias inference (disabled by default)')
     parser.add_argument('--enable-val-bias-inference', action='store_true',
                         help='Enable validation bias inference (disabled by default)')
+    
+    # Performance optimization options
+    parser.add_argument('--val-num-workers', type=int, default=4,
+                        help='Number of parallel workers for validation image loading (default: 4)')
 
     return parser.parse_args()

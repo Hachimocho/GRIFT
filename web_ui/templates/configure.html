@@ -551,13 +551,18 @@
                         </div>
                         <span class="input-group-text">= # Train Nodes</span>
                     </div>
-                    <div class="input-group">
+                    <div class="input-group mb-2">
                         <span class="input-group-text">Val Steps</span>
-                        <input type="number" class="form-control" id="valSteps" name="val_steps" value="1000" min="1">
+                        <input type="number" class="form-control" id="valSteps" name="val_steps" value="500" min="1">
                         <div class="input-group-text">
                             <input class="form-check-input mt-0" type="checkbox" id="valStepsEqualNodes" name="val_steps_equal_nodes">
                         </div>
                         <span class="input-group-text">= # Val Nodes</span>
+                    </div>
+                    <div class="mb-2">
+                        <label for="valNumWorkers" class="form-label">Validation Parallel Workers</label>
+                        <input type="number" class="form-control" id="valNumWorkers" name="val_num_workers" value="4" min="1" max="16">
+                        <div class="form-text">Number of parallel workers for validation image loading (default: 4, higher = faster but more memory)</div>
                     </div>
                     <div class="form-text">Set fixed step counts or match number of nodes in graph.</div>
                 </div>

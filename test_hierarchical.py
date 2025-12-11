@@ -30,6 +30,7 @@ import signal
 import resource
 import psutil
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
@@ -89,9 +90,36 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader 
 import io
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None): 
+def _load_node_data(node, model):
+    """Helper function to load a single node's data. Used for parallel loading."""
+    try:
+        node_data = node.get_data()
+        if node_data:
+            img = node_data.load_data()
+            label = node.get_label()
+            if img is not None and label is not None:
+                # Apply transformations using the model's internal method
+                img_tensor = model.transform(img)
+                
+                # Handle tuple labels safely
+                try:
+                    if isinstance(label, (tuple, list)):
+                        label_value = float(label[0])
+                    else:
+                        label_value = float(label)
+                    return (img_tensor, label_value, node)
+                except (ValueError, TypeError, IndexError) as e:
+                    return None
+        return None
+    except Exception as e_load:
+        return None
+
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4): 
     """Evaluates the model on the provided nodes, calculates standard metrics,
        and optionally calculates bias metrics based on categorical attributes.
+       
+    Args:
+        num_workers: Number of parallel workers for image loading (default: 4)
     """
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
@@ -103,7 +131,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     nodes_in_dataset = len(nodes_to_evaluate)
     num_batches = (nodes_in_dataset + batch_size - 1) // batch_size
 
-    print(f"\nRunning inference for {desc} (Dataset Size: {nodes_in_dataset}, Batch Size: {batch_size})...")
+    print(f"\nRunning inference for {desc} (Dataset Size: {nodes_in_dataset}, Batch Size: {batch_size}, Workers: {num_workers})...")
 
     all_predictions = []
     all_labels = []
@@ -129,42 +157,20 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             batch_labels_loaded = []
             batch_nodes_loaded = [] # Keep track of nodes successfully loaded in batch
 
-            # Load data for the current batch
-            for node in batch_nodes:
-                try:
-                    node_data = node.get_data()
-                    if node_data:
-                        img = node_data.load_data()
-                        label = node.get_label()
-                        if img is not None and label is not None:
-                            # Apply transformations using the model's internal method
-                            # (assumes model.current_mode is set to 'eval' correctly)
-                            img_tensor = model.transform(img)
-                            batch_images_loaded.append(img_tensor)
-                            
-                            # Handle tuple labels safely
-                            try:
-                                if isinstance(label, (tuple, list)):
-                                    # If label is a tuple or list, take the first element
-                                    label_value = float(label[0])
-                                else:
-                                    label_value = float(label)
-                                batch_labels_loaded.append(label_value)
-                            except (ValueError, TypeError, IndexError) as e:
-                                print(f"Warning: Invalid label {label} for node {getattr(node, 'node_id', 'N/A')}: {e}")
-                                # Skip this node if label is invalid
-                                batch_images_loaded.pop()  # Remove the image we just added
-                                continue
-                            batch_nodes_loaded.append(node) # Add node if data loaded
-                        else:
-                            # print(f"DEBUG: Img or Label is None for node {node.node_id}")
-                            pass
-                    else:
-                        # print(f"DEBUG: node.get_data() returned None for node {node.node_id}")
-                        pass
-                except Exception as e_load:
-                    print(f"ERROR loading data for node {getattr(node, 'node_id', 'N/A')} in {desc}: {e_load}")
-                    continue # Skip node on error
+            # Load data for the current batch using parallel processing
+            # Use ThreadPoolExecutor for I/O-bound image loading
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                # Submit all node loading tasks
+                future_to_node = {executor.submit(_load_node_data, node, model): node for node in batch_nodes}
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_node):
+                    result = future.result()
+                    if result is not None:
+                        img_tensor, label_value, node = result
+                        batch_images_loaded.append(img_tensor)
+                        batch_labels_loaded.append(label_value)
+                        batch_nodes_loaded.append(node)
 
             # Skip batch if no data was successfully loaded
             if not batch_images_loaded:
@@ -236,10 +242,10 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             # --- Associate predictions/labels with nodes for bias calc ---
             node_results = {}
             if attribute_metadata and categorical_attrs: # Check again in case it was disabled
-                 for i, node in enumerate(batch_nodes_loaded):
+                 for node_idx, node in enumerate(batch_nodes_loaded):
                       node_results[node.node_id] = {
-                           'prediction': predictions[i],
-                           'label': current_labels[i],
+                           'prediction': predictions[node_idx],
+                           'label': current_labels[node_idx],
                            'node': node # Store the node object itself
                       }
 
@@ -955,7 +961,9 @@ def main():
         if getattr(args, 'val_steps_equal_nodes', False):
             val_steps = len(val_manager.graph.get_nodes())
         else:
-            val_steps = getattr(args, 'val_steps', 1000)
+            # Default to 500 instead of 1000 for faster validation, but allow override
+            default_val_steps = min(500, len(val_manager.graph.get_nodes()) if val_manager.graph else 500)
+            val_steps = getattr(args, 'val_steps', default_val_steps)
         
         # --- Setup run-specific output directory ---
         import string
@@ -1179,6 +1187,7 @@ def main():
                         model_to_eval.eval()
                         # Only calculate bias metrics if enable_val_bias_inference is True
                         bias_loss_fn = getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None
+                        # Use parallel image loading for faster validation (4 workers)
                         val_metrics = evaluate_model(
                             model=model_to_eval,
                             nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
@@ -1187,7 +1196,8 @@ def main():
                             bias_loss_fn=bias_loss_fn,
                             device=device,
                             desc="Validation",
-                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None,
+                            num_workers=getattr(args, 'val_num_workers', 4)  # Allow override, default 4
                         )
                         
                         # Log bias metrics for this epoch (only if bias inference is enabled)
