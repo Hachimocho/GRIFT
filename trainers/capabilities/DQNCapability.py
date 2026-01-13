@@ -177,9 +177,10 @@ class DQNCapability:
                             embedding_tensor = embedding_tensor[:target_len]
                         else:
                             pad_len = target_len - current_len
+                            # Ensure padding tensor is on the same device as embedding_tensor
                             embedding_tensor = torch.cat([
                                 embedding_tensor,
-                                torch.zeros(pad_len, dtype=torch.float32)
+                                torch.zeros(pad_len, dtype=torch.float32, device=embedding_tensor.device)
                             ], dim=0)
                 except Exception as e:
                     print(f"Error converting/padding embedding to tensor: {e}. Using zeros of len {self.embedding_dim}.")
@@ -223,16 +224,21 @@ class DQNCapability:
             else:
                 embedding_tensor = embedding_tensor.to(target_device)
 
-            # Features should already be a tensor
+            # Features should already be a tensor - ensure it's on the correct device
             features_tensor = features_tensor.to(target_device)
+
+            # Ensure DQN model is on the correct device (move all parameters)
+            if next(dqn_model.parameters()).device != target_device:
+                dqn_model = dqn_model.to(target_device)
+                # Update the reference in the list
+                self.dqns[model_idx] = dqn_model
 
             # Add batch dimension
             features_tensor = features_tensor.unsqueeze(0)
             embedding_tensor = embedding_tensor.unsqueeze(0)
 
-            # Get I-value from DQN
-            i_value = dqn_model.predict_i_value(features_tensor.to(dqn_model.device), 
-                                                embedding_tensor.to(dqn_model.device))
+            # Get I-value from DQN (predict_i_value will handle device placement internally)
+            i_value = dqn_model.predict_i_value(features_tensor, embedding_tensor)
 
             i_value = i_value.detach().cpu().item()
             

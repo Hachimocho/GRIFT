@@ -44,15 +44,27 @@ class DQNModel(nn.Module):
         self.batch_size = 32
         self.gamma = 0.99
 
-    def _process_embedding(self, embedding):
-        """Processes the node embedding if the processor exists."""
+    def _process_embedding(self, embedding, batch_size=None):
+        """Processes the node embedding if the processor exists.
+        
+        Args:
+            embedding (torch.Tensor, optional): Tensor of node embeddings.
+            batch_size (int, optional): Batch size for creating zero tensors when embedding is None.
+        
+        Returns:
+            torch.Tensor or None: Processed embedding or None.
+        """
         if self.embedding_processor and embedding is not None:
             # Ensure embedding is on the correct device before processing
             embedding = embedding.to(self.device)
             return self.embedding_processor(embedding)
         elif self.embedding_dim > 0:
             # Return zeros if embedding is expected but None is provided
-            return torch.zeros(embedding.shape[0], self.compressed_embedding_dim, device=self.device)
+            if batch_size is None and embedding is not None:
+                batch_size = embedding.shape[0]
+            elif batch_size is None:
+                batch_size = 1  # Default to batch size of 1
+            return torch.zeros(batch_size, self.compressed_embedding_dim, device=self.device)
         else:
             # Return None if no embedding dimension is configured
             return None
@@ -70,7 +82,9 @@ class DQNModel(nn.Module):
         # Ensure features are on the correct device
         node_features = node_features.to(self.device)
         
-        processed_embedding = self._process_embedding(node_embedding)
+        # Get batch size from node_features
+        batch_size = node_features.shape[0] if node_features.dim() > 0 else 1
+        processed_embedding = self._process_embedding(node_embedding, batch_size=batch_size)
 
         if processed_embedding is not None:
             # Ensure processed_embedding is on the correct device
