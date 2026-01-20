@@ -154,6 +154,8 @@
                                     <th>Configuration</th>
                                     <th>Architecture</th>
                                     <th>Traversal</th>
+                                    <th>Reduction</th>
+                                    <th>Restoration</th>
                                     <th>Status</th>
                                     <th>Accuracy</th>
                                     <th>Race-Gender Bias</th>
@@ -179,6 +181,24 @@
                                     </td>
                                     <td>
                                         <span class="badge bg-info">{{ run.traversal_type or 'N/A' }}</span>
+                                    </td>
+                                    <td>
+                                        {% if run.reduction_strategy and run.reduction_strategy != 'none' %}
+                                        <span class="badge bg-warning" title="Reduction: {{ run.reduction_strategy }}, {{ run.reduction_percentage }}%">
+                                            {{ run.reduction_strategy|replace('_', ' ')|title }}
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">None</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.restoration_strategy and run.restoration_strategy != 'none' %}
+                                        <span class="badge bg-success" title="Restoration: {{ run.restoration_strategy }}, {{ run.restoration_percentage }}%">
+                                            {{ run.restoration_strategy|replace('_', ' ')|title }}
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">None</span>
+                                        {% endif %}
                                     </td>
                                     <td>
                                         {% if run.status == 'completed' %}
@@ -436,6 +456,14 @@ function displayComparisonResults(data) {
                     <tr>
                         <td><strong>Traversal</strong></td>
                         ${data.runs.map(run => `<td>${run.traversal_type || 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Reduction Strategy</strong></td>
+                        ${data.runs.map(run => `<td>${run.reduction_strategy && run.reduction_strategy !== 'none' ? run.reduction_strategy.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'None'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Restoration Strategy</strong></td>
+                        ${data.runs.map(run => `<td>${run.restoration_strategy && run.restoration_strategy !== 'none' ? run.restoration_strategy.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'None'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Race-Gender Bias</strong></td>

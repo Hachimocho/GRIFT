@@ -71,6 +71,7 @@ from data.ImageFileData import ImageFileData
 from nodes.atrnode import AttributeNode
 from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
+from managers.GraphReductionManager import GraphReductionManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.IValueTraversal import IValueTraversal
 from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop 
@@ -1031,6 +1032,24 @@ def main():
                 best_val_accuracy = 0.0
                 best_epoch = 0
                 
+                # Initialize Graph Reduction Manager if enabled
+                reduction_manager = None
+                if config.get('reduction_enabled', False):
+                    print(f"\n🔧 Initializing Graph Reduction Manager...")
+                    reduction_manager = GraphReductionManager(
+                        reduction_strategy=config.get('reduction_strategy', 'none'),
+                        reduction_percentage=config.get('reduction_percentage', 0.0),
+                        reduction_top_percentage=config.get('reduction_top_percentage', 0.0),
+                        reduction_bottom_percentage=config.get('reduction_bottom_percentage', 0.0),
+                        reduction_interval=config.get('reduction_interval', 'end_of_epoch'),
+                        reduction_interval_steps=config.get('reduction_interval_steps', 100),
+                        restoration_strategy=config.get('restoration_strategy', 'none'),
+                        restoration_percentage=config.get('restoration_percentage', 50.0),
+                        restoration_trigger_threshold=config.get('restoration_trigger_threshold', 0.0)
+                    )
+                    print(f"  Reduction Strategy: {reduction_manager.reduction_strategy}")
+                    print(f"  Restoration Strategy: {reduction_manager.restoration_strategy}")
+                
                 # Initialize I-value visualization tracking if enabled
                 viz_tracker = None
                 bias_hop_viz = None
@@ -1089,6 +1108,17 @@ def main():
                 for epoch in range(args.num_epochs):
                     print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
                     
+                    # Handle reversion strategy at start of epoch (if enabled)
+                    if reduction_manager and reduction_manager.restoration_strategy == 'reversion' and epoch > 0:
+                        print(f"  🔄 Checking for reversion restoration at start of epoch {epoch+1}...")
+                        # Reversion happens at start of next epoch, so check previous epoch's validation
+                        # For now, we'll check if restoration is needed based on previous validation
+                        # This will be triggered after validation in previous epoch, but we check here too
+                        if len(reduction_manager.get_removed_nodes()) > 0:
+                            # Restore previous epoch's nodes if validation dropped
+                            # Note: This is a simplified check - full logic happens after validation
+                            pass
+                    
                     # Start epoch tracking for visualization
                     if viz_tracker:
                         viz_tracker.start_epoch(epoch)
@@ -1130,6 +1160,19 @@ def main():
                     # Get current traversal info
                     current_traversal_info = trainer.get_current_traversal_info()
                     print(f"  Current traversal: {current_traversal_info}")
+                    
+                    # Check for reduction during training (if interval is every_n_steps)
+                    if reduction_manager and reduction_manager.reduction_interval == 'every_n_steps':
+                        # Calculate current step (approximate: epoch * steps_per_epoch + current_step_in_epoch)
+                        # For simplicity, we'll use epoch * train_steps as approximation
+                        current_step = epoch * train_steps
+                        if reduction_manager.should_reduce(current_step, epoch):
+                            print(f"  🔧 Performing graph reduction at step {current_step}...")
+                            removed_nodes, reduction_stats = reduction_manager.reduce_graph(
+                                train_manager.graph, trainer, epoch, current_step
+                            )
+                            if removed_nodes:
+                                print(f"  Removed {len(removed_nodes)} nodes from training graph")
                     
                     # Log I-value visualization data at the end of each epoch
                     if viz_tracker:
@@ -1240,6 +1283,27 @@ def main():
                         
                         current_val_accuracy = val_metrics.get('accuracy', 0.0)
                         
+                        # Check for restoration trigger
+                        if reduction_manager and reduction_manager.restoration_enabled():
+                            if reduction_manager.check_restoration_trigger(current_val_accuracy, best_val_accuracy):
+                                print(f"  🔄 Validation accuracy dropped ({current_val_accuracy:.4f} < {best_val_accuracy:.4f}), triggering restoration...")
+                                restored_nodes, restoration_stats = reduction_manager.restore_nodes(
+                                    train_manager.graph, trainer, current_val_accuracy, best_val_accuracy
+                                )
+                                if restored_nodes:
+                                    print(f"  Restored {len(restored_nodes)} nodes to training graph")
+                        
+                        # Check for model rollback
+                        model_rollback_enabled = config.get('model_rollback_enabled', False)
+                        model_rollback_on_drop = config.get('model_rollback_on_val_drop', False)
+                        if model_rollback_enabled and model_rollback_on_drop:
+                            if current_val_accuracy < best_val_accuracy and best_val_accuracy > 0:
+                                print(f"  ⏪ Model rollback enabled: validation accuracy dropped, rolling back to best model...")
+                                if os.path.exists(best_model_checkpoint_path):
+                                    model_to_eval.load_checkpoint(best_model_checkpoint_path)
+                                    trainer.load_capability_checkpoints(best_model_checkpoint_path)
+                                    print(f"  Rolled back to best model from epoch {best_epoch}")
+                        
                         # Save best model
                         if current_val_accuracy > best_val_accuracy:
                             best_val_accuracy = current_val_accuracy
@@ -1252,6 +1316,24 @@ def main():
                             print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
                         else:
                             print(f"Validation accuracy: {current_val_accuracy:.4f} (best: {best_val_accuracy:.4f} at epoch {best_epoch})")
+                    
+                    # End of epoch: perform reduction if interval is end_of_epoch
+                    if reduction_manager and reduction_manager.reduction_interval == 'end_of_epoch':
+                        if reduction_manager.reduction_enabled():
+                            print(f"  🔧 Performing graph reduction at end of epoch {epoch+1}...")
+                            removed_nodes, reduction_stats = reduction_manager.reduce_graph(
+                                train_manager.graph, trainer, epoch, epoch * train_steps
+                            )
+                            if removed_nodes:
+                                print(f"  Removed {len(removed_nodes)} nodes from training graph")
+                                # Store epoch state for reversion strategy
+                                reduction_manager.store_epoch_state(epoch, removed_nodes)
+                    
+                    # Log reduction/restoration statistics
+                    if reduction_manager:
+                        stats = reduction_manager.get_stats()
+                        if stats['reduction_stats']['total_reductions'] > 0 or stats['reduction_stats']['total_restorations'] > 0:
+                            print(f"  Reduction/Restoration Stats: {stats['reduction_stats']}")
                 
                 # Final testing
                 if args.num_epochs > 0:

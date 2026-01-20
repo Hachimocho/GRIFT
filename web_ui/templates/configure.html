@@ -297,6 +297,159 @@
                 </div>
             </div>
             
+            <!-- Graph Reduction and Restoration Configuration -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-compress-alt text-warning me-2"></i>Graph Reduction & Restoration
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <!-- Reduction Configuration -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="reductionEnabled" name="reduction_enabled">
+                                <label class="form-check-label" for="reductionEnabled">
+                                    <strong>Enable Graph Reduction</strong>
+                                </label>
+                            </div>
+                            <div class="form-text">Dynamically remove nodes from the training graph during training</div>
+                        </div>
+                    </div>
+                    
+                    <div id="reductionConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="reductionStrategy" class="form-label">Reduction Strategy</label>
+                                <select class="form-select" id="reductionStrategy" name="reduction_strategy">
+                                    <option value="none">None</option>
+                                    <option value="max_ival">Max I-value (Remove Top %)</option>
+                                    <option value="min_ival">Min I-value (Remove Bottom %)</option>
+                                    <option value="mix_max_ival">Mix-Max I-value (Remove Top % + Bottom %)</option>
+                                    <option value="random">Random (Baseline)</option>
+                                </select>
+                                <div class="form-text">Strategy for selecting nodes to remove</div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="reductionPercentage" class="form-label">Reduction Percentage</label>
+                                <input type="number" class="form-control" id="reductionPercentage" name="reduction_percentage" 
+                                       value="10" min="0" max="100" step="0.1">
+                                <div class="form-text">Percentage of nodes to remove (0-100)</div>
+                            </div>
+                        </div>
+                        
+                        <div class="row" id="mixMaxConfig" style="display: none;">
+                            <div class="col-md-6 mb-3">
+                                <label for="reductionTopPercentage" class="form-label">Top Percentage</label>
+                                <input type="number" class="form-control" id="reductionTopPercentage" name="reduction_top_percentage" 
+                                       value="5" min="0" max="100" step="0.1">
+                                <div class="form-text">Percentage of top I-value nodes to remove</div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="reductionBottomPercentage" class="form-label">Bottom Percentage</label>
+                                <input type="number" class="form-control" id="reductionBottomPercentage" name="reduction_bottom_percentage" 
+                                       value="5" min="0" max="100" step="0.1">
+                                <div class="form-text">Percentage of bottom I-value nodes to remove</div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="reductionInterval" class="form-label">Reduction Interval</label>
+                                <select class="form-select" id="reductionInterval" name="reduction_interval">
+                                    <option value="end_of_epoch">End of Epoch</option>
+                                    <option value="every_n_steps">Every N Steps</option>
+                                </select>
+                                <div class="form-text">When to perform reduction</div>
+                            </div>
+                            <div class="col-md-6 mb-3" id="reductionIntervalStepsRow" style="display: none;">
+                                <label for="reductionIntervalSteps" class="form-label">Steps Between Reductions</label>
+                                <input type="number" class="form-control" id="reductionIntervalSteps" name="reduction_interval_steps" 
+                                       value="100" min="1" max="10000" step="1">
+                                <div class="form-text">Number of training steps between reductions</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Restoration Configuration -->
+                    <div class="row mb-3 mt-4">
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="restorationEnabled" name="restoration_enabled">
+                                <label class="form-check-label" for="restorationEnabled">
+                                    <strong>Enable Node Restoration</strong>
+                                </label>
+                            </div>
+                            <div class="form-text">Restore removed nodes when validation performance drops</div>
+                        </div>
+                    </div>
+                    
+                    <div id="restorationConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="restorationStrategy" class="form-label">Restoration Strategy</label>
+                                <select class="form-select" id="restorationStrategy" name="restoration_strategy">
+                                    <option value="none">None</option>
+                                    <option value="random_pool">Random Pool</option>
+                                    <option value="targeted">Targeted (I-value Average)</option>
+                                    <option value="reversion">Reversion (Previous Epoch)</option>
+                                </select>
+                                <div class="form-text">Strategy for selecting nodes to restore</div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="restorationPercentage" class="form-label">Restoration Percentage</label>
+                                <input type="number" class="form-control" id="restorationPercentage" name="restoration_percentage" 
+                                       value="50" min="0" max="100" step="0.1">
+                                <div class="form-text">Percentage of removed nodes to restore (0-100)</div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="restorationTriggerThreshold" class="form-label">Restoration Trigger Threshold</label>
+                                <input type="number" class="form-control" id="restorationTriggerThreshold" name="restoration_trigger_threshold" 
+                                       value="0.0" min="0" max="1" step="0.001">
+                                <div class="form-text">Minimum validation accuracy drop to trigger restoration (0.0 = any drop)</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Model Rollback Configuration -->
+                    <div class="row mb-3 mt-4">
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="modelRollbackEnabled" name="model_rollback_enabled">
+                                <label class="form-check-label" for="modelRollbackEnabled">
+                                    <strong>Enable Model Rollback</strong>
+                                </label>
+                            </div>
+                            <div class="form-text">Automatically rollback model to best checkpoint when validation accuracy drops</div>
+                        </div>
+                    </div>
+                    
+                    <div id="modelRollbackConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="modelRollbackOnValDrop" name="model_rollback_on_val_drop" checked>
+                                    <label class="form-check-label" for="modelRollbackOnValDrop">
+                                        Rollback on Validation Drop
+                                    </label>
+                                </div>
+                                <div class="form-text">Rollback model when validation accuracy drops below best seen</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Validation Warning -->
+                    <div id="reductionRestorationWarning" class="alert alert-warning mt-3" style="display: none;">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>Warning:</strong> <span id="reductionRestorationWarningText"></span>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Cache and Fairness Settings -->
             <div class="card mb-4">
                 <div class="card-header">
@@ -611,6 +764,63 @@
 {% block extra_js %}
 <script>
 $(document).ready(function() {
+    // Load config values if editing
+    {% if config %}
+    const config = {{ config|tojson }};
+    
+    // Load reduction/restoration config
+    if (config.reduction_enabled) {
+        $('#reductionEnabled').prop('checked', true);
+        $('#reductionConfig').show();
+        if (config.reduction_strategy) {
+            $('#reductionStrategy').val(config.reduction_strategy);
+            if (config.reduction_strategy === 'mix_max_ival') {
+                $('#mixMaxConfig').show();
+            }
+        }
+        if (config.reduction_percentage !== undefined) {
+            $('#reductionPercentage').val(config.reduction_percentage);
+        }
+        if (config.reduction_top_percentage !== undefined) {
+            $('#reductionTopPercentage').val(config.reduction_top_percentage);
+        }
+        if (config.reduction_bottom_percentage !== undefined) {
+            $('#reductionBottomPercentage').val(config.reduction_bottom_percentage);
+        }
+        if (config.reduction_interval) {
+            $('#reductionInterval').val(config.reduction_interval);
+            if (config.reduction_interval === 'every_n_steps') {
+                $('#reductionIntervalStepsRow').show();
+            }
+        }
+        if (config.reduction_interval_steps !== undefined) {
+            $('#reductionIntervalSteps').val(config.reduction_interval_steps);
+        }
+    }
+    
+    if (config.restoration_enabled) {
+        $('#restorationEnabled').prop('checked', true);
+        $('#restorationConfig').show();
+        if (config.restoration_strategy) {
+            $('#restorationStrategy').val(config.restoration_strategy);
+        }
+        if (config.restoration_percentage !== undefined) {
+            $('#restorationPercentage').val(config.restoration_percentage);
+        }
+        if (config.restoration_trigger_threshold !== undefined) {
+            $('#restorationTriggerThreshold').val(config.restoration_trigger_threshold);
+        }
+    }
+    
+    if (config.model_rollback_enabled) {
+        $('#modelRollbackEnabled').prop('checked', true);
+        $('#modelRollbackConfig').show();
+        if (config.model_rollback_on_val_drop !== undefined) {
+            $('#modelRollbackOnValDrop').prop('checked', config.model_rollback_on_val_drop);
+        }
+    }
+    {% endif %}
+    
     // Initialize form
     updatePreview();
     refreshCacheStatus();
@@ -678,6 +888,98 @@ $(document).ready(function() {
         }
         updatePreview();
     });
+    
+    // Add event listeners for graph reduction/restoration
+    $('#reductionEnabled').on('change', function() {
+        if (this.checked) {
+            $('#reductionConfig').show();
+        } else {
+            $('#reductionConfig').hide();
+        }
+        validateReductionRestoration();
+        updatePreview();
+    });
+    
+    $('#reductionStrategy').on('change', function() {
+        const strategy = $(this).val();
+        if (strategy === 'mix_max_ival') {
+            $('#mixMaxConfig').show();
+        } else {
+            $('#mixMaxConfig').hide();
+        }
+        validateReductionRestoration();
+        updatePreview();
+    });
+    
+    $('#reductionInterval').on('change', function() {
+        if ($(this).val() === 'every_n_steps') {
+            $('#reductionIntervalStepsRow').show();
+        } else {
+            $('#reductionIntervalStepsRow').hide();
+        }
+        updatePreview();
+    });
+    
+    $('#restorationEnabled').on('change', function() {
+        if (this.checked) {
+            $('#restorationConfig').show();
+        } else {
+            $('#restorationConfig').hide();
+        }
+        validateReductionRestoration();
+        updatePreview();
+    });
+    
+    $('#modelRollbackEnabled').on('change', function() {
+        if (this.checked) {
+            $('#modelRollbackConfig').show();
+        } else {
+            $('#modelRollbackConfig').hide();
+        }
+        updatePreview();
+    });
+    
+    // Validate reduction/restoration when traversal type changes
+    $('#traversalType, #secondTraversalType, #thirdTraversalType').on('change', function() {
+        validateReductionRestoration();
+    });
+    
+    // Function to validate reduction/restoration requirements
+    function validateReductionRestoration() {
+        const reductionEnabled = $('#reductionEnabled').is(':checked');
+        const restorationEnabled = $('#restorationEnabled').is(':checked');
+        const reductionStrategy = $('#reductionStrategy').val();
+        const restorationStrategy = $('#restorationStrategy').val();
+        
+        // Check if non-random strategies require I-value traversal
+        const needsIvalue = (reductionEnabled && reductionStrategy !== 'random' && reductionStrategy !== 'none') ||
+                           (restorationEnabled && restorationStrategy !== 'random_pool' && restorationStrategy !== 'none');
+        
+        if (needsIvalue) {
+            // Check if any I-value traversal is selected
+            const primaryTraversal = $('#traversalType').val();
+            const secondTraversal = $('#secondTraversalType').val();
+            const thirdTraversal = $('#thirdTraversalType').val();
+            const enableSwitching = $('#enableTraversalSwitching').is(':checked');
+            
+            let hasIvalueTraversal = primaryTraversal === 'i-value';
+            if (enableSwitching) {
+                hasIvalueTraversal = hasIvalueTraversal || secondTraversal === 'i-value' || thirdTraversal === 'i-value';
+            }
+            
+            if (!hasIvalueTraversal) {
+                $('#reductionRestorationWarning').show();
+                $('#reductionRestorationWarningText').text(
+                    'Non-random reduction or restoration strategies require at least one I-value traversal method. ' +
+                    'Please select an I-value traversal type in the Traversal Configuration section.'
+                );
+            } else {
+                $('#reductionRestorationWarning').hide();
+            }
+        } else {
+            $('#reductionRestorationWarning').hide();
+        }
+    }
     
     // Add event listeners for cache settings
     $('#cachedNodes, #cacheNodes, #cacheFull, #useFullCache').on('change', function() {
@@ -1263,6 +1565,40 @@ function getFormData() {
     const graphType = config.graph_type || 'clustered';
     if (config.traversal_type === 'i-value') {
         config.traversal_type = graphType === 'clustered' ? 'i-value-cluster-hop' : 'i-value';
+    }
+    
+    // Handle reduction/restoration configuration
+    config.reduction_enabled = document.getElementById('reductionEnabled').checked;
+    if (config.reduction_enabled) {
+        config.reduction_strategy = document.getElementById('reductionStrategy').value;
+        config.reduction_percentage = parseFloat(document.getElementById('reductionPercentage').value);
+        config.reduction_interval = document.getElementById('reductionInterval').value;
+        if (config.reduction_interval === 'every_n_steps') {
+            config.reduction_interval_steps = parseInt(document.getElementById('reductionIntervalSteps').value, 10);
+        }
+        if (config.reduction_strategy === 'mix_max_ival') {
+            config.reduction_top_percentage = parseFloat(document.getElementById('reductionTopPercentage').value);
+            config.reduction_bottom_percentage = parseFloat(document.getElementById('reductionBottomPercentage').value);
+        }
+    } else {
+        config.reduction_strategy = 'none';
+        config.reduction_percentage = 0;
+    }
+    
+    config.restoration_enabled = document.getElementById('restorationEnabled').checked;
+    if (config.restoration_enabled) {
+        config.restoration_strategy = document.getElementById('restorationStrategy').value;
+        config.restoration_percentage = parseFloat(document.getElementById('restorationPercentage').value);
+        config.restoration_trigger_threshold = parseFloat(document.getElementById('restorationTriggerThreshold').value);
+    } else {
+        config.restoration_strategy = 'none';
+    }
+    
+    config.model_rollback_enabled = document.getElementById('modelRollbackEnabled').checked;
+    if (config.model_rollback_enabled) {
+        config.model_rollback_on_val_drop = document.getElementById('modelRollbackOnValDrop').checked;
+    } else {
+        config.model_rollback_on_val_drop = false;
     }
     
     // Handle traversal switching

@@ -831,6 +831,15 @@ def results():
                 run['architecture'] = config['architecture']
             if 'traversal_type' not in run and 'traversal_type' in config:
                 run['traversal_type'] = config['traversal_type']
+            # Add reduction/restoration strategy info
+            if 'reduction_strategy' in config:
+                run['reduction_strategy'] = config['reduction_strategy']
+            if 'reduction_percentage' in config:
+                run['reduction_percentage'] = config['reduction_percentage']
+            if 'restoration_strategy' in config:
+                run['restoration_strategy'] = config['restoration_strategy']
+            if 'restoration_percentage' in config:
+                run['restoration_percentage'] = config['restoration_percentage']
     
     return render_template('results.html', runs=completed_runs)
 
