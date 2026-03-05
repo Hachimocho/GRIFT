@@ -85,7 +85,7 @@ def main():
     
     # Get network information
     local_ip = get_local_ip()
-    port = 5000
+    port = int(os.environ.get('PORT', 5000))
     
     print("\n🚀 Starting Web UI...")
     print(f"   Local URL:  http://localhost:{port}")
@@ -107,10 +107,12 @@ def main():
     print("\n" + "=" * 50)
     print("Starting Flask application...\n")
     
-    # Change to the web_ui directory and start the app
+    # Change to the web_ui directory and start the app (pass PORT to subprocess)
     try:
         os.chdir('web_ui')
-        os.system('python app.py')
+        env = os.environ.copy()
+        env['PORT'] = str(port)
+        subprocess.run([sys.executable, 'app.py'], env=env)
     except KeyboardInterrupt:
         print("\n\n👋 Shutting down Web UI...")
     except Exception as e:

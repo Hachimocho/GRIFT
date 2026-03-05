@@ -1148,8 +1148,9 @@ if __name__ == '__main__':
     os.makedirs('web_ui/static/css', exist_ok=True)
     os.makedirs('web_ui/static/js', exist_ok=True)
     
+    port = int(os.environ.get('PORT', 5000))
     print("Starting HyperGraph Test Configuration Web UI...")
-    print("Access the interface at: http://localhost:5000")
-    print("For SSH tunneling, use: ssh -L 5000:localhost:5000 user@server")
+    print(f"Access the interface at: http://localhost:{port}")
+    print(f"For SSH tunneling, use: ssh -L {port}:localhost:{port} user@server")
     
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    app.run(host='0.0.0.0', port=port, debug=True) 

@@ -12,8 +12,10 @@ param(
 $Username = "brg2890"
 $RemoteRepoPath = "/major/bryce_python_workspace/GraphWork/HyperGraph"
 $RemotePythonPath = "/home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary/bin"
-$RemotePort = 5000
-$LocalPort = 5000
+# Port for both local tunnel and remote server (change if 5000 is in use)
+$Port = 5000
+$LocalPort = $Port
+$RemotePort = $Port
 # ========================================================================
 
 Write-Host "[START] Starting HyperGraph Web UI with tunnel..." -ForegroundColor Green
@@ -64,7 +66,7 @@ if ($testPort -ne $originalPort) {
 Write-Host "[INFO] Access the UI at: http://localhost:$testPort" -ForegroundColor Magenta
 
 # Create the remote command with environment setup
-$remoteCommand = "cd $RemoteRepoPath && export PATH=${RemotePythonPath}:`$PATH && $RemotePythonPath/python start_ui.py"
+$remoteCommand = "cd $RemoteRepoPath && export PATH=${RemotePythonPath}:`$PATH && PORT=$RemotePort $RemotePythonPath/python start_ui.py"
 
 # Start tunnel and UI in one command
 Write-Host "[CONNECT] Connecting and starting UI..." -ForegroundColor Green
