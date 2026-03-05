@@ -344,4 +344,5 @@ dependencies:
       - flask==3.1.2
       - itsdangerous==2.2.0
       - psutil==7.0.0
+      - wandb
 prefix: /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary
