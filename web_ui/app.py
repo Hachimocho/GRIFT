@@ -23,9 +23,10 @@ import time
 import subprocess
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from flask.json.provider import DefaultJSONProvider
 import yaml
 import dill
 import glob
@@ -125,6 +126,20 @@ from web_ui.gpu_queue_manager import GPUQueueManager
 
 app = Flask(__name__)
 app.secret_key = 'quanty_hypergraph_test_ui_secret_key_2024'
+
+
+class CustomJSONProvider(DefaultJSONProvider):
+    """Custom JSON provider that handles timedelta and datetime for tojson filter."""
+
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, timedelta):
+            return str(obj)
+        return super().default(obj)
+
+
+app.json = CustomJSONProvider(app)
 
 # Initialize managers
 config_manager = ConfigManager()
