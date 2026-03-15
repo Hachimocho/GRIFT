@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanitize environment.yml for CI
+        run: |
+          sed -E '/^(name:|prefix:)/d' environment.yml > environment.ci.yml
+          # Strip GPU-specific packages that are unnecessary for unit tests
+          sed -i -E '/^(\s*-\s*pytorch-cuda|\s*-\s*cuda-|\s*-\s*torchtriton|\s*-\s*pytorch-mutex|\s*-\s*libcu|\s*-\s*libnv)/d' environment.ci.yml
+          # Relax GPU-pinned build strings for pytorch/torchvision/torchaudio to allow CPU installs
+          sed -i -E 's/(\s*-\s*pytorch)=.*/\1/g' environment.ci.yml
+          sed -i -E 's/(\s*-\s*torchvision)=.*/\1/g' environment.ci.yml
+          sed -i -E 's/(\s*-\s*torchaudio)=.*/\1/g' environment.ci.yml
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          activate-environment: test-env
+          environment-file: environment.ci.yml
+          python-version: "3.12"
+          miniforge-version: latest
+          use-mamba: true
+
+      - name: Install test extras
+        shell: bash -l {0}
+        run: |
+          mamba install -y -c conda-forge pytest pytest-cov
+
+      - name: Run tests
+        shell: bash -l {0}
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
+        run: |
+          pytest -q

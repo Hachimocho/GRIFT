@@ -1,3 +1,21 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env/
+.mypy_cache/
+*.pyc
+logs/
+graph_cache/
+node_cache/
+run_outputs/
+checkpoints/
+saved_models/
+*.png
+*.jpg
+*.jpeg
+*.csv
+*.pkl
+*.log
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
