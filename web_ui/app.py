@@ -123,6 +123,7 @@ import io
 
 # Import the new GPU queue manager
 from web_ui.gpu_queue_manager import GPUQueueManager
+import requests
 
 app = Flask(__name__)
 app.secret_key = 'quanty_hypergraph_test_ui_secret_key_2024'
