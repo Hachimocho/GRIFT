@@ -2,8 +2,7 @@
 """
 HyperGraph Test Configuration Web UI
 
-A Flask-based web interface for managing test configurations, running experiments,
-and viewing results for the HyperGraph deepfake detection system.
+This file is the HTTP layer for the Web UI. It:
 
 This UI allows users to:
 - Create and save test configurations
@@ -30,6 +29,9 @@ import yaml
 import dill
 import glob
 
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
 # Create logs directory if it doesn't exist
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 os.makedirs(log_dir, exist_ok=True)
@@ -126,11 +128,17 @@ from web_ui.gpu_queue_manager import GPUQueueManager
 app = Flask(__name__)
 app.secret_key = 'quanty_hypergraph_test_ui_secret_key_2024'
 
-# Initialize managers
+# -----------------------------------------------------------------------------
+# Core managers (persistence + execution)
+# -----------------------------------------------------------------------------
+# `ConfigManager` reads/writes configuration JSON files and template JSON files.
 config_manager = ConfigManager()
+# `GPUQueueManager` queues runs and starts training/testing subprocesses on GPUs.
 gpu_queue_manager = GPUQueueManager()  # Replace test_runner with gpu_queue_manager
 
-# Debug route to check if server is running
+# -----------------------------------------------------------------------------
+# Debug / operational routes
+# -----------------------------------------------------------------------------
 @app.route('/debug/ping')
 def ping():
     """Simple endpoint to check if server is running."""
@@ -148,13 +156,18 @@ def debug_paths():
     }
     return jsonify(paths)
 
+# -----------------------------------------------------------------------------
+# Page routes (HTML)
+# -----------------------------------------------------------------------------
 @app.route('/')
 def index():
     """Main dashboard showing overview of configurations and results."""
     configs = config_manager.list_configurations()
     runs = gpu_queue_manager.list_runs()  # Use gpu_queue_manager instead of test_runner
 
-    # Patch: promote results.final_accuracy to final_accuracy and accuracy for template compatibility
+    # Compatibility patch for templates:
+    # Some run metadata store accuracy nested under `results.final_accuracy`, while templates
+    # often expect top-level `final_accuracy` (and sometimes `accuracy`).
     for run in runs:
         if 'final_accuracy' not in run:
             accuracy = None
@@ -177,6 +190,9 @@ def cache_status_page():
     logger.info("Rendering cache status page")
     return render_template('cache_status.html')
 
+# -----------------------------------------------------------------------------
+# Cache APIs
+# -----------------------------------------------------------------------------
 @app.route('/api/cache/status')
 def get_cache_status():
     """API endpoint for getting cache status information."""
@@ -548,6 +564,9 @@ def generate_cache_background(
         import traceback
         traceback.print_exc()
 
+# -----------------------------------------------------------------------------
+# Configuration pages + APIs
+# -----------------------------------------------------------------------------
 @app.route('/configure', methods=['GET', 'POST'])
 def configure():
     """Configuration page for test settings."""
@@ -657,6 +676,9 @@ def api_delete_configuration(config_name):
     else:
         return jsonify({'error': 'Failed to delete configuration'}), 500
 
+# -----------------------------------------------------------------------------
+# Run queue / run lifecycle APIs
+# -----------------------------------------------------------------------------
 @app.route('/api/test-runs', methods=['POST'])
 def api_start_test_run():
     """API endpoint to start a test run (supports multiple architectures and DQN models).
@@ -769,6 +791,9 @@ def api_get_run_logs(run_id):
     logs = gpu_queue_manager.get_run_logs(run_id)
     return jsonify({'logs': logs})
 
+# -----------------------------------------------------------------------------
+# Run pages (HTML)
+# -----------------------------------------------------------------------------
 @app.route('/runs')
 def runs():
     """Test runs management page."""
@@ -843,6 +868,9 @@ def results():
     
     return render_template('results.html', runs=completed_runs)
 
+# -----------------------------------------------------------------------------
+# Results comparison API
+# -----------------------------------------------------------------------------
 @app.route('/api/results/compare', methods=['POST'])
 def api_compare_results():
     """API endpoint to compare results from multiple runs."""
@@ -898,6 +926,9 @@ def api_compare_results():
     
     return jsonify(comparison)
 
+# -----------------------------------------------------------------------------
+# Templates page + API (config templates)
+# -----------------------------------------------------------------------------
 @app.route('/templates')
 def templates():
     """Configuration templates page."""
@@ -913,6 +944,9 @@ def api_get_template(template_name):
     else:
         return jsonify({'error': 'Template not found'}), 404
 
+# -----------------------------------------------------------------------------
+# Shutdown + debugging helpers
+# -----------------------------------------------------------------------------
 @app.route('/api/shutdown', methods=['POST'])
 def api_shutdown():
     """API endpoint to shutdown the server."""
@@ -963,6 +997,9 @@ def test_cache_api():
         'timestamp': datetime.now().isoformat()
     })
 
+# -----------------------------------------------------------------------------
+# GPU queue status / admin APIs
+# -----------------------------------------------------------------------------
 @app.route('/api/gpu/status')
 def api_get_gpu_status():
     """API endpoint to get GPU status information."""
@@ -1040,6 +1077,9 @@ def api_clear_queue():
             'details': str(e)
         }), 500
 
+# -----------------------------------------------------------------------------
+# Run repair / maintenance APIs
+# -----------------------------------------------------------------------------
 @app.route('/api/results/extract', methods=['POST'])
 def api_extract_results():
     """API endpoint to extract results from completed runs that don't have results."""
@@ -1126,6 +1166,10 @@ def api_fix_run_status():
         }), 500
 
 if __name__ == '__main__':
+    # Development entrypoint: run the Flask server directly.
+    #
+    # In production you would typically run Flask under a process manager
+    # (e.g., gunicorn/uwsgi) and avoid debug=True.
     # Create necessary directories
     os.makedirs('web_ui/configs', exist_ok=True)
     os.makedirs('web_ui/runs', exist_ok=True)
