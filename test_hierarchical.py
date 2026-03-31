@@ -1,14 +1,24 @@
 """
-Test script for the Hierarchical Deepfake Dataloader
+Training/evaluation entrypoint used by the Web UI run queue.
 
-This script tests the new hierarchical graph construction approach which:
-1. Groups nodes by categorical attributes (race-gender combinations)
-2. Creates fully-connected subgraphs within each group
-3. Applies threshold-based filtering for quality metrics, symmetry, embeddings, etc.
+This file is the executable workload launched by `web_ui/gpu_queue_manager.py`.
+The queue manager builds CLI flags from saved UI configuration and runs:
 
-Updated to support the new AdaptiveTrainer architecture with:
-- Single-traversal mode: Use one traversal method throughout training
-- Switch-traversal mode: Switch between different traversal methods during training
+    python test_hierarchical.py <flags>
+
+High-level responsibilities:
+1. Parse CLI arguments (from UI configuration) via `test_helpers.args_utils.parse_args`.
+2. Load dataset node splits (train/val/test), with optional fairness balancing.
+3. Build or load graph structures per split, using cache files in `graph_cache/`.
+4. Create model + trainer + traversal strategy (single or switching).
+5. Run training/validation loops and optional graph reduction/restoration logic.
+6. Run final test evaluation and print a JSON metrics block under "Final Test Results".
+7. Emit run artifacts (plots/reports/checkpoints) under `run_outputs/<run_id>/`.
+
+Frontend integration contract:
+- `--run-id` controls output directory naming and should be provided by queue manager.
+- Log output is parsed by `GPUQueueManager._extract_results(...)`, so changes to
+  result-printing format can break Web UI result extraction.
 """
 import time
 import os
@@ -92,7 +102,15 @@ from torch.utils.data import Dataset, DataLoader
 import io
 
 def _load_node_data(node, model):
-    """Helper function to load a single node's data. Used for parallel loading."""
+    """
+    Load and transform one node's sample for evaluation.
+
+    This helper is intentionally exception-safe because it is called concurrently
+    by `ThreadPoolExecutor` inside `evaluate_model`.
+
+    Returns:
+        Tuple `(img_tensor, label_value, node)` on success, else `None`.
+    """
     try:
         node_data = node.get_data()
         if node_data:
@@ -116,11 +134,18 @@ def _load_node_data(node, model):
         return None
 
 def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4): 
-    """Evaluates the model on the provided nodes, calculates standard metrics,
-       and optionally calculates bias metrics based on categorical attributes.
-       
-    Args:
-        num_workers: Number of parallel workers for image loading (default: 4)
+    """
+    Run inference over a node list and compute metrics.
+
+    What this function computes:
+    - Core metrics: loss, accuracy, and prediction/label aggregates.
+    - Optional fairness/bias metrics from categorical attributes in
+      `attribute_metadata` (race-gender subgroup metrics + per-attribute metrics).
+
+    Implementation notes:
+    - Uses threaded image loading (`num_workers`) for I/O parallelism.
+    - Keeps evaluation in `torch.no_grad()` and `model.eval()` mode.
+    - Skips malformed/unloadable samples instead of crashing whole evaluation.
     """
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
@@ -404,7 +429,15 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     return final_metrics
 
 def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trainer=None, **kwargs):
-    """Create a traversal instance based on type and parameters."""
+    """
+    Factory for traversal objects used by `AdaptiveTrainer`.
+
+    Supported types:
+    - comprehensive
+    - random
+    - i-value
+    - i-value-cluster-hop
+    """
     if traversal_type == "comprehensive":
         return ComprehensiveTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
     elif traversal_type == "random":
@@ -429,7 +462,12 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
         raise ValueError(f"Unsupported traversal type: {traversal_type}")
 
 def parse_traversal_config(args):
-    """Parse traversal configuration from command line arguments."""
+    """
+    Normalize traversal-related CLI args into a config dictionary.
+
+    Also validates switching-mode consistency:
+    `len(switch_epochs)` must equal `len(traversal_sequence) - 1`.
+    """
     config = {
         'trainer_mode': getattr(args, 'trainer_mode', 'adaptive'),  # Default to 'adaptive' if not set
         'single_traversal': args.traversal_type,
@@ -437,7 +475,7 @@ def parse_traversal_config(args):
         'architectures': [arch.strip() for arch in args.architectures.split(',')],
         'test_all_traversals': args.test_all_traversals,
         'disconnected_switching': getattr(args, 'disconnected_switching', False)
-    }
+    }  
     
     if args.enable_traversal_switching:
         # Parse traversal sequence
@@ -456,7 +494,12 @@ def parse_traversal_config(args):
     return config
 
 def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args):
-    """Create and configure an AdaptiveTrainer instance."""
+    """
+    Build and configure the `AdaptiveTrainer` used by this run.
+
+    The trainer orchestrates train/validation steps, traversal switching, and
+    optional bias-aware losses.
+    """
     trainer = AdaptiveTrainer(
         graphmanager=train_manager,
         models=[model],
@@ -469,7 +512,12 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
     return trainer
 
 def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwargs):
-    """Create a DQN model instance based on type and parameters."""
+    """
+    Factory for DQN model variants used by I-value traversal logic.
+
+    Raises:
+        ValueError: if model_type is unsupported.
+    """
     if model_type == "basic":
         from models.DQNModel import DQNModel
         return DQNModel(feature_dim, device, embedding_dim=embedding_dim)
@@ -489,7 +537,13 @@ def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwarg
         raise ValueError(f"Unsupported DQN model type: {model_type}")
 
 def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
-    """Create either a CNN model or DQN model based on architecture."""
+    """
+    Create the runtime model for one test configuration.
+
+    Convention:
+    - Architectures prefixed with `dqn_` route to DQN model factory.
+    - All other architectures route to the CNN model wrapper.
+    """
     if arch.startswith("dqn_"):
         # Extract feature dimension from kwargs or use default
         feature_dim = kwargs.get('feature_dim', 128)  # Default feature dimension
@@ -499,6 +553,9 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
         return CNNModel(save_path, arch, 1e-4, True, device)
 
 def main():
+    # ------------------------------------------------------------------
+    # 1) Runtime setup and diagnostics
+    # ------------------------------------------------------------------
     args = parse_args() # Parse args first
     # Enable faulthandler for hard crashes
     try:
@@ -527,7 +584,7 @@ def main():
     except Exception as e:
         print(f"Warning: Could not query system resources: {e}")
 
-    # --- Check for PYTHONHASHSEED --- 
+    # --- Reproducibility guardrails ---
     if 'PYTHONHASHSEED' not in os.environ:
         print("\nWarning: PYTHONHASHSEED environment variable not set.")
         print("         For full reproducibility, set it before running the script, e.g.:")
@@ -537,7 +594,8 @@ def main():
         print(f"Using PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
 
     set_seed(args.seed) # Use args.seed
-    # GPU override: optionally force a single GPU via env and torch device
+    # GPU override: optionally force a single GPU via env and torch device.
+    # Queue manager also sets CUDA_VISIBLE_DEVICES; this path supports direct CLI.
     try:
         if getattr(args, 'gpu_override', False):
             gpu_id = int(getattr(args, 'gpu_id', 0))
@@ -570,6 +628,9 @@ def main():
         print(f"Warning: Forcing num_workers=0 (was {args.num_workers}) for reproducibility.")
         args.num_workers = 0
 
+    # ------------------------------------------------------------------
+    # 2) Data split loading and graph cache setup
+    # ------------------------------------------------------------------
     # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
@@ -659,7 +720,7 @@ def main():
             }
         ]
     
-    # Call the new helper function to load and prepare data splits
+    # Load node splits (balanced + full variants returned by helper).
     train_nodes, val_nodes, test_nodes, \
     train_nodes_full, val_nodes_full, test_nodes_full, \
     node_loading_time = load_and_prepare_data_splits(args, data_root)
@@ -679,7 +740,7 @@ def main():
     s_thresh_str = f"{args.symmetry_threshold:.3f}"
     e_thresh_str = f"{args.embedding_threshold:.3f}"
 
-    # Select dataloader based on graph type
+    # Select graph construction strategy from CLI.
     if args.graph_type == 'nonclustered':
         print(f"Using UnclusteredDeepfakeDataloader for non-clustered graph construction")
         dataloader_class = UnclusteredDeepfakeDataloader
@@ -689,6 +750,9 @@ def main():
         dataloader_class = HierarchicalDeepfakeDataloader
         graph_type_str = 'clustered'
 
+    # ------------------------------------------------------------------
+    # 3) Per-split graph loading/building with cache compatibility checks
+    # ------------------------------------------------------------------
     for split_name, nodes_to_use, suffix in [
         ('train', train_nodes, train_suffix),
         ('val', val_nodes, val_suffix),
@@ -712,7 +776,7 @@ def main():
             f"{cache_base}_edges.csv.gz"
         )
 
-        # Check/Load Graph Cache
+        # Try cache-first graph loading to avoid expensive rebuilds.
         graph = None
         loaded_from_cache = False
 
@@ -771,7 +835,7 @@ def main():
                 traceback.print_exc()
                 graph = None # Ensure regeneration if loading fails
 
-        # --- Build Graph if not loaded from cache --- 
+        # Build graph if no valid cache could be loaded.
         if not loaded_from_cache:
             # Ensure nodes are available
             split_nodes = train_nodes_full if split_name == 'train' else val_nodes_full if split_name == 'val' else test_nodes_full
@@ -814,7 +878,7 @@ def main():
             else:
                 print(f"Skipping cache save for {split_name} due to build failure.")
 
-        # --- Store Graph --- 
+        # Store final graph object for manager/trainer setup.
         # This part assumes 'graph' holds the final HyperGraph object, either loaded or built
         if graph:
              print(f"[Debug] Type of graph object for {split_name} before assignment: {type(graph)}")
@@ -846,6 +910,7 @@ def main():
     print(f"  - Graph construction: {(graph_construction_time - node_loading_time):.2f} seconds ({(graph_construction_time - node_loading_time)/graph_construction_time*100:.1f}%)")
 
     # Validate graph objects
+    # if we have this, why check on line 836
     if not train_graph or not val_graph or not test_graph:
         print("\nError: One or more graphs failed to build or load. Cannot proceed with validation.")
         return
@@ -944,6 +1009,9 @@ def main():
                         'description': f"{arch}_{traversal_config['single_traversal']}"
                     })
         
+        # ------------------------------------------------------------------
+        # 4) Resolve per-run step counts and output namespace
+        # ------------------------------------------------------------------
         # Calculate graph sizes and training steps
         train_size = len(train_manager.graph.get_nodes())
         val_size = len(val_manager.graph.get_nodes())
@@ -978,6 +1046,9 @@ def main():
         run_output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[Quanty] All visualizations and outputs for this run will be saved under: {run_output_dir}")
 
+        # ------------------------------------------------------------------
+        # 5) Execute each generated architecture/traversal configuration
+        # ------------------------------------------------------------------
         # Test each configuration
         for config in test_configs:
             print(f"\n{'='*80}")
@@ -1075,6 +1146,7 @@ def main():
                         edge_csv_path = config_output_dir / 'edges.csv'
                         graph.export_csv_with_subclusters(str(node_csv_path), str(edge_csv_path))
                         print(f"[Quanty] Exported node/edge CSVs with subcluster info to {config_output_dir}")
+                        
                 if args.enable_ivalue_viz and uses_ivalue_traversal:
                     print(f"\n📊 Initializing I-value visualization tracking...")
                     viz_save_dir = config_output_dir / "ivalue"
@@ -1103,6 +1175,9 @@ def main():
                 print(f"Val: {val_steps} steps with 1 pointer") 
                 print(f"Test: All nodes")
                 
+                # ------------------------------------------------------------------
+                # 5a) Epoch loop (train/validate/reduction/restoration)
+                # ------------------------------------------------------------------
                 # Training loop
                 print(f"\nTraining {config['description']}...")
                 for epoch in range(args.num_epochs):
@@ -1335,6 +1410,9 @@ def main():
                         if stats['reduction_stats']['total_reductions'] > 0 or stats['reduction_stats']['total_restorations'] > 0:
                             print(f"  Reduction/Restoration Stats: {stats['reduction_stats']}")
                 
+                # ------------------------------------------------------------------
+                # 5b) Final test metrics (consumed by Web UI log parsers)
+                # ------------------------------------------------------------------
                 # Final testing
                 if args.num_epochs > 0:
                     model_to_eval = trainer.models[0] if trainer.models else None
@@ -1366,6 +1444,9 @@ def main():
                         if getattr(args, 'enable_val_bias_inference', False):
                             bias_tracker.log_bias_metrics(epoch=best_epoch-1 if best_epoch > 0 else args.num_epochs-1, test_metrics=test_metrics)
                 
+                # ------------------------------------------------------------------
+                # 5c) Post-run artifact generation (viz + bias reports)
+                # ------------------------------------------------------------------
                 # Generate I-value visualization plots and reports if tracking was enabled
                 if viz_tracker:
                     print(f"\n📊 Generating I-value visualization plots...")
