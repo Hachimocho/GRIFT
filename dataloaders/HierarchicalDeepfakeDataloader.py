@@ -1397,6 +1397,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         # Return the graph for the specified split
         return self.graphs[split]
 
+    // duplcation of get_graph method
     def get_graph(self, split='train'):
         """
         Get the graph for a specific split
