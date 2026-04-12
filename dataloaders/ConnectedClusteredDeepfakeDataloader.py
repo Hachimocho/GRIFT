@@ -6,6 +6,8 @@ import time
 from dataloaders.Dataloader import Dataloader
 from nodes.Node import Node
 from graphs.HyperGraph import HyperGraph
+# to import the graph_utils module for graph connectivity
+import dataloaders.graph_utils as graph_utils
 
 class ConnectedClusteredDeepfakeDataloader(Dataloader):
     tags = ["deepfakes"]
@@ -66,6 +68,9 @@ class ConnectedClusteredDeepfakeDataloader(Dataloader):
                     
             node_list.extend(dataset_node_list)
             
+        #ensure the graph is connected by connecting all disconnected components
+        node_list = graph_utils.ensure_graph_connected(node_list, self.edge_class)
+
         buffer_node = Node("train", None, [], None)
         for node in node_list:
             if random.random() < self.buffer_connect_chance:
