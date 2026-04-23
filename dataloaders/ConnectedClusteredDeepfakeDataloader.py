@@ -71,7 +71,9 @@ class ConnectedClusteredDeepfakeDataloader(Dataloader):
         #ensure the graph is connected by connecting all disconnected components
         node_list = graph_utils.ensure_graph_connected(node_list, self.edge_class)
 
-        buffer_node = Node("train", None, [], None)
+        # Keep the optional buffer node valid under the shared Node constructor:
+        # node_id, split, data, edges, label
+        buffer_node = Node("buffer-train", "train", None, [], None)
         for node in node_list:
             if random.random() < self.buffer_connect_chance:
                 edge = self.edge_class(buffer_node, node)
