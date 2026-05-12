@@ -165,6 +165,7 @@
                                     <th>Race Bias</th>
                                     <th>Avg Bias</th>
                                     <th>Loss</th>
+                                    <th>UQ</th>
                                     <th>Started</th>
                                     <th>Actions</th>
                                 </tr>
@@ -267,6 +268,13 @@
                                     <td>
                                         {% if run.loss %}
                                         {{ "%.4f"|format(run.loss) }}
+                                        {% else %}
+                                        <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.results and run.results.uncertainty %}
+                                        <span class="badge bg-primary">{{ run.results.uncertainty|length }}</span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
@@ -568,4 +576,4 @@ function exportComparison() {
     alert('Comparison export functionality would be implemented here');
 }
 </script>
-{% endblock %} 
+{% endblock %}

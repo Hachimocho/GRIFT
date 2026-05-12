@@ -139,6 +139,13 @@
                             <td>{{ run.results.ivalue_plots|length }} files generated</td>
                         </tr>
                         {% endif %}
+
+                        {% if run.results.uncertainty %}
+                        <tr>
+                            <td><strong>Uncertainty:</strong></td>
+                            <td>{{ run.results.uncertainty|length }} config output(s)</td>
+                        </tr>
+                        {% endif %}
                     </table>
                     
                     {% if run.results.bias_metrics %}
@@ -147,6 +154,44 @@
                         <small class="text-muted">
                             Detailed bias analysis available in generated plots
                         </small>
+                    </div>
+                    {% endif %}
+
+                    {% if run.results.uncertainty %}
+                    <div class="mt-3">
+                        <h6>Uncertainty Summary:</h6>
+                        {% for uq in run.results.uncertainty %}
+                        <div class="border rounded p-2 mb-2">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong>{{ uq.config_description }}</strong>
+                                <small class="text-muted">{{ uq.num_prediction_records or 0 }} test records</small>
+                            </div>
+                            {% if uq.selected_methods %}
+                            <div class="mb-2">
+                                {% for method in uq.selected_methods %}
+                                <span class="badge bg-secondary me-1">{{ method|replace('_', ' ')|title }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                            {% if uq.method_summaries %}
+                                {% for method, summary in uq.method_summaries.items() %}
+                                <div class="small">
+                                    <strong>{{ method|replace('_', ' ')|upper }}:</strong>
+                                    {% if summary.original_false_negatives is not none %}
+                                        {{ summary.original_false_negatives }} original false negative(s)
+                                    {% else %}
+                                        completed
+                                    {% endif %}
+                                    {% if summary.scores_file %}
+                                        <br><code>{{ summary.scores_file }}</code>
+                                    {% endif %}
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                            <small class="text-muted">Prediction records were saved; method scoring is pending.</small>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
                     </div>
                     {% endif %}
                 {% else %}
@@ -414,4 +459,4 @@ setInterval(function() {
 }, 10000);
 {% endif %}
 </script>
-{% endblock %} 
+{% endblock %}

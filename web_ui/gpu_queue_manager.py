@@ -855,12 +855,60 @@ class GPUQueueManager:
                     logger.error(f"Error extracting results from log for {run_id}: {e}")
             else:
                 logger.warning(f"Log file not found for run {run_id}: {log_file}")
+
+            if "results" not in metadata:
+                metadata["results"] = {}
+            uncertainty_results = self._extract_uncertainty_artifacts(run_id)
+            if uncertainty_results:
+                metadata["results"]["uncertainty"] = uncertainty_results
+                logger.info(f"Extracted uncertainty artifacts for run {run_id}: {len(uncertainty_results)} config(s)")
             
             # Save updated metadata
             self._save_run_metadata(run_id, metadata)
             
         except Exception as e:
             logger.error(f"Error extracting results for {run_id}: {e}")
+
+    def _extract_uncertainty_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
+        """Find uncertainty artifacts written under run_outputs/<run_id>."""
+        run_output_dir = Path("run_outputs") / run_id
+        if not run_output_dir.exists():
+            return []
+
+        uncertainty_entries = []
+        for summary_path in sorted(run_output_dir.glob("*/uncertainty/summary.json")):
+            uncertainty_dir = summary_path.parent
+            config_description = uncertainty_dir.parent.name
+            try:
+                with open(summary_path, "r") as f:
+                    input_summary = json.load(f)
+            except Exception as e:
+                logger.warning(f"Could not load uncertainty summary {summary_path}: {e}")
+                input_summary = {}
+
+            method_summaries = {}
+            for method_summary_path in sorted(uncertainty_dir.glob("*_summary.json")):
+                if method_summary_path.name == "summary.json":
+                    continue
+                try:
+                    with open(method_summary_path, "r") as f:
+                        method_summary = json.load(f)
+                    method_name = method_summary.get("method") or method_summary_path.stem.replace("_summary", "")
+                    method_summaries[method_name] = method_summary
+                except Exception as e:
+                    logger.warning(f"Could not load uncertainty method summary {method_summary_path}: {e}")
+
+            uncertainty_entries.append({
+                "config_description": config_description,
+                "summary_file": str(summary_path),
+                "selected_methods": input_summary.get("selected_methods", []),
+                "num_prediction_records": input_summary.get("num_prediction_records"),
+                "prediction_records_file": input_summary.get("prediction_records_file"),
+                "method_summaries": method_summaries,
+                "files": [str(path) for path in sorted(uncertainty_dir.glob("*")) if path.is_file()],
+            })
+
+        return uncertainty_entries
     
     def _analyze_run_status_from_log(self, run_id: str) -> Optional[str]:
         """Analyze run status from log file to detect failed runs that exited with code 0."""

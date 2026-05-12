@@ -259,6 +259,8 @@ are treated as fake.
 
 ### Milestone 4: Results Page Display
 
+Status: done.
+
 Goal:
 
 Make uncertainty artifacts visible from the run details page.
@@ -268,6 +270,17 @@ The results page should show:
 - which methods ran
 - where the artifact files are
 - basic summary values for each method
+
+What changed:
+
+- The GPU queue manager now scans `run_outputs/<run_id>/*/uncertainty/`
+  after a completed run.
+- Run metadata stores discovered uncertainty files and method summaries under
+  `results.uncertainty`.
+- The run details page shows selected uncertainty methods, record counts, score
+  file paths, and MSP false-negative summary information.
+- The results table now has a small UQ column showing whether uncertainty
+  artifacts exist for a completed run.
 
 ### Milestone 5: Trust Score
 
