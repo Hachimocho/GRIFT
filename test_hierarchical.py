@@ -56,7 +56,12 @@ from test_helpers.data_graph_utils import (
 from trainers.IValueVisualizationTracker import IValueVisualizationTracker
 from trainers.BiasHopVisualizer import BiasHopVisualizer
 from trainers.BiasMetricsTracker import BiasMetricsTracker
-from evaluation.uncertainty import run_msp_uncertainty
+from evaluation.uncertainty import (
+    run_msp_uncertainty,
+    run_ddu_uncertainty,
+    run_trust_score_uncertainty,
+    run_graph_uncertainty,
+)
 
 # Add the project root to the path if needed
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -214,23 +219,53 @@ def save_uncertainty_test_inputs(prediction_records, selected_methods, output_di
     }
 
 
-def run_selected_uncertainty_methods(prediction_records, selected_methods, output_dir):
-    """Run implemented test-time uncertainty scorers."""
+def run_selected_uncertainty_methods(
+    prediction_records,
+    selected_methods,
+    output_dir,
+    train_prediction_records=None,
+    neighbor_map=None,
+):
+    """Run selected test-time uncertainty scorers.
+
+    Args:
+        prediction_records: final-test per-node records from evaluate_model.
+        selected_methods: list of method names (msp, ddu, trust_score, graph).
+        output_dir: run config output directory; artifacts go under uncertainty/.
+        train_prediction_records: per-node records from the training set, used to
+            fit DDU Gaussians and Trust Score kNN. Optional; methods that need it
+            skip gracefully if None.
+        neighbor_map: {node_id: [neighbor_node_id, ...]} for the test graph,
+            required by graph uncertainty.  Optional; skipped if None.
+    """
     method_artifacts = {}
-    pending_methods = []
 
     for method in selected_methods:
         if method == "msp":
             method_artifacts[method] = run_msp_uncertainty(prediction_records, output_dir)
             print("[Uncertainty] MSP scoring complete.")
+        elif method == "ddu":
+            method_artifacts[method] = run_ddu_uncertainty(
+                prediction_records, train_prediction_records, output_dir
+            )
+            status = method_artifacts[method].get("status", "unknown")
+            print(f"[Uncertainty] DDU scoring {status}.")
+        elif method == "trust_score":
+            method_artifacts[method] = run_trust_score_uncertainty(
+                prediction_records, train_prediction_records, output_dir
+            )
+            status = method_artifacts[method].get("status", "unknown")
+            print(f"[Uncertainty] Trust Score scoring {status}.")
+        elif method == "graph":
+            method_artifacts[method] = run_graph_uncertainty(
+                prediction_records, neighbor_map, output_dir
+            )
+            status = method_artifacts[method].get("status", "unknown")
+            print(f"[Uncertainty] Graph Uncertainty scoring {status}.")
         else:
-            pending_methods.append(method)
-            print(f"[Uncertainty] Method '{method}' is selected but not implemented in this milestone.")
+            print(f"[Uncertainty] Unknown method '{method}'. Skipping.")
 
-    return {
-        "method_artifacts": method_artifacts,
-        "pending_methods": pending_methods,
-    }
+    return {"method_artifacts": method_artifacts}
 
 
 def evaluate_model(
@@ -1592,10 +1627,48 @@ def main():
                                 selected_methods=uncertainty_methods,
                                 output_dir=config_output_dir
                             )
+
+                            # --- Collect extra data needed by DDU / Trust Score / Graph UQ ---
+                            train_records_for_uq = None
+                            if any(m in uncertainty_methods for m in ("ddu", "trust_score")):
+                                print("[Uncertainty] Collecting train predictions for DDU/Trust Score fitting...")
+                                try:
+                                    _, train_records_for_uq = evaluate_model(
+                                        model=model_to_eval,
+                                        nodes_to_evaluate=list(train_manager.graph.get_nodes()),
+                                        loss_fn=criterion,
+                                        batch_size=args.batch_size,
+                                        device=device,
+                                        desc="Train (UQ fitting)",
+                                        return_prediction_records=True,
+                                    )
+                                    print(f"[Uncertainty] Collected {len(train_records_for_uq)} train records.")
+                                except Exception as _uq_err:
+                                    print(f"[Uncertainty] Warning: could not collect train records: {_uq_err}")
+                                    train_records_for_uq = None
+
+                            test_neighbor_map = None
+                            if "graph" in uncertainty_methods:
+                                print("[Uncertainty] Building neighbor map from test graph...")
+                                try:
+                                    test_neighbor_map = {}
+                                    for _node in test_nodes_from_graph:
+                                        _nid = getattr(_node, "node_id", "")
+                                        test_neighbor_map[_nid] = [
+                                            getattr(_n, "node_id", "")
+                                            for _n in _node.get_adjacent_nodes()
+                                        ]
+                                    print(f"[Uncertainty] Neighbor map built for {len(test_neighbor_map)} test nodes.")
+                                except Exception as _gq_err:
+                                    print(f"[Uncertainty] Warning: could not build neighbor map: {_gq_err}")
+                                    test_neighbor_map = None
+
                             uncertainty_results = run_selected_uncertainty_methods(
                                 prediction_records=final_test_prediction_records,
                                 selected_methods=uncertainty_methods,
-                                output_dir=config_output_dir
+                                output_dir=config_output_dir,
+                                train_prediction_records=train_records_for_uq,
+                                neighbor_map=test_neighbor_map,
                             )
                             test_metrics['uncertainty_methods'] = uncertainty_methods
                             test_metrics['uncertainty_artifacts'] = {
