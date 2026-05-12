@@ -627,6 +627,7 @@ class GPUQueueManager:
             "num_workers": "--num-workers",
             "val_num_workers": "--val-num-workers",
             "dqn_model": "--dqn-model",
+            "uncertainty_methods": "--uncertainty-methods",
             "graph_type": "--graph-type",
             # GPU override passthrough
             "gpu_override": "--gpu-override",
@@ -1042,4 +1043,4 @@ class GPUQueueManager:
                 "error": str(e),
                 "stopped_runs": stopped_runs,
                 "cleared_runs": cleared_runs
-            } 
+            }

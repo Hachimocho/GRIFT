@@ -97,6 +97,10 @@ def parse_args():
                       choices=['basic', 'residual', 'attention', 'conv_embedding', 'ensemble'],
                       help='Type of DQN model to use for I-value prediction (default: basic)')
 
+    # Test-time uncertainty method selection
+    parser.add_argument('--uncertainty-methods', type=str, default='',
+                        help='Comma-separated uncertainty methods to calculate during final test evaluation (choices planned: msp,ddu,trust_score,graph)')
+
     # Run ID for output organization
     parser.add_argument('--run-id', type=str, default=None,
                         help='Unique run ID for organizing outputs (set by web UI)')

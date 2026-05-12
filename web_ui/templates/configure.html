@@ -70,6 +70,39 @@
                             <small class="form-text text-muted">Select one or more DQN model types to use for I-value prediction</small>
                         </div>
                     </div>
+
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label">Uncertainty Methods</label>
+                            <div class="row" id="uncertaintyMethodCheckboxes">
+                                <div class="col-md-6 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="msp" id="uq_msp">
+                                        <label class="form-check-label" for="uq_msp">MSP</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="ddu" id="uq_ddu">
+                                        <label class="form-check-label" for="uq_ddu">DDU</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="trust_score" id="uq_trust_score">
+                                        <label class="form-check-label" for="uq_trust_score">Trust Score</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" value="graph" id="uq_graph">
+                                        <label class="form-check-label" for="uq_graph">Graph Uncertainty</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <small class="form-text text-muted">Selected methods will be fit or calculated only during final test-time evaluation</small>
+                        </div>
+                    </div>
                     
                     <div class="row">
                         <div class="col-md-12 mb-3">
@@ -821,6 +854,17 @@ $(document).ready(function() {
             $('#modelRollbackOnValDrop').prop('checked', config.model_rollback_on_val_drop);
         }
     }
+
+    const savedConfig = config.config || config;
+    if (savedConfig.uncertainty_methods) {
+        const selectedUncertaintyMethods = String(savedConfig.uncertainty_methods)
+            .split(',')
+            .map(method => method.trim())
+            .filter(Boolean);
+        selectedUncertaintyMethods.forEach(method => {
+            $(`#uncertaintyMethodCheckboxes input[value="${method}"]`).prop('checked', true);
+        });
+    }
     {% endif %}
     
     // Initialize form
@@ -1562,6 +1606,13 @@ function getFormData() {
         selectedDqns.push(cb.value);
     });
     config['dqn-model'] = selectedDqns.join(',');
+
+    // Handle uncertainty method checkboxes
+    const selectedUncertaintyMethods = [];
+    document.querySelectorAll('#uncertaintyMethodCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        selectedUncertaintyMethods.push(cb.value);
+    });
+    config.uncertainty_methods = selectedUncertaintyMethods.join(',');
     
     // Handle I-value traversal mapping based on graph type
     const graphType = config.graph_type || 'clustered';
@@ -1674,6 +1725,19 @@ function updatePreview() {
     if (config.batch_size) {
         preview += `<div class="mb-2"><strong>Batch Size:</strong> ${config.batch_size}</div>`;
     }
+
+    if (config.uncertainty_methods) {
+        const uncertaintyLabels = config.uncertainty_methods.split(',').map(method => {
+            if (method === 'msp') return 'MSP';
+            if (method === 'ddu') return 'DDU';
+            if (method === 'trust_score') return 'Trust Score';
+            if (method === 'graph') return 'Graph Uncertainty';
+            return method;
+        });
+        preview += `<div class="mb-2"><strong>Uncertainty:</strong> ${uncertaintyLabels.join(', ')}</div>`;
+    } else {
+        preview += `<div class="mb-2"><strong>Uncertainty:</strong> Disabled</div>`;
+    }
     
     // Add graph type configuration
     if (config.graph_type) {
@@ -1774,4 +1838,4 @@ function updatePreview() {
     $('#configPreview').html(preview);
 }
 </script>
-{% endblock %} 
+{% endblock %}
