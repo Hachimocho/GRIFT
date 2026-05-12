@@ -219,6 +219,8 @@ The CSV currently includes:
 
 ### Milestone 3: MSP Baseline
 
+Status: done.
+
 Goal:
 
 Implement the simplest uncertainty baseline first.
@@ -228,6 +230,32 @@ Outputs:
 - per-node MSP uncertainty scores
 - summary metrics
 - saved JSON or CSV artifact in the run output directory
+
+What changed:
+
+- Added `evaluation/uncertainty.py` for post-hoc uncertainty scoring helpers.
+- Added MSP scoring from final-test confidence.
+- Added fixed "treat most uncertain samples as fake" summaries for 5%, 10%,
+  and 20% most uncertain samples.
+- Kept non-MSP selected methods as pending, so users can select them now without
+  breaking the run.
+
+Current MSP output files:
+
+```text
+run_outputs/<run_id>/<config_description>/uncertainty/msp_scores.csv
+run_outputs/<run_id>/<config_description>/uncertainty/msp_summary.json
+```
+
+The MSP score is:
+
+```text
+msp_uncertainty = 1 - confidence
+```
+
+The summary focuses on false negatives because, for this project, missed fake
+faces are the main risk. It reports what happens if the most uncertain samples
+are treated as fake.
 
 ### Milestone 4: Results Page Display
 

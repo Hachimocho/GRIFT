@@ -56,6 +56,7 @@ from test_helpers.data_graph_utils import (
 from trainers.IValueVisualizationTracker import IValueVisualizationTracker
 from trainers.BiasHopVisualizer import BiasHopVisualizer
 from trainers.BiasMetricsTracker import BiasMetricsTracker
+from evaluation.uncertainty import run_msp_uncertainty
 
 # Add the project root to the path if needed
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -210,6 +211,25 @@ def save_uncertainty_test_inputs(prediction_records, selected_methods, output_di
     return {
         "summary_file": str(summary_path),
         "prediction_records_file": str(predictions_path),
+    }
+
+
+def run_selected_uncertainty_methods(prediction_records, selected_methods, output_dir):
+    """Run implemented test-time uncertainty scorers."""
+    method_artifacts = {}
+    pending_methods = []
+
+    for method in selected_methods:
+        if method == "msp":
+            method_artifacts[method] = run_msp_uncertainty(prediction_records, output_dir)
+            print("[Uncertainty] MSP scoring complete.")
+        else:
+            pending_methods.append(method)
+            print(f"[Uncertainty] Method '{method}' is selected but not implemented in this milestone.")
+
+    return {
+        "method_artifacts": method_artifacts,
+        "pending_methods": pending_methods,
     }
 
 
@@ -1572,8 +1592,16 @@ def main():
                                 selected_methods=uncertainty_methods,
                                 output_dir=config_output_dir
                             )
+                            uncertainty_results = run_selected_uncertainty_methods(
+                                prediction_records=final_test_prediction_records,
+                                selected_methods=uncertainty_methods,
+                                output_dir=config_output_dir
+                            )
                             test_metrics['uncertainty_methods'] = uncertainty_methods
-                            test_metrics['uncertainty_artifacts'] = uncertainty_artifacts
+                            test_metrics['uncertainty_artifacts'] = {
+                                "inputs": uncertainty_artifacts,
+                                **uncertainty_results,
+                            }
                         else:
                             test_metrics = test_eval_result
                         print("\n--- Final Test Results ---")
