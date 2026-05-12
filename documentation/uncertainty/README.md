@@ -164,6 +164,8 @@ What this does not do yet:
 
 ### Milestone 2: Final Test Data Collection
 
+Status: done.
+
 Goal:
 
 Extend final test evaluation so it can return the values UQ methods need.
@@ -180,6 +182,40 @@ Needed values:
 - optional face embedding from node attributes
 
 This should still be test-time only.
+
+What changed:
+
+- Added parsing for `--uncertainty-methods`.
+- Added optional final-test prediction record collection.
+- Saved one CSV file with per-node final-test predictions.
+- Saved one JSON summary file describing the selected methods and artifact paths.
+
+What this does not do yet:
+
+- It does not calculate MSP, DDU, Trust Score, or graph uncertainty scores.
+- It does not collect train-reference features for Trust Score or DDU yet.
+- It does not change predictions, training, validation, or checkpoint selection.
+
+Current output files:
+
+```text
+run_outputs/<run_id>/<config_description>/uncertainty/summary.json
+run_outputs/<run_id>/<config_description>/uncertainty/final_test_predictions.csv
+```
+
+The CSV currently includes:
+
+- node id
+- true label
+- predicted label
+- model logit
+- probability fake
+- probability real
+- confidence
+- correctness
+- false-negative flag
+- whether the node has a face embedding
+- number of graph edges attached to the node
 
 ### Milestone 3: MSP Baseline
 
@@ -290,4 +326,3 @@ This work should be committed in small milestones.
 The current environment can create local commits, but it may not be able to push
 to GitHub because pushing requires credentials. If push fails, the local commit
 should still be kept and the user can push from their own terminal.
-

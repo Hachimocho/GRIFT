@@ -28,6 +28,7 @@ import sys
 import logging  
 import traceback 
 import json 
+import csv
 import random 
 import torch
 import torch.nn as nn
@@ -133,7 +134,97 @@ def _load_node_data(node, model):
     except Exception as e_load:
         return None
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4): 
+def parse_uncertainty_methods(raw_methods):
+    """Normalize comma-separated uncertainty method names from CLI/config."""
+    if not raw_methods:
+        return []
+
+    aliases = {
+        'trust-score': 'trust_score',
+        'trust score': 'trust_score',
+        'trust': 'trust_score',
+        'graph_uncertainty': 'graph',
+        'graph-uq': 'graph',
+        'graph uq': 'graph',
+    }
+    supported_methods = {'msp', 'ddu', 'trust_score', 'graph'}
+    selected_methods = []
+
+    for method in str(raw_methods).split(','):
+        normalized = method.strip().lower()
+        if not normalized:
+            continue
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in supported_methods:
+            print(f"Warning: Unsupported uncertainty method '{method}' requested. Skipping it.")
+            continue
+        if normalized not in selected_methods:
+            selected_methods.append(normalized)
+
+    return selected_methods
+
+
+def save_uncertainty_test_inputs(prediction_records, selected_methods, output_dir):
+    """Persist final-test prediction records for later uncertainty scoring."""
+    uncertainty_dir = Path(output_dir) / "uncertainty"
+    uncertainty_dir.mkdir(parents=True, exist_ok=True)
+
+    predictions_path = uncertainty_dir / "final_test_predictions.csv"
+    summary_path = uncertainty_dir / "summary.json"
+
+    columns = [
+        "node_id",
+        "label",
+        "prediction",
+        "logit",
+        "probability_fake",
+        "probability_real",
+        "confidence",
+        "correct",
+        "false_negative",
+        "has_face_embedding",
+        "edge_count",
+    ]
+
+    with open(predictions_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for record in prediction_records:
+            writer.writerow({column: record.get(column, "") for column in columns})
+
+    summary = {
+        "status": "input_collection_only",
+        "selected_methods": selected_methods,
+        "num_prediction_records": len(prediction_records),
+        "prediction_records_file": str(predictions_path),
+        "generated_at": datetime.now().isoformat(),
+        "note": "Uncertainty methods are selected, but this milestone only saves final-test inputs. Scoring is added in later milestones.",
+    }
+
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"[Uncertainty] Saved final-test prediction records to {predictions_path}")
+    print(f"[Uncertainty] Saved uncertainty input summary to {summary_path}")
+
+    return {
+        "summary_file": str(summary_path),
+        "prediction_records_file": str(predictions_path),
+    }
+
+
+def evaluate_model(
+    model,
+    nodes_to_evaluate,
+    loss_fn,
+    batch_size,
+    bias_loss_fn=None,
+    device='cuda',
+    desc="Evaluating",
+    attribute_metadata=None,
+    num_workers=4,
+    return_prediction_records=False,
+):
     """
     Run inference over a node list and compute metrics.
 
@@ -161,6 +252,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
     all_predictions = []
     all_labels = []
+    prediction_records = []
     subgroup_stats = defaultdict(lambda: {'count': 0, 'correct': 0})
     categorical_attrs = []
     if attribute_metadata:
@@ -256,10 +348,34 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                  continue # Skip batch on inference error
 
             # --- Store Predictions and Labels for Metrics --- 
-            predictions = torch.sigmoid(outputs).cpu().numpy() > 0.5
-            current_labels = batch_labels_tensor.cpu().numpy().astype(int)
-            all_predictions.extend(predictions.astype(int))
-            all_labels.extend(current_labels)
+            probabilities_fake = torch.sigmoid(outputs).detach().cpu().numpy().reshape(-1)
+            logits = outputs.detach().cpu().numpy().reshape(-1)
+            predictions = (probabilities_fake > 0.5).astype(int)
+            current_labels = batch_labels_tensor.cpu().numpy().astype(int).reshape(-1)
+            all_predictions.extend(predictions.tolist())
+            all_labels.extend(current_labels.tolist())
+
+            if return_prediction_records:
+                for node_idx, node in enumerate(batch_nodes_loaded):
+                    label = int(current_labels[node_idx])
+                    prediction = int(predictions[node_idx])
+                    probability_fake = float(probabilities_fake[node_idx])
+                    probability_real = float(1.0 - probability_fake)
+                    confidence = max(probability_fake, probability_real)
+                    attributes = getattr(node, 'attributes', {}) or {}
+                    prediction_records.append({
+                        "node_id": getattr(node, "node_id", ""),
+                        "label": label,
+                        "prediction": prediction,
+                        "logit": float(logits[node_idx]),
+                        "probability_fake": probability_fake,
+                        "probability_real": probability_real,
+                        "confidence": float(confidence),
+                        "correct": int(prediction == label),
+                        "false_negative": int(label == 1 and prediction == 0),
+                        "has_face_embedding": int("face_embedding" in attributes),
+                        "edge_count": len(getattr(node, "edges", []) or []),
+                    })
             
             # Clear GPU cache periodically to prevent memory buildup
             if i % 10 == 0 and torch.cuda.is_available():
@@ -426,6 +542,8 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
     # --- Return Results --- 
     final_metrics['bias_metrics'] = bias_metrics # Include bias metrics
+    if return_prediction_records:
+        return final_metrics, prediction_records
     return final_metrics
 
 def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trainer=None, **kwargs):
@@ -964,6 +1082,13 @@ def main():
         print(f"  Trainer mode: {traversal_config['trainer_mode']}")
         print(f"  Architectures: {traversal_config['architectures']}")
         print(f"  DQN model type: {args.dqn_model}")
+
+        uncertainty_methods = parse_uncertainty_methods(getattr(args, 'uncertainty_methods', ''))
+        if uncertainty_methods:
+            print(f"  Test-time uncertainty methods: {uncertainty_methods}")
+            print("  Uncertainty will only collect/calculate outputs after the final test checkpoint is loaded.")
+        else:
+            print("  Test-time uncertainty methods: none")
         
         if traversal_config['enable_switching']:
             print(f"  Traversal switching enabled")
@@ -1428,7 +1553,8 @@ def main():
                             print(f"\n⚠️  No checkpoint found at {best_model_checkpoint_path}. Using current model state for final testing...")
                         
                         model_to_eval.eval()
-                        test_metrics = evaluate_model(
+                        collect_uncertainty_inputs = bool(uncertainty_methods)
+                        test_eval_result = evaluate_model(
                             model=model_to_eval,
                             nodes_to_evaluate=test_nodes_from_graph,
                             loss_fn=criterion,
@@ -1436,8 +1562,20 @@ def main():
                             bias_loss_fn=getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None,
                             device=device,
                             desc="Final Test",
-                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None,
+                            return_prediction_records=collect_uncertainty_inputs
                         )
+                        if collect_uncertainty_inputs:
+                            test_metrics, final_test_prediction_records = test_eval_result
+                            uncertainty_artifacts = save_uncertainty_test_inputs(
+                                prediction_records=final_test_prediction_records,
+                                selected_methods=uncertainty_methods,
+                                output_dir=config_output_dir
+                            )
+                            test_metrics['uncertainty_methods'] = uncertainty_methods
+                            test_metrics['uncertainty_artifacts'] = uncertainty_artifacts
+                        else:
+                            test_metrics = test_eval_result
                         print("\n--- Final Test Results ---")
                         print(json.dumps(test_metrics, indent=2))
                         # Log final test bias metrics (only if bias inference is enabled)
