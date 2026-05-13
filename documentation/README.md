@@ -13,6 +13,7 @@ HyperGraph is a research framework for graph-based training of deepfake detectio
 - **[Managers](managers/README.md)** - Graph management classes including reduction and restoration strategies
 - **[Web UI](web_ui/README.md)** - Web-based configuration and results interface
 - **[Features](features/)** - Feature documentation and usage guides
+- **[Uncertainty Quantification](uncertainty/IMPLEMENTATION_SUMMARY.md)** - Test-time uncertainty methods, artifacts, and Web UI integration
 
 ### Key Features
 
@@ -20,6 +21,7 @@ HyperGraph is a research framework for graph-based training of deepfake detectio
 - **I-Value Based Training** - DQN-guided exploration and bias correction
 - **Adaptive Traversal** - Dynamic switching between traversal methods
 - **Model Rollback** - Automatic checkpoint restoration on validation drops
+- **Test-Time Uncertainty Quantification** - MSP, DDU, Trust Score, and graph-based uncertainty artifact generation
 
 ## Quick Links
 
@@ -27,6 +29,7 @@ HyperGraph is a research framework for graph-based training of deepfake detectio
 - [GraphReductionManager API](managers/GraphReductionManager.md)
 - [Web UI Configuration](web_ui/configuration.md)
 - [Web UI Reduction/Restoration](web_ui/graph_reduction_restoration.md)
+- [Uncertainty Quantification Implementation Summary](uncertainty/IMPLEMENTATION_SUMMARY.md)
 
 ## Getting Started
 
