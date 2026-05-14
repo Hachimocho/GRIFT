@@ -1207,7 +1207,7 @@ function generateCacheStatusHtml(data) {
             <br><i class="fas fa-hdd me-1"></i>Size: ${formatFileSize(nodeCache.size)}
         </small>`;
     } else {
-        html += '<div class="alert alert-danger">Node cache not found</div>';
+        html += '<div class="alert alert-warning">Node cache not generated yet</div>';
     }
     
     html += '</div>';
