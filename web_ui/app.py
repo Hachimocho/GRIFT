@@ -207,19 +207,14 @@ def get_cache_status():
         logger.info(f"Node cache directory: {node_cache_dir}")
         logger.info(f"Graph cache directory: {graph_cache_dir}")
         
+        missing_directories = []
         if not os.path.exists(node_cache_dir):
-            logger.warning(f"Node cache directory does not exist: {node_cache_dir}")
-            return jsonify({
-                'error': 'Node cache directory not found',
-                'details': f'Directory not found: {node_cache_dir}'
-            }), 404
-            
+            logger.info(f"Node cache directory does not exist yet: {node_cache_dir}")
+            missing_directories.append(node_cache_dir)
+
         if not os.path.exists(graph_cache_dir):
-            logger.warning(f"Graph cache directory does not exist: {graph_cache_dir}")
-            return jsonify({
-                'error': 'Graph cache directory not found',
-                'details': f'Directory not found: {graph_cache_dir}'
-            }), 404
+            logger.info(f"Graph cache directory does not exist yet: {graph_cache_dir}")
+            missing_directories.append(graph_cache_dir)
         
         # Get basic file information first (fast)
         node_cache_status = get_node_cache_status_basic()
@@ -236,6 +231,7 @@ def get_cache_status():
             'node_cache': node_cache_status,
             'graph_cache': graph_cache_status,
             'existing_graph_caches': existing_graph_caches,
+            'missing_directories': missing_directories,
             'timestamp': time.time()
         }
         
@@ -592,7 +588,12 @@ def configure():
         {'name': 'emotion_neutral', 'type': 'continuous'},
         {'name': 'face_embedding', 'type': 'continuous'}
     ]
-    return render_template('configure.html', attribute_metadata=default_attribute_metadata)
+    return render_template(
+        'configure.html',
+        config=None,
+        config_name=None,
+        attribute_metadata=default_attribute_metadata
+    )
 
 @app.route('/configure/<config_name>')
 def edit_config(config_name):
@@ -1177,8 +1178,10 @@ if __name__ == '__main__':
     os.makedirs('web_ui/static/css', exist_ok=True)
     os.makedirs('web_ui/static/js', exist_ok=True)
     
+    port = int(os.environ.get('PORT', '5000'))
+
     print("Starting HyperGraph Test Configuration Web UI...")
-    print("Access the interface at: http://localhost:5000")
-    print("For SSH tunneling, use: ssh -L 5000:localhost:5000 user@server")
+    print(f"Access the interface at: http://localhost:{port}")
+    print(f"For SSH tunneling, use: ssh -L {port}:localhost:{port} user@server")
     
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    app.run(host='0.0.0.0', port=port, debug=True) 
