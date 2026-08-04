@@ -27,6 +27,8 @@ def parse_args():
                         help='Automatically detect cache size from existing cache files (use with --use-cached)')
     parser.add_argument('--cache-file', type=str, default='node_cache/cached_nodes.pkl', 
                         help='Filename for caching/loading nodes (relative to script execution dir)')
+    parser.add_argument('--data-root', type=str, default=None,
+                        help='Path to the AI-Face dataset root. If omitted, the pipeline will try environment variables and common server paths.')
 
     # Grid search options
     parser.add_argument('--search', action='store_true',
@@ -141,5 +143,31 @@ def parse_args():
     # Performance optimization options
     parser.add_argument('--val-num-workers', type=int, default=4,
                         help='Number of parallel workers for validation image loading (default: 4)')
+
+    # Uncertainty configuration
+    parser.add_argument('--uncertainty-head', type=str, default='none',
+                        choices=['none', 'evidential', 'batchensemble', 'sngp'],
+                        help='Classifier head used to model predictive uncertainty (default: none)')
+    parser.add_argument('--mc-dropout-samples', type=int, default=0,
+                        help='Number of Monte Carlo dropout samples to use during evaluation (default: 0, disabled)')
+    parser.add_argument('--batchensemble-members', type=int, default=4,
+                        help='Number of BatchEnsemble members when --uncertainty-head=batchensemble (default: 4)')
+    parser.add_argument('--sngp-hidden-dim', type=int, default=256,
+                        help='Hidden dimension for the SNGP head (default: 256)')
+    parser.add_argument('--sngp-rff-dim', type=int, default=256,
+                        help='Random Fourier feature dimension for the SNGP head (default: 256)')
+    parser.add_argument('--uncertainty-dropout-rate', type=float, default=0.2,
+                        help='Dropout rate used by uncertainty-aware heads (default: 0.2)')
+    parser.add_argument('--uncertainty-train-frequency', type=int, default=10,
+                        help='Compute uncertainty summaries every N training batches (default: 10)')
+    parser.add_argument('--graph-uncertainty-methods', type=str, default='attribute_distance,embedding_distance,hybrid_distance',
+                        help='Comma-separated graph uncertainty methods to aggregate (default: attribute_distance,embedding_distance,hybrid_distance)')
+    parser.add_argument('--graph-degree-penalty-weight', type=float, default=1.0,
+                        help='Strength of the low-degree uncertainty penalty for graph-based methods (default: 1.0)')
+    parser.add_argument('--build-val-test-edges', action='store_true',
+                        help='Build and cache validation/test graph edges the same way as training (default: enabled)')
+    parser.add_argument('--no-build-val-test-edges', dest='build_val_test_edges', action='store_false',
+                        help='Skip building validation/test edges and keep node-only graphs')
+    parser.set_defaults(build_val_test_edges=True)
 
     return parser.parse_args()

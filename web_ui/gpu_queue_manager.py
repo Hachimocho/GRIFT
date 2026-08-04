@@ -368,6 +368,7 @@ class GPUQueueManager:
                     'run_id': run_id,
                     'config_name': config_name,
                     'status': 'queued',
+                    'config': config,
                     'priority': priority,
                     'queued_time': metadata.get('queued_time'),
                     'created': metadata.get('created', metadata.get('queued_time', '')),
@@ -376,15 +377,16 @@ class GPUQueueManager:
         
         # Add active runs
         for run_id, metadata in self.active_runs.items():
-            runs.append({
-                'run_id': run_id,
-                'config_name': metadata.get('config_name'),
-                'status': 'running',
-                'gpu_id': metadata.get('gpu_id'),
-                'start_time': metadata.get('start_time'),
-                'created': metadata.get('created', metadata.get('start_time', '')),
-                'last_updated': metadata.get('last_updated', metadata.get('start_time', ''))
-            })
+                runs.append({
+                    'run_id': run_id,
+                    'config_name': metadata.get('config_name'),
+                    'status': 'running',
+                    'config': metadata.get('config'),
+                    'gpu_id': metadata.get('gpu_id'),
+                    'start_time': metadata.get('start_time'),
+                    'created': metadata.get('created', metadata.get('start_time', '')),
+                    'last_updated': metadata.get('last_updated', metadata.get('start_time', ''))
+                })
         
         # Add completed/failed runs from files
         for run_file in self.runs_dir.glob("*.json"):
@@ -397,6 +399,7 @@ class GPUQueueManager:
                             'run_id': run_id,
                             'config_name': metadata.get('config_name'),
                             'status': metadata.get('status', 'unknown'),
+                            'config': metadata.get('config'),
                             'start_time': metadata.get('start_time'),
                             'end_time': metadata.get('end_time'),
                             'created': metadata.get('created', metadata.get('start_time', '')),
@@ -614,6 +617,7 @@ class GPUQueueManager:
             "quality_threshold": "--quality-threshold",
             "symmetry_threshold": "--symmetry-threshold",
             "embedding_threshold": "--embedding-threshold",
+            "data_root": "--data-root",
             "cached_nodes": "--use-cached",
             "cache_nodes": "--cache-nodes",
             "cached_nodes_count": "--cached-nodes",
@@ -638,7 +642,17 @@ class GPUQueueManager:
             "train_steps": "--train-steps",
             "val_steps": "--val-steps",
             "train_steps_equal_nodes": "--train-steps-equal-nodes",
-            "val_steps_equal_nodes": "--val-steps-equal-nodes"
+            "val_steps_equal_nodes": "--val-steps-equal-nodes",
+            # Uncertainty configuration
+            "uncertainty_head": "--uncertainty-head",
+            "mc_dropout_samples": "--mc-dropout-samples",
+            "batchensemble_members": "--batchensemble-members",
+            "sngp_hidden_dim": "--sngp-hidden-dim",
+            "sngp_rff_dim": "--sngp-rff-dim",
+            "uncertainty_dropout_rate": "--uncertainty-dropout-rate",
+            "uncertainty_train_frequency": "--uncertainty-train-frequency",
+            "graph_uncertainty_methods": "--graph-uncertainty-methods",
+            "graph_degree_penalty_weight": "--graph-degree-penalty-weight"
         }
         
         # Add arguments based on configuration
@@ -651,17 +665,41 @@ class GPUQueueManager:
                     if value:
                         args.append(arg_name)
                 else:
+                    if config_key == "graph_uncertainty_methods" and isinstance(value, list):
+                        value = ",".join(str(item).strip() for item in value if str(item).strip())
                     args.extend([arg_name, str(value)])
         
         # Special handling for cache flags
         if config.get("cached_nodes", False):
             args.append("--use-cached")
+
+        if config.get("build_val_test_edges", True) is False:
+            args.append("--no-build-val-test-edges")
         
         # Add run ID if provided
         if run_id:
             args.extend(["--run-id", run_id])
         
         return args
+
+    def _parse_final_test_metrics(self, log_content: str) -> Optional[Dict[str, Any]]:
+        """Parse the final JSON metrics block emitted after final testing."""
+        marker = "--- Final Test Results ---"
+        marker_index = log_content.find(marker)
+        if marker_index == -1:
+            return None
+
+        json_payload = log_content[marker_index + len(marker):].lstrip()
+        if not json_payload:
+            return None
+
+        try:
+            decoder = json.JSONDecoder()
+            metrics, _ = decoder.raw_decode(json_payload)
+            return metrics if isinstance(metrics, dict) else None
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Unable to decode final test metrics JSON: {exc}")
+            return None
     
     def _save_run_metadata(self, run_id: str, metadata: Dict[str, Any]) -> bool:
         """Save run metadata to file."""
@@ -753,22 +791,56 @@ class GPUQueueManager:
                     # Initialize results dict if not present
                     if "results" not in metadata:
                         metadata["results"] = {}
+
+                    parsed_metrics = self._parse_final_test_metrics(log_content)
+                    if parsed_metrics:
+                        accuracy = parsed_metrics.get("accuracy")
+                        if accuracy is not None:
+                            accuracy_value = float(accuracy)
+                            metadata["results"]["final_accuracy"] = accuracy_value / 100.0 if accuracy_value > 1.5 else accuracy_value
+                            logger.info(f"Extracted structured accuracy {metadata['results']['final_accuracy']} for run {run_id}")
+
+                        average_loss = parsed_metrics.get("average_loss", parsed_metrics.get("loss"))
+                        if average_loss is not None:
+                            metadata["results"]["loss"] = float(average_loss)
+
+                        uncertainty_summary = parsed_metrics.get("uncertainty_summary")
+                        if isinstance(uncertainty_summary, dict):
+                            metadata["results"]["uncertainty_summary"] = {
+                                name: float(value)
+                                for name, value in uncertainty_summary.items()
+                                if isinstance(value, (int, float))
+                            }
+
+                        bias_metrics = parsed_metrics.get("bias_metrics")
+                        if isinstance(bias_metrics, dict):
+                            metadata["results"]["bias_metrics"] = bias_metrics
+                            if "race_gender_overall_bias" in bias_metrics:
+                                metadata["results"]["race_gender_bias"] = float(bias_metrics["race_gender_overall_bias"])
+                            per_attribute_bias = bias_metrics.get("per_attribute_bias", {})
+                            if isinstance(per_attribute_bias, dict):
+                                if "Ground Truth Gender" in per_attribute_bias:
+                                    metadata["results"]["gender_bias"] = float(per_attribute_bias["Ground Truth Gender"])
+                                if "Ground Truth Race" in per_attribute_bias:
+                                    metadata["results"]["race_bias"] = float(per_attribute_bias["Ground Truth Race"])
+                            if "average_attribute_bias" in bias_metrics:
+                                metadata["results"]["average_attribute_bias"] = float(bias_metrics["average_attribute_bias"])
                     
                     # Look for final test results
                     if "Final Test Results" in log_content:
                         # Extract accuracy from log using regex
                         import re
                         acc_match = re.search(r'Final Test Results: Accuracy=([0-9.]+)%', log_content)
-                        if acc_match:
+                        if acc_match and "final_accuracy" not in metadata["results"]:
                             # Store as decimal (0.8044) instead of percentage (80.44)
                             metadata["results"]["final_accuracy"] = float(acc_match.group(1)) / 100.0
                             logger.info(f"Extracted accuracy {acc_match.group(1)}% (stored as {float(acc_match.group(1)) / 100.0}) for run {run_id}")
-                        else:
+                        elif "final_accuracy" not in metadata["results"]:
                             logger.warning(f"Could not extract accuracy from log for run {run_id}")
                         
                         # Extract loss if available (from Final Test Results)
                         loss_match = re.search(r'Final Test Results: Accuracy=[0-9.]+%, Avg Loss=([0-9.]+)', log_content)
-                        if loss_match:
+                        if loss_match and "loss" not in metadata["results"]:
                             metadata["results"]["loss"] = float(loss_match.group(1))
                             logger.info(f"Extracted loss {loss_match.group(1)} for run {run_id}")
                         
@@ -792,16 +864,21 @@ class GPUQueueManager:
                         
                         # Extract architecture and traversal from configuration section
                         config_match = re.search(r'"architectures":\s*"([^"]+)"', log_content)
-                        if config_match:
+                        if config_match and "architecture" not in metadata["results"]:
                             metadata["results"]["architecture"] = config_match.group(1)
                             logger.info(f"Extracted architecture {config_match.group(1)} for run {run_id}")
                         
                         traversal_match = re.search(r'"traversal_type":\s*"([^"]+)"', log_content)
-                        if traversal_match:
+                        if traversal_match and "traversal_type" not in metadata["results"]:
                             metadata["results"]["traversal_type"] = traversal_match.group(1)
                             logger.info(f"Extracted traversal_type {traversal_match.group(1)} for run {run_id}")
                     else:
                         logger.warning(f"No 'Final Test Results' found in log for run {run_id}")
+
+                    config = metadata.get("config", {})
+                    if isinstance(config, dict):
+                        metadata["results"].setdefault("architecture", config.get("architectures"))
+                        metadata["results"].setdefault("traversal_type", config.get("traversal_type"))
                     
                     # Always try to extract bias metrics, regardless of whether accuracy was found
                     # Extract bias metrics using simple regex patterns
@@ -837,13 +914,13 @@ class GPUQueueManager:
                     
                     if race_gender_match or gender_match or race_match or avg_bias_match:
                         # Extract bias metrics
-                        if race_gender_match:
+                        if race_gender_match and "race_gender_bias" not in metadata["results"]:
                             metadata["results"]["race_gender_bias"] = float(race_gender_match.group(1))
-                        if gender_match:
+                        if gender_match and "gender_bias" not in metadata["results"]:
                             metadata["results"]["gender_bias"] = float(gender_match.group(1))
-                        if race_match:
+                        if race_match and "race_bias" not in metadata["results"]:
                             metadata["results"]["race_bias"] = float(race_match.group(1))
-                        if avg_bias_match:
+                        if avg_bias_match and "average_attribute_bias" not in metadata["results"]:
                             metadata["results"]["average_attribute_bias"] = float(avg_bias_match.group(1))
                         
                         logger.info(f"Extracted bias metrics for run {run_id}: race_gender={metadata['results'].get('race_gender_bias')}, gender={metadata['results'].get('gender_bias')}, race={metadata['results'].get('race_bias')}, avg={metadata['results'].get('average_attribute_bias')}")

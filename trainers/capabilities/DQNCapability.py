@@ -281,6 +281,8 @@ class DQNCapability:
             total = 0
             batch_count = 0
             total_train_bias_loss = 0.0
+            uncertainty_sums = defaultdict(float)
+            uncertainty_counts = defaultdict(int)
 
             # Reset traversal for this epoch
             traversal.reset_pointers()
@@ -313,8 +315,27 @@ class DQNCapability:
                     batch_labels_tensor = torch.tensor(batch_labels_loaded, dtype=torch.float).unsqueeze(1).to(self.device)
                     
                     # Forward pass
-                    outputs = self.trainer.models[0](images)
-                    loss = self.trainer.criterion(outputs, batch_labels_tensor)
+                    model = self.trainer.models[0]
+                    if hasattr(model, 'forward_with_uncertainty'):
+                        compute_uncertainty = (batch_count % max(1, model.uncertainty_train_frequency) == 0)
+                        prediction_bundle = model.forward_with_uncertainty(
+                            images,
+                            nodes=batch_nodes_loaded,
+                            update_precision=True,
+                            use_mc_dropout=compute_uncertainty and getattr(model, 'mc_dropout_samples', 0) > 1,
+                        )
+                        outputs = prediction_bundle.logits
+                        loss = model.compute_loss(
+                            prediction_bundle,
+                            batch_labels_tensor,
+                            base_criterion=self.trainer.criterion,
+                        )
+                        for name, value in model.summarize_uncertainty(prediction_bundle).items():
+                            uncertainty_sums[name] += float(value) * len(batch_nodes_loaded)
+                            uncertainty_counts[name] += len(batch_nodes_loaded)
+                    else:
+                        outputs = model(images)
+                        loss = self.trainer.criterion(outputs, batch_labels_tensor)
                     # Add bias loss if available
                     bias_loss_val = 0.0
                     bias_weight = 0.0
@@ -378,6 +399,11 @@ class DQNCapability:
                 'accuracy': correct / max(1, total),
                 'avg_bias_loss': total_train_bias_loss / batch_count if total_train_bias_loss > 0 else 0.0
             }
+            if uncertainty_sums:
+                metrics['uncertainty_summary'] = {
+                    name: uncertainty_sums[name] / max(1, uncertainty_counts[name])
+                    for name in uncertainty_sums
+                }
             
             return metrics, attribute_distribution
             

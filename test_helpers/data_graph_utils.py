@@ -32,6 +32,79 @@ except ImportError:
 from .logging_utils import NullHandler # Relative import for NullHandler
 
 
+AI_FACE_ENV_VARS = (
+    "AIFACE_DATA_ROOT",
+    "AI_FACE_DATA_ROOT",
+    "DEEPFAKE_DATA_ROOT",
+    "DATA_ROOT",
+)
+
+
+def _normalize_candidate_path(path):
+    if not path:
+        return None
+    return os.path.abspath(os.path.expanduser(str(path)))
+
+
+def _is_valid_ai_face_root(path):
+    normalized_path = _normalize_candidate_path(path)
+    if not normalized_path or not os.path.isdir(normalized_path):
+        return False
+
+    required_markers = ("train.csv", "val.csv", "test.csv", "data.csv")
+    return any(os.path.exists(os.path.join(normalized_path, marker)) for marker in required_markers)
+
+
+def resolve_ai_face_data_root(explicit_path=None):
+    """Resolve the AI-Face dataset root from args, environment, or common server paths."""
+    candidates = []
+
+    if explicit_path:
+        candidates.append(explicit_path)
+
+    for env_var in AI_FACE_ENV_VARS:
+        env_value = os.environ.get(env_var)
+        if env_value:
+            candidates.append(env_value)
+
+    cwd = os.getcwd()
+    candidates.extend([
+        "/home/brg2890/major/datasets/ai-face",
+        os.path.join(os.path.expanduser("~"), "major", "datasets", "ai-face"),
+        os.path.join(os.path.expanduser("~"), "datasets", "ai-face"),
+        os.path.join(os.path.expanduser("~"), "data", "ai-face"),
+        "/datasets/ai-face",
+        "/data/ai-face",
+        os.path.join(cwd, "ai-face"),
+        os.path.join(cwd, "datasets", "ai-face"),
+        os.path.join(cwd, "data", "ai-face"),
+    ])
+
+    checked_paths = []
+    seen = set()
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_candidate_path(candidate)
+        if not normalized_candidate or normalized_candidate in seen:
+            continue
+
+        seen.add(normalized_candidate)
+        checked_paths.append(normalized_candidate)
+
+        if _is_valid_ai_face_root(normalized_candidate):
+            print(f"Resolved AI-Face data root: {normalized_candidate}")
+            return normalized_candidate
+
+    checked_paths_str = "\n".join(f"  - {path}" for path in checked_paths) if checked_paths else "  - <no candidates checked>"
+    raise FileNotFoundError(
+        "Unable to locate a valid AI-Face dataset root.\n"
+        "Set `--data-root /path/to/ai-face` or export one of: "
+        f"{', '.join(AI_FACE_ENV_VARS)}.\n"
+        "Checked paths:\n"
+        f"{checked_paths_str}"
+    )
+
+
 def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['race', 'gender']):
     """Balances a list of nodes to achieve a target number, ensuring representation
     across specified subgroups.
@@ -453,6 +526,21 @@ def plot_subgroup_i_values(history, output_filename):
 
 def load_and_prepare_data_splits(args, data_root):
     """Loads, splits, caches, and balances node data based on arguments."""
+    resolved_data_root = resolve_ai_face_data_root(getattr(args, 'data_root', None) if args is not None else data_root)
+
+    if args is None:
+        class DummyArgs:
+            use_cached = False
+            cache_file = "node_cache/cached_nodes.pkl"
+            cached_nodes = 1000
+            dynamic_cache_detection = False
+            fair_train = False
+            fair_test = False
+            cache_nodes = False
+            data_root = resolved_data_root
+
+        args = DummyArgs()
+
     train_nodes, val_nodes, test_nodes = None, None, None
     train_nodes_full, val_nodes_full, test_nodes_full = None, None, None
 
@@ -460,6 +548,7 @@ def load_and_prepare_data_splits(args, data_root):
 
     # Debug output for cache loading
     print(f"DEBUG: load_and_prepare_data_splits called with:")
+    print(f"  resolved_data_root: {resolved_data_root}")
     print(f"  args.use_cached: {getattr(args, 'use_cached', 'Not set')}")
     print(f"  args.cache_file: {getattr(args, 'cache_file', 'Not set')}")
     print(f"  args.cached_nodes: {getattr(args, 'cached_nodes', 'Not set')}")
@@ -537,7 +626,7 @@ def load_and_prepare_data_splits(args, data_root):
         print("Loading nodes directly from dataset...")
         # Initialize the AIFaceDataset with correct parameters
         # Using imported AIFaceDataset, ImageFileData, AttributeNode directly
-        dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": args.atr_threshold if hasattr(args, 'atr_threshold') else 2})
+        dataset = AIFaceDataset(resolved_data_root, ImageFileData, {}, AttributeNode, {"threshold": args.atr_threshold if hasattr(args, 'atr_threshold') else 2})
         
         print("Loading all nodes from dataset object...")
         all_nodes = dataset.load()
@@ -677,7 +766,7 @@ def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_ca
             cache_info[split_name]['exact_match'] = exact_match_path
 
         # Store expected filename pattern (without hash) for UI display
-        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_edges.csv.gz"
+        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_mode[edge_policy]_edges.csv.gz"
     
     return cache_info
 
@@ -700,11 +789,11 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
         
         # Parse filename to extract configuration; only CSV.gz supported now
         # ai-face_train_clustered_full_nodes_827339_q0.500_s0.300_e0.700_hashHASH_edges.csv.gz
-        pattern = r"(.+)_(train|val|test)_(clustered|nonclustered|clustered_subclustered|nonclustered_subclustered)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_edges\.csv\.gz$"
+        pattern = r"(.+)_(train|val|test)_(clustered|nonclustered|clustered_subclustered|nonclustered_subclustered)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_mode([a-z_]+)_edges\.csv\.gz$"
         match = re.match(pattern, filename)
         
         if match:
-            dataset, split, graph_type, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash = match.groups()
+            dataset, split, graph_type, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash, edge_policy = match.groups()
             
             config_key = f"{dataset}_{split}_{graph_type}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
             
@@ -718,6 +807,7 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
                     'quality_threshold': float(q_thresh),
                     'symmetry_threshold': float(s_thresh),
                     'embedding_threshold': float(e_thresh),
+                    'edge_policy': edge_policy,
                     'cache_files': []
                 }
             

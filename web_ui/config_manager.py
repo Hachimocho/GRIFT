@@ -31,6 +31,19 @@ class ConfigManager:
     
     def _create_default_templates(self):
         """Create default configuration templates."""
+        uncertainty_defaults = {
+            "uncertainty_head": "none",
+            "mc_dropout_samples": 0,
+            "batchensemble_members": 4,
+            "sngp_hidden_dim": 256,
+            "sngp_rff_dim": 256,
+            "uncertainty_dropout_rate": 0.2,
+            "uncertainty_train_frequency": 10,
+            "graph_uncertainty_methods": "attribute_distance,embedding_distance,hybrid_distance",
+            "graph_degree_penalty_weight": 1.0,
+            "build_val_test_edges": True
+        }
+
         templates = {
             "basic_training": {
                 "name": "Basic Training",
@@ -57,7 +70,8 @@ class ConfigManager:
                     "viz_track_nodes": 50,
                     "viz_sample_size": 200,
                     "bias_loss_weight": 0.1,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             },
             "bias_analysis": {
@@ -85,7 +99,8 @@ class ConfigManager:
                     "viz_track_nodes": 50,
                     "viz_sample_size": 200,
                     "bias_loss_weight": 0.2,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             },
             "traversal_switching": {
@@ -116,7 +131,8 @@ class ConfigManager:
                     "viz_sample_size": 300,
                     "bias_loss_weight": 0.1,
                     "num_workers": 0,
-                    "disconnected_switching": False
+                    "disconnected_switching": False,
+                    **uncertainty_defaults
                 }
             },
             "comparison_study": {
@@ -143,7 +159,8 @@ class ConfigManager:
                     "viz_track_nodes": 100,
                     "viz_sample_size": 500,
                     "bias_loss_weight": 0.15,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             }
         }

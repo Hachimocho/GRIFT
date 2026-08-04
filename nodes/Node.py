@@ -39,6 +39,12 @@ class Node():
                 if node != self:
                     adjacent_nodes.append(node)
         return adjacent_nodes
+
+    def get_neighbors(self):
+        return self.get_adjacent_nodes()
+
+    def get_degree(self):
+        return len(self.get_adjacent_nodes())
         
     def __eq__(self, other):
         if isinstance(other, Node):

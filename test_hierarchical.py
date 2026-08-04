@@ -38,7 +38,7 @@ from test_helpers.args_utils import parse_args
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
-    load_and_prepare_data_splits, check_graph_cache_compatibility
+    load_and_prepare_data_splits, check_graph_cache_compatibility, resolve_ai_face_data_root
 )
 
 # Import visualization modules
@@ -136,6 +136,8 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
     all_predictions = []
     all_labels = []
+    uncertainty_sums = defaultdict(float)
+    uncertainty_counts = defaultdict(int)
     subgroup_stats = defaultdict(lambda: {'count': 0, 'correct': 0})
     categorical_attrs = []
     if attribute_metadata:
@@ -188,30 +190,52 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
             # Perform inference
             try:                
-                outputs = model(batch_images_tensor)
-                
-                # Safety check: Handle unexpected output types
-                if isinstance(outputs, tuple):
-                    print(f"WARNING: Model returned tuple instead of tensor: {type(outputs)}, length: {len(outputs)}")
-                    # Try to extract the first element if it's a tensor
-                    if len(outputs) > 0 and hasattr(outputs[0], 'size'):
-                        print(f"Using first element of tuple: {outputs[0].shape}")
-                        outputs = outputs[0]
-                    else:
-                        print(f"ERROR: Cannot extract valid tensor from tuple: {[type(x) for x in outputs]}")
+                prediction_bundle = None
+                if hasattr(model, 'forward_with_uncertainty'):
+                    prediction_bundle = model.forward_with_uncertainty(
+                        batch_images_tensor,
+                        nodes=batch_nodes_loaded,
+                        use_mc_dropout=getattr(model, 'mc_dropout_samples', 0) > 1,
+                    )
+                    outputs = prediction_bundle.logits
+                    probabilities = prediction_bundle.probabilities
+                    preds = prediction_bundle.predictions
+                    uncertainty_summary = getattr(model, 'summarize_uncertainty', lambda _: {})(prediction_bundle)
+                    for name, value in uncertainty_summary.items():
+                        uncertainty_sums[name] += float(value) * len(batch_nodes_loaded)
+                        uncertainty_counts[name] += len(batch_nodes_loaded)
+                else:
+                    outputs = model(batch_images_tensor)
+
+                    # Safety check: Handle unexpected output types
+                    if isinstance(outputs, tuple):
+                        print(f"WARNING: Model returned tuple instead of tensor: {type(outputs)}, length: {len(outputs)}")
+                        if len(outputs) > 0 and hasattr(outputs[0], 'size'):
+                            print(f"Using first element of tuple: {outputs[0].shape}")
+                            outputs = outputs[0]
+                        else:
+                            print(f"ERROR: Cannot extract valid tensor from tuple: {[type(x) for x in outputs]}")
+                            continue
+                    elif not hasattr(outputs, 'size'):
+                        print(f"WARNING: Model output has no .size() method: {type(outputs)}")
                         continue
-                elif not hasattr(outputs, 'size'):
-                    print(f"WARNING: Model output has no .size() method: {type(outputs)}")
-                    continue
-                    
-                preds = (torch.sigmoid(outputs) > 0.5).float()
+
+                    probabilities = torch.sigmoid(outputs)
+                    preds = (probabilities > 0.5).float()
 
                 correct = (preds == batch_labels_tensor).sum().item()
                 correct_predictions += correct
                 current_batch_size = batch_labels_tensor.size(0)
                 total_nodes_processed += current_batch_size
 
-                loss = loss_fn(outputs, batch_labels_tensor)
+                if hasattr(model, 'compute_loss'):
+                    loss = model.compute_loss(
+                        prediction_bundle if prediction_bundle is not None else outputs,
+                        batch_labels_tensor,
+                        base_criterion=loss_fn,
+                    )
+                else:
+                    loss = loss_fn(outputs, batch_labels_tensor)
                 total_loss += loss.item() * current_batch_size # Accumulate total loss scaled by batch size
 
                 if bias_loss_fn and batch_nodes_loaded: # Use successfully loaded nodes
@@ -231,7 +255,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                  continue # Skip batch on inference error
 
             # --- Store Predictions and Labels for Metrics --- 
-            predictions = torch.sigmoid(outputs).cpu().numpy() > 0.5
+            predictions = probabilities.cpu().numpy() > 0.5
             current_labels = batch_labels_tensor.cpu().numpy().astype(int)
             all_predictions.extend(predictions.astype(int))
             all_labels.extend(current_labels)
@@ -299,6 +323,12 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
              final_metrics['average_bias_loss'] = total_bias_loss / total_nodes_processed # Average bias loss per successfully processed sample
          else:
              final_metrics['average_bias_loss'] = float('nan')
+
+    if uncertainty_sums:
+        final_metrics['uncertainty_summary'] = {
+            name: uncertainty_sums[name] / max(1, uncertainty_counts[name])
+            for name in uncertainty_sums
+        }
 
     final_metrics['total_nodes_in_dataset'] = nodes_in_dataset
     final_metrics['total_nodes_skipped_loading'] = skipped_loading
@@ -496,10 +526,28 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
         return create_dqn_model(dqn_model_type, feature_dim, device, **kwargs)
     else:
         # Create CNN model as before
-        return CNNModel(save_path, arch, 1e-4, True, device)
+        return CNNModel(
+            save_path,
+            arch,
+            1e-4,
+            True,
+            device,
+            uncertainty_head=kwargs.get('uncertainty_head', 'none'),
+            mc_dropout_samples=kwargs.get('mc_dropout_samples', 0),
+            batchensemble_members=kwargs.get('batchensemble_members', 4),
+            sngp_hidden_dim=kwargs.get('sngp_hidden_dim', 256),
+            sngp_rff_dim=kwargs.get('sngp_rff_dim', 256),
+            uncertainty_dropout_rate=kwargs.get('uncertainty_dropout_rate', 0.2),
+            graph_uncertainty_methods=kwargs.get('graph_uncertainty_methods', []),
+            graph_degree_penalty_weight=kwargs.get('graph_degree_penalty_weight', 1.0),
+            uncertainty_train_frequency=kwargs.get('uncertainty_train_frequency', 10),
+        )
 
 def main():
     args = parse_args() # Parse args first
+    graph_uncertainty_methods = [
+        method.strip() for method in getattr(args, 'graph_uncertainty_methods', '').split(',') if method.strip()
+    ]
     # Enable faulthandler for hard crashes
     try:
         faulthandler.enable()
@@ -574,7 +622,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
     logfile = f"hierarchical_test_{timestamp}.log"   
-    data_root = "/home/brg2890/major/datasets/ai-face"
+    data_root = resolve_ai_face_data_root(args.data_root)
 
     # Set up attribute metadata for I-value traversal
     attribute_metadata = [
@@ -659,6 +707,8 @@ def main():
             }
         ]
     
+    pipeline_start_time = time.time()
+
     # Call the new helper function to load and prepare data splits
     train_nodes, val_nodes, test_nodes, \
     train_nodes_full, val_nodes_full, test_nodes_full, \
@@ -701,8 +751,9 @@ def main():
         import hashlib
         node_ids = sorted([node.node_id for node in nodes_to_use])
         node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
+        edge_cache_mode = "full_edges" if (split_name == 'train' or getattr(args, 'build_val_test_edges', True)) else "node_only"
         
-        cache_base = f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}"
+        cache_base = f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_mode{edge_cache_mode}"
         pickle_cache_filename = os.path.join(
             graph_cache_dir,
             f"{cache_base}_graph.pkl"
@@ -792,7 +843,11 @@ def main():
                 embedding_threshold=args.embedding_threshold,
                 silent_mode=True  # Disable internal progress bars and logging during grid search
             )
-            graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name) if split_name == 'train' else HyperGraph(nodes_to_use)
+            should_build_edges = split_name == 'train' or getattr(args, 'build_val_test_edges', True)
+            if should_build_edges:
+                graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name)
+            else:
+                graph_build_result = HyperGraph(nodes_to_use)
             
             # Handle potential tuple return from build_graph_standard
             if isinstance(graph_build_result, tuple):
@@ -837,7 +892,7 @@ def main():
         print("\nError: One or more graphs could not be loaded or built. Exiting.")
         sys.exit(1)
         
-    graph_construction_time = time.time() - node_loading_time
+    graph_construction_time = time.time() - pipeline_start_time
 
     # Performance Reporting & Validation
     print("\nPerformance:")
@@ -899,6 +954,9 @@ def main():
         print(f"  Trainer mode: {traversal_config['trainer_mode']}")
         print(f"  Architectures: {traversal_config['architectures']}")
         print(f"  DQN model type: {args.dqn_model}")
+        print(f"  Uncertainty head: {args.uncertainty_head}")
+        print(f"  MC Dropout samples: {args.mc_dropout_samples}")
+        print(f"  Graph uncertainty methods: {graph_uncertainty_methods}")
         
         if traversal_config['enable_switching']:
             print(f"  Traversal switching enabled")
@@ -993,7 +1051,16 @@ def main():
                     device,
                     dqn_model_type=args.dqn_model,  # Pass DQN model type from args
                     feature_dim=128,  # Default feature dimension for DQN models
-                    embedding_dim=512  # Default embedding dimension
+                    embedding_dim=512,  # Default embedding dimension
+                    uncertainty_head=args.uncertainty_head,
+                    mc_dropout_samples=args.mc_dropout_samples,
+                    batchensemble_members=args.batchensemble_members,
+                    sngp_hidden_dim=args.sngp_hidden_dim,
+                    sngp_rff_dim=args.sngp_rff_dim,
+                    uncertainty_dropout_rate=args.uncertainty_dropout_rate,
+                    graph_uncertainty_methods=graph_uncertainty_methods,
+                    graph_degree_penalty_weight=args.graph_degree_penalty_weight,
+                    uncertainty_train_frequency=args.uncertainty_train_frequency,
                 )
                 
                 # Create trainer (always use AdaptiveTrainer)
@@ -1141,7 +1208,16 @@ def main():
                                 device,
                                 dqn_model_type=args.dqn_model,  # Pass DQN model type from args
                                 feature_dim=128,  # Default feature dimension for DQN models
-                                embedding_dim=512  # Default embedding dimension
+                                embedding_dim=512,  # Default embedding dimension
+                                uncertainty_head=args.uncertainty_head,
+                                mc_dropout_samples=args.mc_dropout_samples,
+                                batchensemble_members=args.batchensemble_members,
+                                sngp_hidden_dim=args.sngp_hidden_dim,
+                                sngp_rff_dim=args.sngp_rff_dim,
+                                uncertainty_dropout_rate=args.uncertainty_dropout_rate,
+                                graph_uncertainty_methods=graph_uncertainty_methods,
+                                graph_degree_penalty_weight=args.graph_degree_penalty_weight,
+                                uncertainty_train_frequency=args.uncertainty_train_frequency,
                             )
                             trainer.models[0] = model
                             print(f"[Disconnected Switching] Main detection model has been reset.")
@@ -1156,10 +1232,17 @@ def main():
                     train_start_time = time.time()
                     train_distribution = None
                     
-                    train_metrics = trainer.train()
+                    train_result = trainer.train()
+                    if isinstance(train_result, tuple) and len(train_result) == 2:
+                        train_metrics, train_distribution = train_result
+                    else:
+                        train_metrics = train_result
+                        train_distribution = None
                     # Get current traversal info
                     current_traversal_info = trainer.get_current_traversal_info()
                     print(f"  Current traversal: {current_traversal_info}")
+                    if train_metrics and isinstance(train_metrics, dict):
+                        print(f"  Training metrics: {json.dumps(train_metrics, indent=2)}")
                     
                     # Check for reduction during training (if interval is every_n_steps)
                     if reduction_manager and reduction_manager.reduction_interval == 'every_n_steps':

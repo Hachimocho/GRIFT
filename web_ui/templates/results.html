@@ -109,9 +109,9 @@
                                         <div class="form-check">
                                             <input class="form-check-input" type="checkbox" value="{{ run.run_id }}" id="compare_{{ run.run_id }}">
                                             <label class="form-check-label text-truncate" for="compare_{{ run.run_id }}" 
-                                                   title="{{ run.config_name }} - {% if run.accuracy %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}"
+                                                   title="{{ run.config_name }} - {% if run.accuracy is defined and run.accuracy is not none %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}"
                                                    style="max-width: 100%; display: block;">
-                                                {{ run.config_name }} - {% if run.accuracy %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}
+                                                {{ run.config_name }} - {% if run.accuracy is defined and run.accuracy is not none %}{{ "%.1f%%"|format(run.accuracy * 100) }}{% else %}N/A{% endif %}
                                             </label>
                                         </div>
                                     </div>
@@ -157,6 +157,8 @@
                                     <th>Reduction</th>
                                     <th>Restoration</th>
                                     <th>Status</th>
+                                    <th>Uncertainty</th>
+                                    <th>Summary</th>
                                     <th>Accuracy</th>
                                     <th>Race-Gender Bias</th>
                                     <th>Gender Bias</th>
@@ -220,50 +222,69 @@
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.accuracy %}
+                                        <span class="badge {% if run.uncertainty_head and run.uncertainty_head != 'none' %}bg-primary{% else %}bg-light text-dark{% endif %}">
+                                            {{ run.uncertainty_head or 'none' }}
+                                        </span>
+                                        {% if run.mc_dropout_samples and run.mc_dropout_samples > 0 %}
+                                        <div><small class="text-muted">MC {{ run.mc_dropout_samples }}x</small></div>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.uncertainty_preview_items %}
+                                            {% for item in run.uncertainty_preview_items %}
+                                            <div><small><strong>{{ item.label }}:</strong> {{ "%.4f"|format(item.value) }}</small></div>
+                                            {% endfor %}
+                                        {% elif run.uncertainty_head and run.uncertainty_head != 'none' %}
+                                        <small class="text-muted">No summary logged</small>
+                                        {% else %}
+                                        <span class="text-muted">None</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if run.accuracy is defined and run.accuracy is not none %}
                                         <strong>{{ "%.2f%%"|format(run.accuracy * 100) }}</strong>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.results and run.results.race_gender_bias %}
-                                        <span class="badge bg-{% if run.results.race_gender_bias < 0.1 %}success{% elif run.results.race_gender_bias < 0.2 %}warning{% else %}danger{% endif %}">
-                                            {{ "%.2f%%"|format(run.results.race_gender_bias * 100) }}
+                                        {% if run.race_gender_bias is defined and run.race_gender_bias is not none %}
+                                        <span class="badge bg-{% if run.race_gender_bias < 0.1 %}success{% elif run.race_gender_bias < 0.2 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.race_gender_bias * 100) }}
                                         </span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.results and run.results.gender_bias %}
-                                        <span class="badge bg-{% if run.results.gender_bias < 0.05 %}success{% elif run.results.gender_bias < 0.1 %}warning{% else %}danger{% endif %}">
-                                            {{ "%.2f%%"|format(run.results.gender_bias * 100) }}
+                                        {% if run.gender_bias is defined and run.gender_bias is not none %}
+                                        <span class="badge bg-{% if run.gender_bias < 0.05 %}success{% elif run.gender_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.gender_bias * 100) }}
                                         </span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.results and run.results.race_bias %}
-                                        <span class="badge bg-{% if run.results.race_bias < 0.05 %}success{% elif run.results.race_bias < 0.1 %}warning{% else %}danger{% endif %}">
-                                            {{ "%.2f%%"|format(run.results.race_bias * 100) }}
+                                        {% if run.race_bias is defined and run.race_bias is not none %}
+                                        <span class="badge bg-{% if run.race_bias < 0.05 %}success{% elif run.race_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.race_bias * 100) }}
                                         </span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.results and run.results.average_attribute_bias %}
-                                        <span class="badge bg-{% if run.results.average_attribute_bias < 0.05 %}success{% elif run.results.average_attribute_bias < 0.1 %}warning{% else %}danger{% endif %}">
-                                            {{ "%.2f%%"|format(run.results.average_attribute_bias * 100) }}
+                                        {% if run.average_attribute_bias is defined and run.average_attribute_bias is not none %}
+                                        <span class="badge bg-{% if run.average_attribute_bias < 0.05 %}success{% elif run.average_attribute_bias < 0.1 %}warning{% else %}danger{% endif %}">
+                                            {{ "%.2f%%"|format(run.average_attribute_bias * 100) }}
                                         </span>
                                         {% else %}
                                         <span class="text-muted">N/A</span>
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if run.loss %}
+                                        {% if run.loss is defined and run.loss is not none %}
                                         {{ "%.4f"|format(run.loss) }}
                                         {% else %}
                                         <span class="text-muted">N/A</span>
@@ -368,6 +389,17 @@ function clearComparison() {
     document.getElementById('compareBtn').disabled = true;
 }
 
+function formatOptionalNumber(value, digits = 4, suffix = '') {
+    if (value === null || value === undefined || value === '') {
+        return 'N/A';
+    }
+    const numericValue = Number(value);
+    if (Number.isNaN(numericValue)) {
+        return 'N/A';
+    }
+    return numericValue.toFixed(digits) + suffix;
+}
+
 function compareSelectedRuns() {
     const selectedRuns = [];
     const checkboxes = document.querySelectorAll('#comparisonCheckboxes input[type="checkbox"]:checked');
@@ -419,6 +451,10 @@ function compareSelectedRuns() {
 }
 
 function displayComparisonResults(data) {
+    const uncertaintyMetricNames = Array.from(new Set(
+        data.runs.flatMap(run => Object.keys(run.uncertainty_summary || {}))
+    )).sort();
+
     // Create comparison table with better handling of long names
     let html = `
         <div class="table-responsive">
@@ -443,11 +479,11 @@ function displayComparisonResults(data) {
                 <tbody>
                     <tr>
                         <td><strong>Accuracy</strong></td>
-                        ${data.runs.map(run => `<td>${run.accuracy ? (run.accuracy * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.accuracy !== null && run.accuracy !== undefined ? (run.accuracy * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Loss</strong></td>
-                        ${data.runs.map(run => `<td>${run.loss ? run.loss.toFixed(4) : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${formatOptionalNumber(run.loss, 4)}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Architecture</strong></td>
@@ -456,6 +492,10 @@ function displayComparisonResults(data) {
                     <tr>
                         <td><strong>Traversal</strong></td>
                         ${data.runs.map(run => `<td>${run.traversal_type || 'N/A'}</td>`).join('')}
+                    </tr>
+                    <tr>
+                        <td><strong>Uncertainty Head</strong></td>
+                        ${data.runs.map(run => `<td>${run.uncertainty_head || 'none'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Reduction Strategy</strong></td>
@@ -467,20 +507,26 @@ function displayComparisonResults(data) {
                     </tr>
                     <tr>
                         <td><strong>Race-Gender Bias</strong></td>
-                        ${data.runs.map(run => `<td>${run.race_gender_bias ? (run.race_gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.race_gender_bias !== null && run.race_gender_bias !== undefined ? (run.race_gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Gender Bias</strong></td>
-                        ${data.runs.map(run => `<td>${run.gender_bias ? (run.gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.gender_bias !== null && run.gender_bias !== undefined ? (run.gender_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Race Bias</strong></td>
-                        ${data.runs.map(run => `<td>${run.race_bias ? (run.race_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.race_bias !== null && run.race_bias !== undefined ? (run.race_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
                     <tr>
                         <td><strong>Avg Attribute Bias</strong></td>
-                        ${data.runs.map(run => `<td>${run.average_attribute_bias ? (run.average_attribute_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
+                        ${data.runs.map(run => `<td>${run.average_attribute_bias !== null && run.average_attribute_bias !== undefined ? (run.average_attribute_bias * 100).toFixed(2) + '%' : 'N/A'}</td>`).join('')}
                     </tr>
+                    ${uncertaintyMetricNames.map(metricName => `
+                    <tr>
+                        <td><strong>${metricName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</strong></td>
+                        ${data.runs.map(run => `<td>${formatOptionalNumber(run.uncertainty_summary ? run.uncertainty_summary[metricName] : null, 4)}</td>`).join('')}
+                    </tr>
+                    `).join('')}
                 </tbody>
             </table>
         </div>

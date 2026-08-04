@@ -38,6 +38,8 @@ class BasicTrainingCapability:
             correct = 0
             total = 0
             label_counts = {0: 0, 1: 0}
+            uncertainty_sums = defaultdict(float)
+            uncertainty_counts = defaultdict(int)
             
             # Reset traversal state before each epoch
             if hasattr(traversal, 't'):
@@ -127,8 +129,27 @@ class BasicTrainingCapability:
                             
                             # Forward pass with mixed precision
                             with torch.cuda.amp.autocast():
-                                chunk_outputs = self.trainer.models[0](chunk_tensor)
-                                loss = self.trainer.criterion(chunk_outputs, chunk_labels_tensor)
+                                model = self.trainer.models[0]
+                                if hasattr(model, 'forward_with_uncertainty'):
+                                    compute_uncertainty = (((i // self.batch_size) + (j // chunk_size)) % max(1, model.uncertainty_train_frequency) == 0)
+                                    prediction_bundle = model.forward_with_uncertainty(
+                                        chunk_tensor,
+                                        nodes=chunk_nodes,
+                                        update_precision=True,
+                                        use_mc_dropout=compute_uncertainty and getattr(model, 'mc_dropout_samples', 0) > 1,
+                                    )
+                                    chunk_outputs = prediction_bundle.logits
+                                    loss = model.compute_loss(
+                                        prediction_bundle,
+                                        chunk_labels_tensor,
+                                        base_criterion=self.trainer.criterion,
+                                    )
+                                    for name, value in model.summarize_uncertainty(prediction_bundle).items():
+                                        uncertainty_sums[name] += float(value) * len(chunk_nodes)
+                                        uncertainty_counts[name] += len(chunk_nodes)
+                                else:
+                                    chunk_outputs = model(chunk_tensor)
+                                    loss = self.trainer.criterion(chunk_outputs, chunk_labels_tensor)
                                 # Calculate bias loss if available
                                 bias_loss_val = 0.0
                                 bias_loss_fn = getattr(self.trainer.capabilities, 'get_bias_loss', None)
@@ -197,6 +218,11 @@ class BasicTrainingCapability:
                 'train_loss': epoch_loss,
                 'train_acc': epoch_acc
             }
+            if uncertainty_sums:
+                metrics['uncertainty_summary'] = {
+                    name: uncertainty_sums[name] / max(1, uncertainty_counts[name])
+                    for name in uncertainty_sums
+                }
             
             return metrics, attribute_distribution
             

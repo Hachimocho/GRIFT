@@ -621,11 +621,11 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         print("Building train graph with full edge construction...")
         train_graph = self._build_graph(train_nodes, "train")
         
-        print("Building val graph with no edges (for faster processing)...")
-        val_graph = HyperGraph(val_nodes)  # Create graph with nodes only, no edges
+        print("Building val graph with full edge construction...")
+        val_graph = self._build_graph(val_nodes, "val")
         
-        print("Building test graph with no edges (for faster processing)...")
-        test_graph = HyperGraph(test_nodes)  # Create graph with nodes only, no edges
+        print("Building test graph with full edge construction...")
+        test_graph = self._build_graph(test_nodes, "test")
         
         return train_graph, val_graph, test_graph
     
