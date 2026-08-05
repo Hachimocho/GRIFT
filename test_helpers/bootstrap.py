@@ -70,6 +70,15 @@ def ensure_deterministic_env(argv=None):
     if os.environ.get(REEXEC_SENTINEL) == "1":
         return True
 
+    # Never replace a host process. execv discards the current program, so calling
+    # this from inside a test runner or server would kill it mid-flight -- which is
+    # exactly what happened when the call was made at module import time instead of
+    # under an `if __name__ == "__main__"` guard. Callers that are not the entry
+    # point should pin the environment before launching instead.
+    for host in ("pytest", "_pytest", "unittest", "IPython"):
+        if host in sys.modules:
+            return True
+
     argv = list(sys.argv if argv is None else argv)
     seed = _scan_argv_for_seed(argv)
     strict = _scan_argv_for_strict(argv)

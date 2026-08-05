@@ -5,6 +5,10 @@ from tqdm.auto import tqdm
 from collections import defaultdict
 import random
 
+from trainers.capabilities.uncertainty_logging import (
+    uncertainty_summary_for_logging as _uncertainty_summary_for_logging,
+)
+
 
 class BasicTrainingCapability:
     """Basic training functionality for simple traversals."""
@@ -131,12 +135,22 @@ class BasicTrainingCapability:
                             with torch.cuda.amp.autocast():
                                 model = self.trainer.models[0]
                                 if hasattr(model, 'forward_with_uncertainty'):
-                                    compute_uncertainty = (((i // self.batch_size) + (j // chunk_size)) % max(1, model.uncertainty_train_frequency) == 0)
+                                    step_index = (i // self.batch_size) + (j // chunk_size)
+                                    summarize_now = (
+                                        step_index % max(1, model.uncertainty_train_frequency) == 0
+                                    )
+                                    # The loss always uses a single deterministic pass.
+                                    # MC dropout used to run inside the loss path every
+                                    # Nth batch, which made the optimization objective
+                                    # change periodically -- a non-stationary loss. MC
+                                    # statistics are now gathered separately below, under
+                                    # no_grad, purely for logging.
                                     prediction_bundle = model.forward_with_uncertainty(
                                         chunk_tensor,
                                         nodes=chunk_nodes,
                                         update_precision=True,
-                                        use_mc_dropout=compute_uncertainty and getattr(model, 'mc_dropout_samples', 0) > 1,
+                                        use_mc_dropout=False,
+                                        compute_variance=summarize_now,
                                     )
                                     chunk_outputs = prediction_bundle.logits
                                     loss = model.compute_loss(
@@ -144,9 +158,12 @@ class BasicTrainingCapability:
                                         chunk_labels_tensor,
                                         base_criterion=self.trainer.criterion,
                                     )
-                                    for name, value in model.summarize_uncertainty(prediction_bundle).items():
-                                        uncertainty_sums[name] += float(value) * len(chunk_nodes)
-                                        uncertainty_counts[name] += len(chunk_nodes)
+                                    if summarize_now:
+                                        for name, value in _uncertainty_summary_for_logging(
+                                            model, prediction_bundle, chunk_tensor, chunk_nodes
+                                        ).items():
+                                            uncertainty_sums[name] += float(value) * len(chunk_nodes)
+                                            uncertainty_counts[name] += len(chunk_nodes)
                                 else:
                                     chunk_outputs = model(chunk_tensor)
                                     loss = self.trainer.criterion(chunk_outputs, chunk_labels_tensor)

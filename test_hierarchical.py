@@ -10,6 +10,23 @@ Updated to support the new AdaptiveTrainer architecture with:
 - Single-traversal mode: Use one traversal method throughout training
 - Switch-traversal mode: Switch between different traversal methods during training
 """
+# Reproducibility bootstrap MUST run before torch/numpy are imported.
+# PYTHONHASHSEED is consumed at interpreter startup and CUBLAS_WORKSPACE_CONFIG when
+# the cuBLAS handle is created, so neither can be set usefully once those libraries
+# are loaded. This re-execs the process once with the right environment if needed,
+# which works regardless of launcher -- run_reproducible.sh cannot guarantee it
+# because web_ui/gpu_queue_manager.py invokes this script directly.
+#
+# Guarded on __name__ == "__main__": re-execing replaces the *whole process*, so
+# doing it on import would kill any host that merely imports this module (pytest,
+# the web UI, tooling) rather than running it as a script.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+if __name__ == "__main__":
+    from test_helpers.bootstrap import ensure_deterministic_env as _ensure_deterministic_env
+    _ensure_deterministic_env()
+
 import time
 import os
 import cv2
@@ -33,7 +50,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import utilities from the new helper module
-from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
+from test_helpers.logging_utils import NullHandler, capture_output, log_exception
+from test_helpers.determinism import (
+    assert_strict_invariants, configure_determinism, is_strict, rng_for, run_fingerprint,
+)
 from test_helpers.args_utils import parse_args
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
@@ -79,6 +99,7 @@ from traversals.IValueTraversalClusterHop import (
 )
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
+from models.uncertainty import GraphDistanceUncertainty
 from edges.Edge import Edge
 import copy
 import torch
@@ -127,6 +148,19 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
 
+    # `_load_node_data` calls model.transform() from worker threads, and in train mode
+    # that path applies RandomHorizontalFlip / RandomRotation / ColorJitter /
+    # RandomAffine / RandomErasing -- all drawing on the global torch RNG from several
+    # threads at once. That would both randomize evaluation and make it
+    # irreproducible, so refuse to evaluate a model left in train mode.
+    current_mode = getattr(model, 'current_mode', 'eval')
+    if current_mode != 'eval':
+        raise RuntimeError(
+            f"evaluate_model requires the model in eval mode, found current_mode="
+            f"{current_mode!r}. Train-mode transforms are stochastic and are applied "
+            f"from worker threads, which would randomize evaluation."
+        )
+
     total_loss = 0.0
     total_bias_loss = 0.0
     correct_predictions = 0
@@ -162,14 +196,17 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             batch_labels_loaded = []
             batch_nodes_loaded = [] # Keep track of nodes successfully loaded in batch
 
-            # Load data for the current batch using parallel processing
-            # Use ThreadPoolExecutor for I/O-bound image loading
+            # Load data for the current batch in parallel, but collect the results in
+            # *submission* order rather than completion order. `as_completed` made the
+            # within-batch row order vary run to run, which changes the floating-point
+            # reduction order in the loss and metrics and so produces small,
+            # irreproducible drift. Collecting by submission keeps the 4-8x I/O
+            # parallelism that this executor exists for while making the batch
+            # deterministic -- and it is what lets the benchmark assign stable
+            # per-sample record ids.
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                # Submit all node loading tasks
-                future_to_node = {executor.submit(_load_node_data, node, model): node for node in batch_nodes}
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_node):
+                futures = [executor.submit(_load_node_data, node, model) for node in batch_nodes]
+                for future in futures:
                     result = future.result()
                     if result is not None:
                         img_tensor, label_value, node = result
@@ -568,6 +605,8 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
             graph_uncertainty_methods=kwargs.get('graph_uncertainty_methods', []),
             graph_degree_penalty_weight=kwargs.get('graph_degree_penalty_weight', 1.0),
             uncertainty_train_frequency=kwargs.get('uncertainty_train_frequency', 10),
+            sngp_precision_policy=kwargs.get('sngp_precision_policy', 'per-epoch'),
+            finetune=kwargs.get('finetune', False),
         )
 
 def main():
@@ -602,16 +641,29 @@ def main():
     except Exception as e:
         print(f"Warning: Could not query system resources: {e}")
 
-    # --- Check for PYTHONHASHSEED --- 
-    if 'PYTHONHASHSEED' not in os.environ:
-        print("\nWarning: PYTHONHASHSEED environment variable not set.")
-        print("         For full reproducibility, set it before running the script, e.g.:")
-        print("         export PYTHONHASHSEED=42")
-        print("         Or prefix the command: PYTHONHASHSEED=42 python ...\n")
-    else:
-        print(f"Using PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
-
-    set_seed(args.seed) # Use args.seed
+    # --- Reproducibility -------------------------------------------------- #
+    # `ensure_deterministic_env()` at import time has already re-exec'd this
+    # process if PYTHONHASHSEED or CUBLAS_WORKSPACE_CONFIG needed setting, so by
+    # here the environment is correct regardless of how the run was launched
+    # (shell, run_reproducible.sh, or the GPU queue's direct subprocess call).
+    determinism_config = configure_determinism(args.seed, args.determinism)
+    print(
+        f"Determinism: mode={determinism_config.mode}, seed={determinism_config.seed}, "
+        f"PYTHONHASHSEED={determinism_config.pythonhashseed}, "
+        f"CUBLAS_WORKSPACE_CONFIG={determinism_config.cublas_workspace_config}"
+    )
+    if determinism_config.strict:
+        print(
+            "  strict mode: deterministic algorithms on, TF32 off, single-threaded, "
+            "AMP disabled, swallowed exceptions re-raised"
+        )
+        if getattr(args, 'val_num_workers', 0) not in (0, 1):
+            print(
+                f"  strict mode: forcing --val-num-workers {args.val_num_workers} -> 1 "
+                "(results are collected in submission order, so parallelism is safe, "
+                "but a single worker removes the remaining thread-scheduling variance)"
+            )
+            args.val_num_workers = 1
     # GPU override: optionally force a single GPU via env and torch device
     try:
         if getattr(args, 'gpu_override', False):
@@ -1088,8 +1140,39 @@ def main():
                     graph_uncertainty_methods=graph_uncertainty_methods,
                     graph_degree_penalty_weight=args.graph_degree_penalty_weight,
                     uncertainty_train_frequency=args.uncertainty_train_frequency,
+                    sngp_precision_policy=args.sngp_precision_policy,
+                    finetune=args.finetune,
                 )
-                
+
+                if isinstance(model, CNNModel):
+                    counts = model.parameter_counts()
+                    print(
+                        f"  Trainable parameters: {counts['trainable']:,} / {counts['total']:,}"
+                        f" (finetune={counts['finetune']}, backbone_frozen={counts['backbone_frozen']})"
+                    )
+
+                # Fit graph-distance statistics once on the training graph and reuse
+                # them for val/test. Fitting per split would renormalize a shifted
+                # distribution until it matched training, erasing the shift signal.
+                if graph_uncertainty_methods and isinstance(model, CNNModel):
+                    standardizer = GraphDistanceUncertainty(
+                        methods=graph_uncertainty_methods,
+                        penalty_weight=args.graph_degree_penalty_weight,
+                        robust=args.graph_distance_robust_stats,
+                    ).fit(train_manager.get_graph().get_nodes())
+                    standardizer.precompute(train_manager.get_graph())
+                    model.set_graph_distance_standardizer(standardizer)
+                    print(
+                        f"  Graph-distance statistics fitted "
+                        f"(hash={standardizer.stats_hash}, "
+                        f"embedding coverage={standardizer.embedding_coverage:.1%})"
+                    )
+                    if standardizer.embedding_coverage is not None and standardizer.embedding_coverage < 0.5:
+                        print(
+                            "  WARNING: fewer than half of nodes have a usable face embedding; "
+                            "embedding_distance scores will be dominated by the missing-value sentinel"
+                        )
+
                 # Create trainer (always use AdaptiveTrainer)
                 trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
                 
@@ -1201,7 +1284,19 @@ def main():
                 print(f"\nTraining {config['description']}...")
                 for epoch in range(args.num_epochs):
                     print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
-                    
+
+                    # Re-verify strict determinism each epoch, so a run that quietly
+                    # fell out of strict mode fails here instead of producing
+                    # unreproducible numbers to the end.
+                    assert_strict_invariants(f"start of epoch {epoch + 1}")
+
+                    # Let the model apply epoch-boundary policies. SNGP uses this to
+                    # reset its Laplace precision so gp_variance stays comparable
+                    # between epochs; previously it accumulated across the whole run.
+                    for trainer_model in getattr(trainer, 'models', []) or []:
+                        if hasattr(trainer_model, 'on_epoch_start'):
+                            trainer_model.on_epoch_start(epoch, num_epochs=args.num_epochs)
+
                     # Handle reversion strategy at start of epoch (if enabled)
                     if reduction_manager and reduction_manager.restoration_strategy == 'reversion' and epoch > 0:
                         print(f"  🔄 Checking for reversion restoration at start of epoch {epoch+1}...")
@@ -1245,7 +1340,17 @@ def main():
                                 graph_uncertainty_methods=graph_uncertainty_methods,
                                 graph_degree_penalty_weight=args.graph_degree_penalty_weight,
                                 uncertainty_train_frequency=args.uncertainty_train_frequency,
+                                sngp_precision_policy=args.sngp_precision_policy,
+                                finetune=args.finetune,
                             )
+                            # Carry the fitted graph-distance statistics onto the
+                            # replacement model, so uncertainty stays on the same
+                            # scale across a disconnected-switching reset.
+                            previous_standardizer = getattr(
+                                trainer.models[0], 'graph_distance_standardizer', None
+                            )
+                            if previous_standardizer is not None:
+                                model.set_graph_distance_standardizer(previous_standardizer)
                             trainer.models[0] = model
                             print(f"[Disconnected Switching] Main detection model has been reset.")
                             # Reset best checkpoint/vars
@@ -1259,12 +1364,19 @@ def main():
                     train_start_time = time.time()
                     train_distribution = None
                     
-                    train_result = trainer.train()
+                    # Pass the epoch index through. AdaptiveTrainer.train(epoch=None)
+                    # already forwarded it to the capabilities, but it was always
+                    # called with no argument, so the capabilities never saw it.
+                    train_result = trainer.train(epoch=epoch)
                     if isinstance(train_result, tuple) and len(train_result) == 2:
                         train_metrics, train_distribution = train_result
                     else:
                         train_metrics = train_result
                         train_distribution = None
+
+                    for trainer_model in getattr(trainer, 'models', []) or []:
+                        if hasattr(trainer_model, 'on_epoch_end'):
+                            trainer_model.on_epoch_end(epoch)
                     # Get current traversal info
                     current_traversal_info = trainer.get_current_traversal_info()
                     print(f"  Current traversal: {current_traversal_info}")

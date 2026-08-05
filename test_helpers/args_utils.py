@@ -160,14 +160,54 @@ def parse_args():
                         help='Dropout rate used by uncertainty-aware heads (default: 0.2)')
     parser.add_argument('--uncertainty-train-frequency', type=int, default=10,
                         help='Compute uncertainty summaries every N training batches (default: 10)')
-    parser.add_argument('--graph-uncertainty-methods', type=str, default='attribute_distance,embedding_distance,hybrid_distance',
-                        help='Comma-separated graph uncertainty methods to aggregate (default: attribute_distance,embedding_distance,hybrid_distance)')
+    parser.add_argument('--sngp-precision-policy', type=str, default='per-epoch',
+                        choices=['per-epoch', 'final-epoch', 'never-reset'],
+                        help='When to reset the SNGP Laplace precision matrix. per-epoch (default) '
+                             'makes gp_variance comparable between epochs; final-epoch matches the '
+                             'original single-pass formulation; never-reset reproduces the pre-fix '
+                             'behavior, where precision accumulated across all epochs')
+    parser.add_argument('--graph-uncertainty-methods', type=str,
+                        default='attribute_distance,embedding_distance,hybrid_distance,degree_penalty',
+                        help='Comma-separated graph uncertainty methods. degree_penalty is the '
+                             'ablation control: without it you cannot tell whether the distance '
+                             'methods predict error or merely flag low-degree nodes '
+                             '(default: all four)')
     parser.add_argument('--graph-degree-penalty-weight', type=float, default=1.0,
-                        help='Strength of the low-degree uncertainty penalty for graph-based methods (default: 1.0)')
+                        help='Strength of the low-degree uncertainty penalty (default: 1.0)')
+    parser.add_argument('--graph-distance-robust-stats', action='store_true',
+                        help='Standardize graph-distance attributes with median/IQR rather than '
+                             'mean/std (default: enabled; blur is heavy-tailed)')
+    parser.add_argument('--no-graph-distance-robust-stats', dest='graph_distance_robust_stats',
+                        action='store_false', help='Use mean/std standardization instead')
+    parser.set_defaults(graph_distance_robust_stats=True)
     parser.add_argument('--build-val-test-edges', action='store_true',
                         help='Build and cache validation/test graph edges the same way as training (default: enabled)')
     parser.add_argument('--no-build-val-test-edges', dest='build_val_test_edges', action='store_false',
                         help='Skip building validation/test edges and keep node-only graphs')
     parser.set_defaults(build_val_test_edges=True)
+
+    # Model construction
+    parser.add_argument('--finetune', action='store_true',
+                        help='Freeze the backbone and train only the classifier head. NOTE: this is '
+                             'what the detectors mean by "finetune" -- effnetdf and swintransformdf '
+                             'freeze every parameter whose name lacks classifier/head. It was '
+                             'previously hardcoded on, so runs on those architectures were linear '
+                             'probes rather than fine-tuned detectors')
+    parser.add_argument('--no-finetune', dest='finetune', action='store_false',
+                        help='Train the whole network (default)')
+    parser.set_defaults(finetune=False)
+
+    # Reproducibility
+    parser.add_argument('--determinism', type=str, default='fast', choices=['strict', 'fast'],
+                        help='strict = bit-exact everywhere (deterministic algorithms, TF32 off, '
+                             'single-threaded, AMP off, ordered collection); fast = perf-oriented, '
+                             'GPU tolerance allowed (default: fast)')
+    parser.add_argument('--strict-determinism', dest='determinism', action='store_const',
+                        const='strict', help='Shorthand for --determinism strict')
+    parser.add_argument('--lr-schedule', type=str, default='plateau',
+                        choices=['plateau', 'cosine', 'step', 'none'],
+                        help='LR schedule. plateau branches on float comparisons, so a 1e-7 wobble '
+                             'in val loss can flip an LR drop; cosine is a pure function of the '
+                             'epoch index and therefore immune (default: plateau)')
 
     return parser.parse_args()

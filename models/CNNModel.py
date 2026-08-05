@@ -78,6 +78,8 @@ class CNNModel(Model):
         self.graph_degree_penalty_weight = float(graph_degree_penalty_weight)
         self.uncertainty_train_frequency = max(1, int(uncertainty_train_frequency))
         self.output_head = None
+        self.graph_distance_standardizer = None
+        self._warned_missing_standardizer = False
         self._last_penultimate_features = None
         self._supports_external_uncertainty_head = False
         self.dropout_controller = nn.Module()
@@ -169,6 +171,24 @@ class CNNModel(Model):
                 param.requires_grad for param in self.model.model.parameters()
             ),
         }
+
+    def set_graph_distance_standardizer(self, standardizer):
+        """Attach fitted graph-distance statistics.
+
+        Fitted once on the *training* graph and reused for val/test/OOD -- fitting
+        per split would renormalize a shifted distribution until it matched the
+        training one, erasing the very signal being measured. Persisted in the
+        checkpoint so scoring after a resume uses the same statistics.
+        """
+        self.graph_distance_standardizer = standardizer
+        self._warned_missing_standardizer = False
+        return standardizer
+
+    def graph_uncertainty_ready(self):
+        """Whether graph-distance methods can actually be scored right now."""
+        return bool(self.graph_uncertainty_methods) and (
+            self.graph_distance_standardizer is not None
+        )
 
     def on_epoch_start(self, epoch, num_epochs=None):
         """Forward the epoch boundary to the uncertainty head, if it wants it.
@@ -337,12 +357,27 @@ class CNNModel(Model):
             bundle = self._build_prediction_bundle(backbone_output, features=features)
 
         if nodes and self.graph_uncertainty_methods:
-            graph_uncertainty = compute_batch_graph_uncertainty(
-                nodes,
-                self.graph_uncertainty_methods,
-                penalty_weight=self.graph_degree_penalty_weight,
-            )
-            bundle.uncertainty.update(graph_uncertainty)
+            if self.graph_distance_standardizer is not None:
+                bundle.uncertainty.update(
+                    compute_batch_graph_uncertainty(
+                        nodes,
+                        self.graph_uncertainty_methods,
+                        penalty_weight=self.graph_degree_penalty_weight,
+                        standardizer=self.graph_distance_standardizer,
+                    )
+                )
+            elif not self._warned_missing_standardizer:
+                # Warn once and skip rather than raising mid-run. Silently emitting
+                # nothing would be worse: the benchmark would simply have no
+                # graph-uncertainty column and nobody would notice.
+                self._warned_missing_standardizer = True
+                print(
+                    "WARNING: graph uncertainty methods "
+                    f"{self.graph_uncertainty_methods} were requested but no fitted "
+                    "standardizer is attached, so no graph uncertainty will be recorded. "
+                    "Call model.set_graph_distance_standardizer(...) with statistics "
+                    "fitted on the training graph."
+                )
 
         return bundle.with_predictions()
 

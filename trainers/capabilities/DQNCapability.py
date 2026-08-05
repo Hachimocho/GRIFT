@@ -7,6 +7,9 @@ from tqdm.auto import tqdm
 from torch.cuda.amp import GradScaler
 import os
 
+from trainers.capabilities.uncertainty_logging import (
+    uncertainty_summary_for_logging as _uncertainty_summary_for_logging,
+)
 from models.DQNModel import DQNModel
 from utils.attribute_utils import AttributeMetadata, AttributeBiasLoss
 from nodes.atrnode import AttributeNode
@@ -317,12 +320,19 @@ class DQNCapability:
                     # Forward pass
                     model = self.trainer.models[0]
                     if hasattr(model, 'forward_with_uncertainty'):
-                        compute_uncertainty = (batch_count % max(1, model.uncertainty_train_frequency) == 0)
+                        summarize_now = (
+                            batch_count % max(1, model.uncertainty_train_frequency) == 0
+                        )
+                        # Single deterministic pass for the loss; MC statistics are
+                        # gathered separately under no_grad for logging. Running MC
+                        # dropout in the loss path every Nth batch made the training
+                        # objective non-stationary.
                         prediction_bundle = model.forward_with_uncertainty(
                             images,
                             nodes=batch_nodes_loaded,
                             update_precision=True,
-                            use_mc_dropout=compute_uncertainty and getattr(model, 'mc_dropout_samples', 0) > 1,
+                            use_mc_dropout=False,
+                            compute_variance=summarize_now,
                         )
                         outputs = prediction_bundle.logits
                         loss = model.compute_loss(
@@ -330,9 +340,12 @@ class DQNCapability:
                             batch_labels_tensor,
                             base_criterion=self.trainer.criterion,
                         )
-                        for name, value in model.summarize_uncertainty(prediction_bundle).items():
-                            uncertainty_sums[name] += float(value) * len(batch_nodes_loaded)
-                            uncertainty_counts[name] += len(batch_nodes_loaded)
+                        if summarize_now:
+                            for name, value in _uncertainty_summary_for_logging(
+                                model, prediction_bundle, images, batch_nodes_loaded
+                            ).items():
+                                uncertainty_sums[name] += float(value) * len(batch_nodes_loaded)
+                                uncertainty_counts[name] += len(batch_nodes_loaded)
                     else:
                         outputs = model(images)
                         loss = self.trainer.criterion(outputs, batch_labels_tensor)
