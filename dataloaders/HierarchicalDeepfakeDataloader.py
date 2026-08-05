@@ -10,6 +10,7 @@ Optimized for large-scale processing using:
 - Locality-Sensitive Hashing (LSH) for embeddings
 - Chunked processing for memory efficiency
 """
+import copy
 import random
 import math
 from itertools import combinations
@@ -91,10 +92,15 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                 silent_mode: When True, disables all internal progress bars and logging output
         """
         super().__init__(datasets, edge_class)
-        
-        # Update hyperparameters with any provided kwargs
-        self.hyperparameters.update(kwargs)
-        
+
+        # Bind an *instance* copy of the class-level defaults before applying
+        # kwargs. `self.hyperparameters.update(kwargs)` used to mutate the class
+        # attribute, so every dataloader in the process shared one config dict:
+        # constructing a second loader retroactively changed the first one's
+        # settings, and run_threshold_grid_search (one loader per grid point)
+        # silently inherited the previous point's thresholds.
+        self.hyperparameters = {**copy.deepcopy(type(self).hyperparameters), **kwargs}
+
         # Configure logger based on silent mode
         global logger
         logger = setup_logger(log_to_console=not self.hyperparameters["silent_mode"])

@@ -73,8 +73,10 @@ from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
 from managers.GraphReductionManager import GraphReductionManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
-from traversals.IValueTraversal import IValueTraversal
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop 
+from traversals.IValueTraversal import IValueTraversal, IValueTraversalSubcluster
+from traversals.IValueTraversalClusterHop import (
+    IValueTraversalClusterHop, IValueTraversalClusterHopSubcluster,
+)
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from edges.Edge import Edge
@@ -454,6 +456,31 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
             num_steps=num_steps,
             trainer=trainer,
             bias_hop_period=bias_hop_period
+        )
+    elif traversal_type == "i-value-subcluster":
+        # These two were advertised in --traversal-type's `choices` but had no
+        # branch here, so selecting either raised "Unsupported traversal type"
+        # immediately. Note both rely on graph.subclusters, which is populated by
+        # Louvain -- and if python-louvain ("community") is not installed,
+        # HyperGraph.assign_louvain_subclusters is a silent no-op and these fall
+        # back to their no-subcluster paths.
+        return IValueTraversalSubcluster(
+            graph=graph,
+            num_pointers=num_pointers,
+            num_steps=num_steps,
+            trainer=trainer,
+            outlier_std=kwargs.get('outlier_std', 2.0),
+            softmax_temp=kwargs.get('softmax_temp', 0.5),
+        )
+    elif traversal_type == "i-value-cluster-hop-subcluster":
+        return IValueTraversalClusterHopSubcluster(
+            graph=graph,
+            num_pointers=num_pointers,
+            num_steps=num_steps,
+            trainer=trainer,
+            bias_hop_period=kwargs.get('bias_hop_period', 100),
+            outlier_std=kwargs.get('outlier_std', 2.0),
+            softmax_temp=kwargs.get('softmax_temp', 0.5),
         )
     else:
         raise ValueError(f"Unsupported traversal type: {traversal_type}")

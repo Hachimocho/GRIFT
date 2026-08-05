@@ -1,3 +1,4 @@
+import copy
 import random
 from itertools import combinations
 from tqdm.auto import tqdm
@@ -64,10 +65,13 @@ class UnclusteredDeepfakeDataloader(Dataloader):
                 silent_mode: When True, disables all internal progress bars and logging output
         """
         super().__init__(datasets, edge_class)
-        
-        # Update hyperparameters with any provided kwargs
-        self.hyperparameters.update(kwargs)
-        
+
+        # Bind an *instance* copy of the class-level defaults before applying
+        # kwargs -- see the matching comment in HierarchicalDeepfakeDataloader.
+        # Mutating the class attribute made every dataloader in the process share
+        # one config dict.
+        self.hyperparameters = {**copy.deepcopy(type(self).hyperparameters), **kwargs}
+
         # Configure logger based on silent mode
         global logger
         logger = setup_logger(log_to_console=not self.hyperparameters["silent_mode"])

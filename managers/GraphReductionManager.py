@@ -22,8 +22,16 @@ class GraphReductionManager:
     - Executing restoration strategies when validation performance drops
     - Maintaining state between epochs for reversion strategy
     """
-    
-    def __init__(self, 
+
+    tags = ["any"]
+    hyperparameters = {
+        "parameters": {
+            "reduction_strategy": {"values": ["none", "lowest_ivalue", "threshold"]},
+            "reduction_interval": {"values": ["end_of_epoch", "every_n_steps"]},
+        }
+    }
+
+    def __init__(self,
                  reduction_strategy: str = "none",
                  reduction_percentage: float = 0.0,
                  reduction_top_percentage: float = 0.0,
