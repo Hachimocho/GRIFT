@@ -196,3 +196,18 @@ web_ui/web_ui/runs/*
 @quanty_vault
 outdated/
 graph_cache/
+# --- Test fixtures -----------------------------------------------------------
+# `*.csv` is blanket-ignored above (line ~188), which would silently swallow any
+# committed test fixture. Negate it for the tests tree so fixture data can be
+# version-controlled.
+!tests/**/*.csv
+!tests/**/*.csv.gz
+!tests/fixtures/**
+!evaluation/uq/data/**
+
+# --- Benchmark artifacts -----------------------------------------------------
+# Record tables, manifests, and reports are reproducible outputs, not sources.
+uq_out/
+uq_manifests/
+uq_runs/
+junit*.xml
