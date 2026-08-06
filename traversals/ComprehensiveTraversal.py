@@ -63,7 +63,7 @@ class ComprehensiveTraversal(Traversal):
     
     def reset_pointers(self):
         """Reset traversal state, including pointers, visited sets, and steps counter."""
-        self.pointers = [{'current_node': self.graph.get_random_node(), 'visited': set()} for _ in range(self.num_pointers)]
+        self.pointers = [{'current_node': self.graph.get_random_node(rng=self.rng), 'visited': set()} for _ in range(self.num_pointers)]
         self.steps_taken = 0  # Reset steps counter
     
     def traverse(self, batch_size=32):
@@ -95,12 +95,18 @@ class ComprehensiveTraversal(Traversal):
             
             if self.test_mode:
                 # Convert to list and sort by node ID for deterministic order during testing
-                unvisited_list = sorted(list(all_unvisited), key=lambda x: id(x))
+                # Sort by node_id, not id(x). `id()` is a memory address, so the
+                # previous key produced an order that varied between processes and
+                # between allocations -- i.e. this "deterministic order for testing"
+                # branch was not deterministic at all.
+                unvisited_list = sorted(all_unvisited, key=lambda node: str(node.node_id))
                 batch_nodes = unvisited_list[:nodes_to_visit]
             else:
                 # Convert to list and randomly sample
-                unvisited_list = list(all_unvisited)
-                batch_nodes = random.sample(unvisited_list, nodes_to_visit)
+                # Sorted for the same reason as the test_mode branch above: the set
+                # holds Node objects whose hash is over a string id.
+                unvisited_list = sorted(all_unvisited, key=lambda node: str(node.node_id))
+                batch_nodes = self.rng.sample(unvisited_list, nodes_to_visit)
             
             # Mark nodes as visited in all pointers
             for node in batch_nodes:

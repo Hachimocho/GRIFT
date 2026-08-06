@@ -54,6 +54,7 @@ from test_helpers.logging_utils import NullHandler, capture_output, log_exceptio
 from test_helpers.determinism import (
     assert_strict_invariants, configure_determinism, is_strict, rng_for, run_fingerprint,
 )
+from test_helpers.cache_keys import cache_filenames, graph_cache_key
 from test_helpers.args_utils import parse_args
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
@@ -100,6 +101,9 @@ from traversals.IValueTraversalClusterHop import (
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
 from models.uncertainty import GraphDistanceUncertainty
+from models.uncertainty.capabilities import (
+    describe_detector, supported_detectors, validate_architectures,
+)
 from edges.Edge import Edge
 import copy
 import torch
@@ -614,6 +618,23 @@ def main():
     graph_uncertainty_methods = [
         method.strip() for method in getattr(args, 'graph_uncertainty_methods', '').split(',') if method.strip()
     ]
+
+    # Validate architectures up front. `--architectures` is a free-form string with
+    # no argparse `choices`, so a typo previously surfaced as a ModuleNotFoundError
+    # deep inside CNNModel.__init__, and seven of the eleven architectures the web UI
+    # offers crash during construction for reasons the capability table records.
+    requested_architectures = [
+        name.strip() for name in getattr(args, 'architectures', '').split(',') if name.strip()
+    ]
+    usable_architectures, architecture_problems = validate_architectures(requested_architectures)
+    if architecture_problems:
+        print("\nERROR: unusable architecture(s) requested:")
+        for name, reason in architecture_problems.items():
+            print(f"  - {name}: {reason}")
+        print(f"\n  Usable architectures: {', '.join(supported_detectors())}")
+        for name in supported_detectors():
+            print(f"    {describe_detector(name)}")
+        sys.exit(1)
     # Enable faulthandler for hard crashes
     try:
         faulthandler.enable()
@@ -826,21 +847,27 @@ def main():
         # Extract dataset name from data_root path (Corrected)
         dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
         
-        # Create hash of node IDs for cache consistency
-        import hashlib
-        node_ids = sorted([node.node_id for node in nodes_to_use])
-        node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
-        edge_cache_mode = "full_edges" if (split_name == 'train' or getattr(args, 'build_val_test_edges', True)) else "node_only"
-        
-        cache_base = f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}_mode{edge_cache_mode}"
-        pickle_cache_filename = os.path.join(
-            graph_cache_dir,
-            f"{cache_base}_graph.pkl"
+        # Cache key comes from the shared builder so it cannot drift from the
+        # compatibility check the UI uses. It covers --seed, the sparse/subcluster
+        # settings, and an edge-build version, all of which change the graph but were
+        # previously absent -- meaning materially different graphs shared one entry.
+        cache_base = graph_cache_key(
+            dataset_name=dataset_name,
+            split_name=split_name,
+            graph_type=graph_type_str,
+            balancing_suffix=suffix,
+            nodes=nodes_to_use,
+            quality_threshold=args.quality_threshold,
+            symmetry_threshold=args.symmetry_threshold,
+            embedding_threshold=args.embedding_threshold,
+            seed=args.seed,
+            build_val_test_edges=getattr(args, 'build_val_test_edges', True),
+            hyperparameters=dataloader_class.hyperparameters,
+            args=args,
         )
-        edges_csv_filename = os.path.join(
-            graph_cache_dir,
-            f"{cache_base}_edges.csv.gz"
-        )
+        _cache_paths = cache_filenames(graph_cache_dir, cache_base)
+        pickle_cache_filename = _cache_paths['pickle']
+        edges_csv_filename = _cache_paths['edges_csv']
 
         # Check/Load Graph Cache
         graph = None
@@ -920,6 +947,7 @@ def main():
                 quality_threshold=args.quality_threshold,
                 symmetry_threshold=args.symmetry_threshold,
                 embedding_threshold=args.embedding_threshold,
+                build_val_test_edges=getattr(args, 'build_val_test_edges', True),
                 silent_mode=True  # Disable internal progress bars and logging during grid search
             )
             should_build_edges = split_name == 'train' or getattr(args, 'build_val_test_edges', True)
@@ -1104,12 +1132,17 @@ def main():
             val_steps = getattr(args, 'val_steps', default_val_steps)
         
         # --- Setup run-specific output directory ---
-        import string
-        import random as pyrandom
+        # Uses secrets, not the seeded `random` module. The previous version drew 8
+        # values from the global RNG, but only when --run-id was absent: the web UI
+        # always passes one and a manual invocation does not, so a manual run and a
+        # UI-launched run at the same --seed consumed different amounts of randomness
+        # and therefore produced different traversals.
+        import secrets
+
         def generate_run_id():
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            rand = ''.join(pyrandom.choices(string.ascii_lowercase + string.digits, k=8))
-            return f"run_{timestamp}_{rand}"
+            return f"run_{timestamp}_{secrets.token_hex(4)}"
+
         run_id = args.run_id if hasattr(args, 'run_id') and args.run_id else generate_run_id()
         run_output_dir = Path(f"run_outputs/{run_id}")
         run_output_dir.mkdir(parents=True, exist_ok=True)
@@ -1262,7 +1295,7 @@ def main():
                        (config['mode'] == 'switching' and 'i-value-cluster-hop' in config.get('traversal_sequence', [])):
                         bias_hop_viz = BiasHopVisualizer(save_dir=config_output_dir / "bias_hops")
                     # Track specific nodes for detailed analysis
-                    sample_nodes = random.sample(list(train_manager.graph.get_nodes()), 
+                    sample_nodes = rng_for('viz.node_sample').sample(list(train_manager.graph.get_nodes()), 
                                                 min(args.viz_track_nodes, len(train_manager.graph.get_nodes())))
                     viz_tracker.track_specific_nodes(trainer, sample_nodes, max_nodes=args.viz_track_nodes)
                     print(f"   Visualization directory: {viz_save_dir}")
@@ -1427,7 +1460,7 @@ def main():
                         model_to_eval = trainer.models[0] if trainer.models else None
                         if model_to_eval:
                             model_to_eval.eval()
-                            train_sample_nodes = random.sample(
+                            train_sample_nodes = rng_for('eval.train_bias_subsample').sample(
                                 list(train_manager.graph.get_nodes()), 
                                 min(len(train_manager.graph.get_nodes()), train_steps)
                             )
@@ -1455,7 +1488,7 @@ def main():
                         # Use parallel image loading for faster validation (4 workers)
                         val_metrics = evaluate_model(
                             model=model_to_eval,
-                            nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
+                            nodes_to_evaluate=rng_for('eval.val_subsample').sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
                             loss_fn=criterion,
                             batch_size=args.batch_size,
                             bias_loss_fn=bias_loss_fn,
@@ -1475,7 +1508,7 @@ def main():
                                 subgroup_i_values = {}
                                 if hasattr(trainer, 'attribute_metadata') and trainer.attribute_metadata:
                                     # Get a sample of validation nodes for I-value calculation
-                                    val_sample = random.sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
+                                    val_sample = rng_for('eval.val_subsample').sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
                                     try:
                                         for node in val_sample:
                                             if hasattr(node, 'attributes') and node.attributes:

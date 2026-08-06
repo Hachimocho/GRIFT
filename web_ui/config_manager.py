@@ -335,11 +335,37 @@ class ConfigManager:
         
         # Architecture validation
         if "architectures" in config:
-            valid_archs = ["resnestdf", "efficientnet", "resnet50", "vgg16"]
-            archs = [a.strip() for a in config["architectures"].split(',')]
+            # Validate against the verified detector table rather than a hardcoded
+            # list. The previous list was stale and wrong: 'efficientnet',
+            # 'resnet50', and 'vgg16' are not detector modules at all, while the real
+            # 'effnetdf' was missing -- so it warned about valid choices and stayed
+            # silent about broken ones.
+            try:
+                from models.uncertainty.capabilities import profile_for, supported_detectors
+            except ImportError:
+                profile_for = None
+
+            archs = [a.strip() for a in config["architectures"].split(',') if a.strip()]
             for arch in archs:
-                if arch not in valid_archs:
-                    warnings.append(f"Architecture '{arch}' may not be supported")
+                if profile_for is None:
+                    continue
+                profile = profile_for(arch)
+                if profile is None:
+                    warnings.append(
+                        f"Architecture '{arch}' is not a known detector "
+                        f"(known: {', '.join(supported_detectors())})"
+                    )
+                elif profile.status == "broken":
+                    warnings.append(
+                        f"Architecture '{arch}' is known to fail during model "
+                        f"construction: {profile.broken_reason}"
+                    )
+                elif profile.status == "logit_only":
+                    warnings.append(
+                        f"Architecture '{arch}' has no nn.Linear to graft onto, so "
+                        f"uncertainty heads (evidential/batchensemble/sngp) cannot be "
+                        f"used with it; logit-space methods still work"
+                    )
         
         # Performance warnings
         if config.get("enable_ivalue_viz", False) and config.get("num_epochs", 0) > 50:

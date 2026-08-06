@@ -34,7 +34,7 @@ class RandomWarpTraversal(Traversal):
         return self.pointers
     
     def reset_pointers(self):
-        self.pointers = [{'current_node': self.graph.get_random_node()} for _ in range(self.num_pointers)]
+        self.pointers = [{'current_node': self.graph.get_random_node(rng=self.rng)} for _ in range(self.num_pointers)]
     
     def traverse(self):
         if self.t > self.num_steps:
@@ -47,9 +47,9 @@ class RandomWarpTraversal(Traversal):
 
             # If there are no adjacent nodes or the warp triggers,
             # move the pointer to a random node
-            if adj_nodes and (random.random() > self.warp_chance):
+            if adj_nodes and (self.rng.random() > self.warp_chance):
                 # Randomly select an adjacent node
-                pointer['current_node'] = random.choice(adj_nodes)
+                pointer['current_node'] = self.rng.choice(adj_nodes)
             else:
-                pointer['current_node'] = self.graph.get_random_node()
+                pointer['current_node'] = self.graph.get_random_node(rng=self.rng)
 

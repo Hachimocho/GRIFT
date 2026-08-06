@@ -30,6 +30,7 @@ except ImportError:
     from nodes.atrnode import AttributeNode
 
 from .logging_utils import NullHandler # Relative import for NullHandler
+from .cache_keys import EDGE_BUILD_VERSION
 
 
 AI_FACE_ENV_VARS = (
@@ -758,15 +759,31 @@ def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_ca
 
         exact_match_path = None
         for pat in patterns:
-            found = glob.glob(pat)
+            # Sorted: glob order is filesystem-dependent, and this wildcard spans the
+            # node hash, so `found[0]` could otherwise pick an arbitrary cache file
+            # from a different node set. This prediction is display-only -- the
+            # pipeline uses the exact key from test_helpers.cache_keys -- but an
+            # unstable answer here makes the UI's cache report untrustworthy.
+            found = sorted(glob.glob(pat))
             if found:
                 exact_match_path = found[0]
+                if len(found) > 1:
+                    print(
+                        f"Note: {len(found)} cached graphs match the {split_name} pattern; "
+                        f"reporting {os.path.basename(exact_match_path)}. The pipeline "
+                        f"selects by exact key, which may differ."
+                    )
                 break
         if exact_match_path:
             cache_info[split_name]['exact_match'] = exact_match_path
 
-        # Store expected filename pattern (without hash) for UI display
-        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_mode[edge_policy]_edges.csv.gz"
+        # Store expected filename pattern (without the content-dependent parts) for UI display
+        cache_info[split_name]['expected_filename'] = (
+            f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}"
+            f"_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}"
+            f"_hash[nodes]_mode[edge_policy]_seed[seed]_shape[graph_params]_ho[holdout]"
+            f"_v{EDGE_BUILD_VERSION}_edges.csv.gz"
+        )
     
     return cache_info
 
@@ -787,16 +804,42 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
     for cache_file in cache_files:
         filename = os.path.basename(cache_file)
         
-        # Parse filename to extract configuration; only CSV.gz supported now
-        # ai-face_train_clustered_full_nodes_827339_q0.500_s0.300_e0.700_hashHASH_edges.csv.gz
-        pattern = r"(.+)_(train|val|test)_(clustered|nonclustered|clustered_subclustered|nonclustered_subclustered)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_mode([a-z_]+)_edges\.csv\.gz$"
+        # Parse filename to extract configuration; only CSV.gz supported now.
+        # The graph_type group is an open `[a-z_]+` rather than a fixed alternation:
+        # the previous hardcoded list would silently fail to parse any newly added
+        # graph type, making its caches invisible. The trailing groups (seed, shaping
+        # digest, holdout, version) are optional so pre-v2 filenames still parse and
+        # can be reported as stale.
+        pattern = (
+            r"(?P<dataset>.+)_(?P<split>train|val|test)_(?P<graph_type>[a-z_]+)"
+            r"_(?P<balancing>balanced|full)_nodes_(?P<node_count>\d+)"
+            r"_q(?P<q>[\d.]+)_s(?P<s>[\d.]+)_e(?P<e>[\d.]+)"
+            r"_hash(?P<node_hash>[a-f0-9]+)_mode(?P<edge_policy>full_edges|node_only)"
+            r"(?:_seed(?P<seed>NA|\d+))?"
+            r"(?:_shape(?P<shape>[a-f0-9]+))?"
+            # Non-greedy: a greedy holdout group swallows the trailing `_v<n>`
+            # (e.g. "honone_v2" -> holdout="none_v2", version=None), which would
+            # make every current cache look like a stale version-1 file.
+            r"(?:_ho(?P<holdout>[A-Za-z0-9_]+?))?"
+            r"(?:_v(?P<version>\d+))?"
+            r"_edges\.csv\.gz$"
+        )
         match = re.match(pattern, filename)
-        
+
         if match:
-            dataset, split, graph_type, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash, edge_policy = match.groups()
-            
+            parts = match.groupdict()
+            dataset = parts['dataset']
+            split = parts['split']
+            graph_type = parts['graph_type']
+            balancing = parts['balancing']
+            node_count = parts['node_count']
+            q_thresh, s_thresh, e_thresh = parts['q'], parts['s'], parts['e']
+            node_hash = parts['node_hash']
+            edge_policy = parts['edge_policy']
+            cache_version = int(parts['version']) if parts['version'] else 1
+
             config_key = f"{dataset}_{split}_{graph_type}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
-            
+
             if config_key not in cache_analysis:
                 cache_analysis[config_key] = {
                     'dataset': dataset,
@@ -808,6 +851,11 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
                     'symmetry_threshold': float(s_thresh),
                     'embedding_threshold': float(e_thresh),
                     'edge_policy': edge_policy,
+                    'seed': parts['seed'],
+                    'graph_shape_hash': parts['shape'],
+                    'holdout': parts['holdout'],
+                    'cache_version': cache_version,
+                    'stale': cache_version < EDGE_BUILD_VERSION,
                     'cache_files': []
                 }
             

@@ -183,14 +183,22 @@ class HyperGraph():
             # Handle duplicate node add attempt if necessary, e.g., log warning
             print(f"Warning: Node with ID {node.node_id} already exists.")
             
-    def get_random_node(self):
+    def get_random_node(self, rng=None):
         """
         Get a random node from the hypergraph.
+
+        Args:
+            rng: Optional ``random.Random`` to draw from. Callers with their own
+                stream (e.g. traversals) should pass it, so their node choices do
+                not depend on unrelated consumption of the global RNG.
 
         Returns:
             Node: A random node from the hypergraph.
         """
-        return random.choice(self.nodes)
+        if rng is None:
+            from test_helpers.determinism import component_rng
+            rng = component_rng("graph.random_node")
+        return rng.choice(self.nodes)
     
     def k_hop_subgraph(self, node, k, duplicates=False):
         """
@@ -215,8 +223,13 @@ class HyperGraph():
             k_hop_nodes.update(next_hop)
             current_hop = next_hop
         if not duplicates:
-            k_hop_nodes.remove(node)
-        return HyperGraph(list(k_hop_nodes))
+            # discard, not remove: for k=1 the accumulated set holds only the seed's
+            # neighbors, so the seed is absent and remove() raised KeyError -- which
+            # made k_hop_subgraph(node, 1) unconditionally broken.
+            k_hop_nodes.discard(node)
+        # Sorted, because Node.__hash__ hashes a string node_id, so set iteration
+        # order is PYTHONHASHSEED-dependent and varies between processes.
+        return HyperGraph(sorted(k_hop_nodes, key=lambda item: str(item.node_id)))
         
     def k_hop_list(self, node, k, duplicates=False):
         """
@@ -239,8 +252,9 @@ class HyperGraph():
                 for neighbor in n.get_neighbors():
                     if neighbor not in next_hop and (duplicates or neighbor not in k_hop_list):
                         next_hop.add(neighbor)
-            k_hop_list.extend(list(next_hop))
-            current_hop = list(next_hop)
+            ordered_hop = sorted(next_hop, key=lambda item: str(item.node_id))
+            k_hop_list.extend(ordered_hop)
+            current_hop = ordered_hop
         return k_hop_list
 
     def get_edge_list(self):
@@ -267,7 +281,12 @@ class HyperGraph():
                 # Fallback or alternative if edges aren't directly accessible
                 # This part might need adjustment based on actual Node/Edge implementation
                 pass 
-        return list(edge_set)
+        # Sorted, not list(set): these are tuples of *string* node ids, so set
+        # iteration order depends on PYTHONHASHSEED. This list is written to the
+        # pickle graph cache, so an unsorted order meant a cache written under one
+        # hash seed replayed its edges in a different order than one written under
+        # another -- and edge order determines traversal tie-breaks.
+        return sorted(edge_set)
 
     def add_edges_from_list(self, edge_list):
         """
@@ -321,6 +340,8 @@ class HyperGraph():
                 if len(edge_list) <= 100:
                     print(f"Warning: Could not find nodes for edge ({id1}, {id2}). Skipping.")
         
+        self.canonicalize_edge_order()
+
         print(f"Edge loading complete: {edges_added_count} edges added, {edges_skipped_count} edges skipped")
         if edges_skipped_count > 0:
             success_rate = (edges_added_count / (edges_added_count + edges_skipped_count)) * 100
@@ -362,24 +383,46 @@ class HyperGraph():
                 if include_header:
                     writer.writerow(['source', 'target'])
 
-                for node in self.nodes:
-                    if hasattr(node, 'edges'):
-                        for edge in getattr(node, 'edges', []):
-                            try:
-                                n1, n2 = edge.get_nodes()
-                                id1 = getattr(n1, 'node_id', None)
-                                id2 = getattr(n2, 'node_id', None)
-                                if id1 is None or id2 is None:
-                                    continue
-                                # Only write each undirected edge once
-                                if id1 < id2:
-                                    writer.writerow([id1, id2])
-                                    num_written += 1
-                                    if num_written % progress_interval == 0:
-                                        print(f"[Cache] Export progress: {num_written} edges written...")
-                            except Exception as row_e:
-                                print(f"[Cache][Warning] Failed writing edge row: {row_e}")
+                # Iterate nodes and their edges in canonical order, so the exported
+                # file is byte-stable: export -> load -> export is a fixpoint, and two
+                # runs that built the same graph produce identical cache files.
+                #
+                # Each undirected edge is emitted exactly once, from its
+                # lexicographically smaller endpoint. The previous condition compared
+                # the edge's *stored* (node1, node2) order instead -- but every
+                # undirected edge is visited twice (once per endpoint) while
+                # `edge.get_nodes()` returns the same orientation both times. So an
+                # edge stored ascending was written TWICE and one stored descending was
+                # written ZERO times, silently dropping roughly half the edges
+                # depending only on the order each Edge object happened to be
+                # constructed in. A cache-loaded graph was therefore materially
+                # sparser than the graph that produced it, and the reported edge count
+                # looked plausible because it counted the duplicates.
+                for node in sorted(self.nodes, key=lambda item: str(item.node_id)):
+                    node_id = getattr(node, 'node_id', None)
+                    if node_id is None or not hasattr(node, 'edges'):
+                        continue
+                    for edge in sorted(
+                        getattr(node, 'edges', []),
+                        key=lambda item, _node=node: self._edge_sort_key(_node, item),
+                    ):
+                        try:
+                            n1, n2 = edge.get_nodes()
+                            id1 = getattr(n1, 'node_id', None)
+                            id2 = getattr(n2, 'node_id', None)
+                            if id1 is None or id2 is None:
                                 continue
+                            peer_id = id2 if id1 == node_id else id1
+                            # Emit only from the smaller endpoint, in canonical
+                            # (min, max) order. Self-loops are emitted once.
+                            if str(node_id) <= str(peer_id):
+                                writer.writerow([node_id, peer_id])
+                                num_written += 1
+                                if num_written % progress_interval == 0:
+                                    print(f"[Cache] Export progress: {num_written} edges written...")
+                        except Exception as row_e:
+                            print(f"[Cache][Warning] Failed writing edge row: {row_e}")
+                            continue
         except Exception as io_e:
             print(f"[Cache][Error] Failed exporting edges to {path}: {io_e}")
             return num_written
@@ -453,8 +496,51 @@ class HyperGraph():
             print(f"[Cache][Error] Failed loading edges from {path} at line {line_no}: {io_e}")
             return edges_added
 
+        # Canonicalize so a cache-loaded graph induces the same traversals as a
+        # freshly built one at the same seed.
+        self.canonicalize_edge_order()
+
         print(f"[Cache] Load complete: {edges_added} edges from {path}")
         return edges_added
+
+    def canonicalize_edge_order(self, sort_nodes=False):
+        """Put every node's adjacency into a canonical order.
+
+        Without this, a graph loaded from the edge cache and a graph built fresh
+        disagree on adjacency *order* even though they agree on the edge *set*:
+        ``export_edges_csv`` writes by iterating nodes then their edges, while
+        ``load_edges_from_csv`` appends in file order. Traversals do
+        ``random.choice(adjacent)`` and argmax-over-neighbors with ties broken by
+        list position, so the same seed produced different traversals depending on
+        whether the graph came from cache -- one of the least obvious
+        irreproducibility sources in the pipeline.
+
+        Call after any build, load, or bulk edge insertion.
+        """
+        for node in self.nodes:
+            edges = getattr(node, 'edges', None)
+            if not edges:
+                continue
+            node.edges = sorted(edges, key=lambda edge: self._edge_sort_key(node, edge))
+        if sort_nodes:
+            self.nodes = sorted(self.nodes, key=lambda node: str(node.node_id))
+            self._node_data_map = {node.node_id: node for node in self.nodes}
+        return self
+
+    @staticmethod
+    def _edge_sort_key(node, edge):
+        """Sort key for one of ``node``'s edges: the peer's id, then the pair."""
+        try:
+            first, second = edge.get_nodes()
+        except Exception:
+            return ("", "")
+        node_id = str(getattr(node, 'node_id', ''))
+        first_id = str(getattr(first, 'node_id', ''))
+        second_id = str(getattr(second, 'node_id', ''))
+        peer_id = second_id if first_id == node_id else first_id
+        # Include the ordered pair so parallel edges between the same two nodes
+        # still have a stable relative order.
+        return (peer_id, first_id, second_id)
 
     def num_edges(self):
         return len(self.get_edge_list())
@@ -465,20 +551,37 @@ class HyperGraph():
         Stores mapping in self.subclusters (node_id -> subcluster_id).
         """
         if not _louvain_available:
-            print("Louvain/community-louvain not available. Skipping subcluster assignment.")
+            # NOTE: python-louvain ("community") is not installed in the current
+            # training environment, so this is currently a silent no-op and every
+            # *_subclustered graph type runs on the `subclusters is None` fallbacks.
+            print(
+                "Louvain/community-louvain not available. Skipping subcluster assignment "
+                "-- subcluster-based traversals will fall back to their no-subcluster "
+                "paths. Install python-louvain to enable them."
+            )
             self.subclusters = None
             return None
-        # Build networkx graph from nodes/edges
+
+        # Build the networkx graph deterministically: Louvain iterates G.nodes() in
+        # insertion order, so unsorted insertion makes the partition depend on node
+        # ordering rather than only on the graph.
         G = nx.Graph()
+        G.add_nodes_from(sorted(str(node.node_id) for node in self.nodes))
+        edge_pairs = set()
         for node in self.nodes:
-            G.add_node(node.node_id)
-        for node in self.nodes:
-            if hasattr(node, 'edges'):
-                for edge in node.edges:
-                    n1, n2 = edge.get_nodes()
-                    G.add_edge(n1.node_id, n2.node_id)
-        # Run Louvain
-        partition = community_louvain.best_partition(G)
+            for edge in getattr(node, 'edges', []) or []:
+                first, second = edge.get_nodes()
+                edge_pairs.add(tuple(sorted((str(first.node_id), str(second.node_id)))))
+        G.add_edges_from(sorted(edge_pairs))
+
+        # Seeded: best_partition() otherwise falls back to the global numpy RNG, so
+        # the partition depended on how much randomness had been consumed earlier.
+        try:
+            from test_helpers.determinism import is_configured, seed_for
+            random_state = seed_for("graph.louvain") if is_configured() else 0
+        except ImportError:
+            random_state = 0
+        partition = community_louvain.best_partition(G, random_state=random_state)
         self.subclusters = partition  # {node_id: subcluster_id}
         # Optionally, store subcluster on node
         for node in self.nodes:

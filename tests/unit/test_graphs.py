@@ -79,19 +79,15 @@ def test_add_edges_from_list_node_truthiness_trap():
     assert graph.get_edge_list() == [], "current (surprising) behavior: edge silently skipped"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C4: get_edge_list returns list(set) of string-id tuples, so its order is "
-           "PYTHONHASHSEED-dependent. Fixed by sorting in group C.",
-)
 def test_get_edge_list_is_deterministically_ordered():
     """`get_edge_list` must not depend on set iteration order.
 
-    It builds a set of (node_id, node_id) string tuples and returns
-    `list(edge_set)`. Because `Node.__hash__` hashes a *string* node_id, that
-    order varies with PYTHONHASHSEED across processes -- and the result is used
-    to write the pickle graph cache, so a cache written under one hash seed
-    replays its edges in a different order than one written under another.
+    It builds a set of (node_id, node_id) string tuples. Because `Node.__hash__`
+    hashes a *string* node_id, returning `list(edge_set)` gave an order that varied
+    with PYTHONHASHSEED across processes -- and this list is written to the pickle
+    graph cache, so a cache written under one hash seed replayed its edges in a
+    different order than one written under another. Edge order then determines
+    traversal tie-breaks.
     """
     graph = HyperGraph(make_triangle())
     assert graph.get_edge_list() == sorted(graph.get_edge_list())
@@ -111,23 +107,57 @@ def _line_graph(count=6):
     return HyperGraph(nodes), nodes
 
 
-def test_k_hop_subgraph_one_hop_raises():
-    """`k_hop_subgraph(node, 1)` is unconditionally broken.
+def test_k_hop_subgraph_one_hop_returns_the_neighbors():
+    """`k_hop_subgraph(node, 1)` used to raise KeyError unconditionally.
 
     For k=1 the accumulated set holds only the seed's neighbors, so the trailing
-    `k_hop_nodes.remove(node)` raises KeyError. It happens to work for k>=2
-    because the seed gets re-added as a neighbour-of-a-neighbour. Both
-    `k_hop_subgraph` and `k_hop_list` have no callers anywhere in the repo, so
-    this is dead code -- pinned rather than fixed, so if it is ever put to use
-    the breakage is already documented.
+    `k_hop_nodes.remove(node)` could not find the seed. It happened to work for
+    k>=2, where the seed is re-added as a neighbour-of-a-neighbour. Now uses
+    `discard`.
     """
     graph, nodes = _line_graph()
-    with pytest.raises(KeyError):
-        graph.k_hop_subgraph(nodes[2], 1)
+    one_hop = graph.k_hop_subgraph(nodes[2], 1)
+    assert {node.node_id for node in one_hop.get_nodes()} == {"1", "3"}
 
 
-def test_k_hop_subgraph_ordering_is_deterministic():
+def test_k_hop_subgraph_excludes_the_seed_node():
     graph, nodes = _line_graph()
-    first = [node.node_id for node in graph.k_hop_subgraph(nodes[2], 2).get_nodes()]
-    second = [node.node_id for node in graph.k_hop_subgraph(nodes[2], 2).get_nodes()]
+    two_hop = graph.k_hop_subgraph(nodes[2], 2)
+    assert nodes[2].node_id not in {node.node_id for node in two_hop.get_nodes()}
+
+
+@pytest.mark.parametrize("hops", [1, 2, 3])
+def test_k_hop_subgraph_ordering_is_deterministic(hops):
+    graph, nodes = _line_graph()
+    first = [node.node_id for node in graph.k_hop_subgraph(nodes[2], hops).get_nodes()]
+    second = [node.node_id for node in graph.k_hop_subgraph(nodes[2], hops).get_nodes()]
     assert first == second, "k-hop expansion walks a set of Node objects, so its order must be pinned"
+    assert first == sorted(first), "and that order should be by node id"
+
+
+def test_k_hop_list_ordering_is_deterministic():
+    graph, nodes = _line_graph()
+    first = [node.node_id for node in graph.k_hop_list(nodes[2], 2)]
+    second = [node.node_id for node in graph.k_hop_list(nodes[2], 2)]
+    assert first == second
+    assert first[0] == nodes[2].node_id, "the seed node leads the k-hop list"
+
+
+def test_canonicalize_edge_order_sorts_adjacency_by_peer_id():
+    graph, nodes = _line_graph()
+    middle = nodes[2]
+    middle.edges.reverse()
+    graph.canonicalize_edge_order()
+    peers = [
+        (edge.get_nodes()[1] if edge.get_nodes()[0] is middle else edge.get_nodes()[0]).node_id
+        for edge in middle.edges
+    ]
+    assert peers == sorted(peers)
+
+
+def test_canonicalize_edge_order_is_idempotent():
+    graph, _ = _line_graph()
+    graph.canonicalize_edge_order()
+    first = [[id(edge) for edge in node.edges] for node in graph.nodes]
+    graph.canonicalize_edge_order()
+    assert [[id(edge) for edge in node.edges] for node in graph.nodes] == first

@@ -97,9 +97,32 @@ class CapabilityManager:
         """Get I-value using appropriate method."""
         if self.dqn_capability:
             return self.dqn_capability.get_i_value(node, model_idx)
-        else:
-            # Fallback for non-I-value traversals
-            return random.random()
+
+        # Fallback for non-I-value traversals. This draws from a dedicated stream
+        # rather than the global `random` module, which matters more here than
+        # anywhere else: IValueTraversal.reset_pointers calls this once per node per
+        # pointer per epoch, so the number of global draws consumed scaled with
+        # *graph size* -- meaning changing the node count shifted every subsequent
+        # random decision in the run.
+        return self._ivalue_fallback_rng().random()
+
+    _IVALUE_FALLBACK_SEED = 1013904223
+
+    def _ivalue_fallback_rng(self):
+        """Lazily bind this manager's private I-value RNG."""
+        if getattr(self, '_ivalue_rng', None) is not None:
+            return self._ivalue_rng
+
+        seeded = None
+        try:
+            from test_helpers.determinism import is_configured, rng_for
+            if is_configured():
+                seeded = rng_for("ivalue.fallback")
+        except ImportError:
+            pass
+
+        self._ivalue_rng = seeded or random.Random(self._IVALUE_FALLBACK_SEED)
+        return self._ivalue_rng
             
     def train_with_traversal(self, traversal, epoch=None):
         """Execute training with current capabilities."""

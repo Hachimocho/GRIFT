@@ -12,6 +12,16 @@ from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 
 
+def _stream(component, fallback_seed=0):
+    """Private RNG stream for `component`.
+
+    Replaces draws from the process-global `random` module. Sharing that global
+    stream meant RNG consumption anywhere upstream shifted these decisions.
+    """
+    from test_helpers.determinism import component_rng
+    return component_rng(component, fallback_seed=fallback_seed)
+
+
 class GraphReductionManager:
     """
     Manages graph reduction and restoration strategies during training.
@@ -317,7 +327,7 @@ class GraphReductionManager:
         num_to_remove = min(num_to_remove, len(nodes) - 1)  # Keep at least one node
         
         # Randomly select nodes to remove
-        nodes_to_remove = random.sample(nodes, num_to_remove)
+        nodes_to_remove = _stream('reduction.remove').sample(nodes, num_to_remove)
         
         removed_nodes = []
         for node in nodes_to_remove:
@@ -460,7 +470,7 @@ class GraphReductionManager:
         num_to_restore = min(num_to_restore, len(self.removed_nodes_pool))
         
         # Randomly select nodes to restore
-        nodes_to_restore = random.sample(self.removed_nodes_pool, num_to_restore)
+        nodes_to_restore = _stream('reduction.restore').sample(self.removed_nodes_pool, num_to_restore)
         
         restored_nodes = []
         for node in nodes_to_restore:

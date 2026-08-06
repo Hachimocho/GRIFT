@@ -93,7 +93,7 @@ class IValueTraversalClusterHop(Traversal):
              
         # Initialize pointers with random nodes
         for _ in range(self.num_pointers):
-            current_node = random.choice(all_nodes) # Use pre-fetched list
+            current_node = self.rng.choice(all_nodes) # Use pre-fetched list
             pointer = {
                 'current_node': current_node,
                 'last_visited': {},
@@ -229,7 +229,7 @@ class IValueTraversalClusterHop(Traversal):
                         # print(f"Skipping hop for Pointer {pointer_to_hop_idx}: Target subgroup {best_subgroup_key} only contains the current node {pointer_to_hop_data['current_node'].node_id}.")
                         pass
                     else:
-                        hop_node = random.choice(target_nodes_in_subgroup)
+                        hop_node = self.rng.choice(target_nodes_in_subgroup)
                         # print(f"Hopping Pointer {pointer_to_hop_idx} to node {hop_node.node_id} in subgroup {best_subgroup_key}")
                         pointer_to_hop_data['current_node'] = hop_node
                         pointer_to_hop_data['last_visited'] = {}
@@ -254,8 +254,8 @@ class IValueTraversalClusterHop(Traversal):
             for pointer in self.pointers:
                 try:
                     # Random warp with probability warp_chance
-                    if random.random() < self.warp_chance:
-                        new_node = self.graph.get_random_node()
+                    if self.rng.random() < self.warp_chance:
+                        new_node = self.graph.get_random_node(rng=self.rng)
                         pointer['current_node'] = new_node
                         if new_node not in visited_this_batch:
                             new_nodes.append(new_node)
@@ -265,7 +265,7 @@ class IValueTraversalClusterHop(Traversal):
                     # Get neighboring nodes
                     neighbors = pointer['current_node'].get_adjacent_nodes()
                     if not neighbors:
-                        new_node = self.graph.get_random_node()
+                        new_node = self.graph.get_random_node(rng=self.rng)
                         pointer['current_node'] = new_node
                         if new_node not in visited_this_batch and isinstance(new_node, AttributeNode):
                             new_nodes.append(new_node)
@@ -282,7 +282,7 @@ class IValueTraversalClusterHop(Traversal):
                     ]
                     
                     if not valid_neighbors:
-                        new_node = self.graph.get_random_node()
+                        new_node = self.graph.get_random_node(rng=self.rng)
                         pointer['current_node'] = new_node
                         if new_node not in visited_this_batch and isinstance(new_node, AttributeNode):
                             new_nodes.append(new_node)
@@ -317,9 +317,15 @@ class IValueTraversalClusterHop(Traversal):
             if not new_nodes:
                 # If we haven't found enough nodes for a minimal batch, try random sampling
                 if len(batch_nodes) < 8:  # Minimum batch size threshold
-                    remaining_nodes = list(set(self.graph.get_nodes()) - visited_this_batch)
+                    # Sorted before sampling: this list comes from a set of Node objects, and
+                    # Node.__hash__ hashes a string node_id, so its order is
+                    # PYTHONHASHSEED-dependent and varies between processes.
+                    remaining_nodes = sorted(
+                        set(self.graph.get_nodes()) - visited_this_batch,
+                        key=lambda node: str(node.node_id),
+                    )
                     if remaining_nodes:
-                        random_nodes = random.sample(remaining_nodes, min(batch_size - len(batch_nodes), len(remaining_nodes)))
+                        random_nodes = self.rng.sample(remaining_nodes, min(batch_size - len(batch_nodes), len(remaining_nodes)))
                         batch_nodes.extend([n for n in random_nodes if isinstance(n, AttributeNode)])
                         visited_this_batch.update(random_nodes)
                 break
@@ -391,7 +397,7 @@ class IValueTraversalClusterHopSubcluster(IValueTraversalClusterHop):
         if not eligible_subclusters:
             return None, None
         probs = self._softmax(eligible_means, temp=self.softmax_temp)
-        chosen_sc = random.choices(eligible_subclusters, weights=probs, k=1)[0]
+        chosen_sc = self.rng.choices(eligible_subclusters, weights=probs, k=1)[0]
         stats = subcluster_stats[chosen_sc]
         mean, std, nodes, i_vals = stats['mean'], stats['std'], stats['nodes'], stats['i_vals']
         candidates = [(n, v) for n, v in zip(nodes, i_vals) if v < mean + self.outlier_std * std]
@@ -415,8 +421,8 @@ class IValueTraversalClusterHopSubcluster(IValueTraversalClusterHop):
         if not subclusters:
             return super().traverse(batch_size)
         for pointer in self.pointers:
-            if random.random() < self.warp_chance:
-                new_node = self.graph.get_random_node()
+            if self.rng.random() < self.warp_chance:
+                new_node = self.graph.get_random_node(rng=self.rng)
                 pointer['current_node'] = new_node
                 if new_node not in visited_this_batch:
                     batch_nodes.append(new_node)
@@ -426,7 +432,7 @@ class IValueTraversalClusterHopSubcluster(IValueTraversalClusterHop):
             if not cand_nodes:
                 # fallback
                 continue
-            next_node = random.choices(cand_nodes, weights=cand_probs, k=1)[0]
+            next_node = self.rng.choices(cand_nodes, weights=cand_probs, k=1)[0]
             pointer['current_node'] = next_node
             if next_node not in visited_this_batch:
                 batch_nodes.append(next_node)

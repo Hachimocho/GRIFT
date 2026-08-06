@@ -92,14 +92,13 @@ def _graph_with_ids_decorrelated_from_allocation(count=8):
     return HyperGraph(nodes)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="C2: ComprehensiveTraversal's test_mode branch sorts by id(x), i.e. by "
-           "memory address, so its 'deterministic' order is not deterministic across "
-           "processes. Fixed by sorting on node_id in group C.",
-)
 def test_comprehensive_traversal_test_mode_order_is_by_node_id():
-    """The test_mode branch claims a deterministic order; it should be by node id."""
+    """The test_mode branch's "deterministic order" must actually be deterministic.
+
+    It sorted by `id(x)` -- a memory address -- so the order varied between
+    processes and between allocations, in the one branch whose comment claims it
+    exists for deterministic testing.
+    """
     graph = _graph_with_ids_decorrelated_from_allocation(8)
     traversal = ComprehensiveTraversal(graph, num_pointers=1, num_steps=None)
     assert traversal.test_mode, "precondition: num_steps=None selects the test_mode branch"

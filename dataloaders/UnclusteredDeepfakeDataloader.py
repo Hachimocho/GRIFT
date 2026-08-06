@@ -52,6 +52,9 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "quality_threshold": 0.9,    # Similarity threshold for quality metrics
         "symmetry_threshold": 0.9,  # Similarity threshold for facial symmetry
         "silent_mode": False,  # When True, disables internal progress bars
+        # Build val/test edges the same way as train. Needed by graph-based
+        # uncertainty, which has no signal on an edgeless graph.
+        "build_val_test_edges": True,
     }
 
     def __init__(self, datasets, edge_class, **kwargs):
@@ -625,11 +628,20 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         print("Building train graph with full edge construction...")
         train_graph = self._build_graph(train_nodes, "train")
         
-        print("Building val graph with full edge construction...")
-        val_graph = self._build_graph(val_nodes, "val")
-        
-        print("Building test graph with full edge construction...")
-        test_graph = self._build_graph(test_nodes, "test")
+        # Honor --build-val-test-edges. This was hardcoded to always build, so the
+        # flag (which only test_hierarchical.py's own graph-building path checked)
+        # had no effect here -- meaning every run through a dataloader paid full
+        # val/test edge construction regardless.
+        build_val_test = self.hyperparameters.get("build_val_test_edges", True)
+        if build_val_test:
+            print("Building val graph with full edge construction...")
+            val_graph = self._build_graph(val_nodes, "val")
+            print("Building test graph with full edge construction...")
+            test_graph = self._build_graph(test_nodes, "test")
+        else:
+            print("Building val/test graphs with nodes only (--no-build-val-test-edges)...")
+            val_graph = HyperGraph(val_nodes)
+            test_graph = HyperGraph(test_nodes)
         
         return train_graph, val_graph, test_graph
     

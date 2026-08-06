@@ -242,7 +242,11 @@ class AIFaceDataset(Dataset):
                     print(f"    '{name}': {count} occurrences")
             
             print("\n Example filenames:")
-            print(random.sample(sorted(unique_filenames), 5))
+            # Sample from a private stream: this debug print consumed 5 draws from
+            # the global RNG, but only on one branch, so whether it fired shifted
+            # every subsequent random decision in the run.
+            from test_helpers.determinism import component_rng
+            print(component_rng('dataset.debug_sample', fallback_seed=5).sample(sorted(unique_filenames), 5))
 
             return unique_filenames
                 

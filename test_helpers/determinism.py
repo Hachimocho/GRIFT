@@ -257,6 +257,29 @@ def rng_for(component):
     return random.Random(seed_for(component))
 
 
+def component_rng(component, fallback_seed=0):
+    """``rng_for(component)``, but usable before determinism is configured.
+
+    Library modules are constructed in contexts that may not have called
+    ``configure_determinism`` (bare unit tests, notebooks, tooling). Returning a
+    fixed-seed private stream there is still strictly better than drawing from the
+    process-global ``random`` module, which is what these call sites did before.
+
+    Cached per component so repeated calls in a loop keep advancing one stream
+    rather than restarting it.
+    """
+    cache = _STATE.setdefault("component_rngs", {})
+    config = _STATE["config"]
+    generation = (id(config), component)
+    cached = cache.get(component)
+    if cached is not None and cached[0] == generation:
+        return cached[1]
+
+    stream = rng_for(component) if config is not None else random.Random(fallback_seed)
+    cache[component] = (generation, stream)
+    return stream
+
+
 def numpy_rng_for(component):
     """A private numpy Generator for ``component``."""
     return np.random.Generator(np.random.PCG64(seed_for(component)))

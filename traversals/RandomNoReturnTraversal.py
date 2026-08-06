@@ -35,7 +35,7 @@ class RandomNoReturnTraversal(Traversal):
         return self.pointers
     
     def reset_pointers(self):
-        self.pointers = [{'current_node': self.graph.get_random_node(), 'last_visited': {}} for _ in range(self.num_pointers)]
+        self.pointers = [{'current_node': self.graph.get_random_node(rng=self.rng), 'last_visited': {}} for _ in range(self.num_pointers)]
     
     def traverse(self):
         if self.t > self.num_steps:
@@ -52,11 +52,11 @@ class RandomNoReturnTraversal(Traversal):
 
             if adj_nodes:
                 # Randomly select an adjacent node
-                pointer['current_node'] = random.choice(adj_nodes)
+                pointer['current_node'] = self.rng.choice(adj_nodes)
             else:
                 # If there are no adjacent nodes,
                 # move the pointer to a random node (can visit recently visited nodes this way, prevents hardlocks on small graphs)
-                pointer['current_node'] = self.graph.get_random_node()
+                pointer['current_node'] = self.graph.get_random_node(rng=self.rng)
 
             for key in pointer['last_visited'].keys():
                 pointer['last_visited'][key] -= 1

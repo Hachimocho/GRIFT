@@ -15,6 +15,16 @@ from utils.attribute_utils import AttributeMetadata, AttributeBiasLoss
 from nodes.atrnode import AttributeNode
 
 
+def _stream(component, fallback_seed=0):
+    """Private RNG stream for `component`.
+
+    Replaces draws from the process-global `random` module. Sharing that global
+    stream meant RNG consumption anywhere upstream shifted these decisions.
+    """
+    from test_helpers.determinism import component_rng
+    return component_rng(component, fallback_seed=fallback_seed)
+
+
 class DQNCapability:
     """Encapsulates all DQN-related functionality."""
     
@@ -528,7 +538,7 @@ class DQNCapability:
 
         # Perform DQN learning step if buffer is large enough
         if len(dqn_model.replay_buffer) >= dqn_model.batch_size:
-            dqn_transitions = random.sample(dqn_model.replay_buffer, dqn_model.batch_size)
+            dqn_transitions = _stream('dqn.replay').sample(dqn_model.replay_buffer, dqn_model.batch_size)
             dqn_model.train_step(dqn_transitions)
             
     def _get_empty_metrics(self):
