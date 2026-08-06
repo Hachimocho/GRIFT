@@ -332,6 +332,117 @@ def test_train_small_is_a_usable_fixture(ai_face_root):
     )
 
 
+def test_quality_attributes_are_populated(ai_face_root):
+    """The precondition for graph-distance uncertainty having any signal.
+
+    It reads blur/brightness/contrast/compression, symmetry_*, emotion_*, and
+    face_embedding -- all of which come from the `*_quality.csv` sidecars, not the base
+    manifest. If those columns were sparse or malformed the method would silently score
+    an all-zero vector after standardization, and embedding distance would fall back to
+    a flat sentinel for every pair.
+
+    Measured over a 3,000-row sample of train_quality.csv: quality_metrics, symmetry,
+    and emotion_scores are populated in 100% of rows, and 91.5% carry a non-zero
+    face_embedding (the loader discards all-zero ones). Asserted with margin, since the
+    sample is the head of the file.
+    """
+    import ast
+    import csv as csv_module
+
+    path = ai_face_root / "train_quality.csv"
+    if not path.is_file():
+        pytest.skip("train_quality.csv is not present")
+
+    csv_module.field_size_limit(10 ** 9)
+    counts = {"rows": 0, "embedding": 0, "quality": 0, "symmetry": 0, "emotion": 0}
+    with open(path, newline="") as handle:
+        reader = csv_module.DictReader(handle)
+        for row in reader:
+            if counts["rows"] >= 1000:
+                break
+            counts["rows"] += 1
+
+            embedding = (row.get("face_embedding") or "").strip()
+            if embedding:
+                try:
+                    # Whitespace-separated numpy repr, not JSON -- a comma-separated
+                    # value would raise here and be dropped.
+                    values = [
+                        float(token) for token in
+                        embedding.strip("[]").replace("\n", " ").split()
+                    ]
+                    if values and not np.allclose(values, 0):
+                        counts["embedding"] += 1
+                except ValueError:
+                    pass
+
+            for column, key in (
+                ("quality_metrics", "quality"),
+                ("symmetry", "symmetry"),
+                ("emotion_scores", "emotion"),
+            ):
+                raw = (row.get(column) or "").strip()
+                if raw and raw not in ("{}", "nan"):
+                    try:
+                        parsed = ast.literal_eval(raw)
+                        if isinstance(parsed, dict) and parsed:
+                            counts[key] += 1
+                    except (ValueError, SyntaxError):
+                        pass
+
+    total = counts["rows"]
+    assert total > 0, "train_quality.csv has no rows"
+    for key in ("quality", "symmetry", "emotion"):
+        rate = counts[key] / total
+        assert rate > 0.9, (
+            f"{key} is populated in only {rate:.1%} of rows; graph-distance would have "
+            f"little to compare"
+        )
+    embedding_rate = counts["embedding"] / total
+    assert embedding_rate > 0.5, (
+        f"only {embedding_rate:.1%} of rows carry a usable face_embedding, so "
+        f"embedding_distance would be dominated by the missing-value sentinel"
+    )
+
+
+def test_quality_sidecars_cover_the_base_manifests(ai_face_root):
+    """Coverage must be near-total, or graph-distance is scoring mostly sentinels.
+
+    Measured at 100% for all three splits: every base-manifest filename has a
+    corresponding quality row and vice versa (train 827,339, val 354,121,
+    test 422,352). Checked here on a sample, since a full scan reads multiple GB.
+    """
+    import csv as csv_module
+
+    pandas = pytest.importorskip("pandas")
+    csv_module.field_size_limit(10 ** 9)
+
+    base = pandas.read_csv(ai_face_root / "train.csv", usecols=["Image Path"], nrows=5000)
+    base_names = {os.path.basename(str(path)) for path in base["Image Path"]}
+
+    quality_path = ai_face_root / "train_quality.csv"
+    if not quality_path.is_file():
+        pytest.skip("train_quality.csv is not present")
+
+    quality_names = set()
+    with open(quality_path, newline="") as handle:
+        reader = csv_module.DictReader(handle)
+        for index, row in enumerate(reader):
+            if index >= 200_000:
+                break
+            identifier = (row.get("image_id") or "").strip()
+            if identifier:
+                quality_names.add(os.path.basename(identifier))
+
+    overlap = base_names & quality_names
+    coverage = len(overlap) / len(base_names)
+    assert coverage > 0.5, (
+        f"only {coverage:.1%} of sampled base filenames have a quality row. Full-file "
+        f"overlap was measured at 100%, so a large drop here means the sidecars no "
+        f"longer correspond to the manifests and graph-distance is scoring sentinels."
+    )
+
+
 def test_checked_in_source_stats_still_match(ai_face_root):
     """Guards the numbers the holdout groups were sized from.
 
