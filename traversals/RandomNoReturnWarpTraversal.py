@@ -49,8 +49,17 @@ class RandomNoReturnWarpTraversal(Traversal):
             # Get the adjacent nodes
             adj_nodes = pointer['current_node'].get_adjacent_nodes()
 
-            # Filter out the nodes that were visited in the last X timesteps
-            adj_nodes = [node for node in adj_nodes if node in pointer['last_visited'].keys() and self.t - pointer['last_visited'][node] > self.X]
+            # Keep neighbors that are not on cooldown -- either never visited by this
+            # pointer, or last visited more than return_delay steps ago. See the
+            # matching comment in RandomNoReturnTraversal: `self.X` was never assigned
+            # (AttributeError on the first call) and the membership test was inverted,
+            # excluding every unvisited neighbor.
+            last_visited = pointer['last_visited']
+            adj_nodes = [
+                node for node in adj_nodes
+                if node not in last_visited
+                or self.t - last_visited[node] > self.return_delay
+            ]
 
             if adj_nodes and (self.rng.random() > self.warp_chance):
                 # Randomly select an adjacent node

@@ -356,11 +356,11 @@ def cnn_model_factory(tiny_detector):
 
     built = []
 
-    def factory(save_path=None, uncertainty_head="none", **kwargs):
+    def factory(save_path=None, uncertainty_head="none", lr=1e-3, **kwargs):
         model = CNNModel(
             save_path=str(save_path) if save_path else "tiny_model.pth",
             model_name=tiny_detector,
-            lr=1e-3,
+            lr=lr,
             amsgrad=True,
             device=torch.device("cpu"),
             uncertainty_head=uncertainty_head,

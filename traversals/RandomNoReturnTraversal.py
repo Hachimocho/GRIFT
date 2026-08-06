@@ -47,8 +47,21 @@ class RandomNoReturnTraversal(Traversal):
             # Get the adjacent nodes
             adj_nodes = pointer['current_node'].get_adjacent_nodes()
 
-            # Filter out the nodes that were visited in the last X timesteps
-            adj_nodes = [node for node in adj_nodes if node in self.pointers[i]['last_visited'].keys() and self.t - self.pointers[i]['last_visited'][node] > self.X]
+            # Keep neighbors that are not on cooldown: either never visited by this
+            # pointer, or last visited more than return_delay steps ago.
+            #
+            # Two bugs were fixed here. `self.X` was never assigned anywhere, so this
+            # line raised AttributeError on the first call -- the traversal could not
+            # run at all. And the membership test was inverted: requiring
+            # `node in last_visited` excluded every *unvisited* neighbor, so a pointer
+            # could only ever move to somewhere it had already been, and on the first
+            # step nothing qualified and it always warped to a random node instead.
+            last_visited = pointer['last_visited']
+            adj_nodes = [
+                node for node in adj_nodes
+                if node not in last_visited
+                or self.t - last_visited[node] > self.return_delay
+            ]
 
             if adj_nodes:
                 # Randomly select an adjacent node
