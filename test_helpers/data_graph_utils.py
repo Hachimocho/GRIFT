@@ -70,6 +70,11 @@ def resolve_ai_face_data_root(explicit_path=None):
 
     cwd = os.getcwd()
     candidates.extend([
+        # Current location on the shared training server. Listed first among the
+        # hardcoded fallbacks because the previous default
+        # (/home/brg2890/major/datasets/ai-face) no longer exists.
+        "/shared/datasets/ai-face/ai-face",
+        "/shared/datasets/ai-face",
         "/home/brg2890/major/datasets/ai-face",
         os.path.join(os.path.expanduser("~"), "major", "datasets", "ai-face"),
         os.path.join(os.path.expanduser("~"), "datasets", "ai-face"),
