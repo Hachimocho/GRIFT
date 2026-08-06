@@ -53,6 +53,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception
 from test_helpers.determinism import (
     assert_strict_invariants, configure_determinism, is_strict, rng_for, run_fingerprint,
+    swallow_or_raise,
 )
 from test_helpers.cache_keys import cache_filenames, graph_cache_key
 from test_helpers.args_utils import parse_args
@@ -100,10 +101,11 @@ from traversals.IValueTraversalClusterHop import (
 )
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
-from models.uncertainty import GraphDistanceUncertainty
+from models.uncertainty import GraphDistanceUncertainty, PredictionBundle
 from models.uncertainty.capabilities import (
     describe_detector, supported_detectors, validate_architectures,
 )
+from evaluation.uq.records import PredictionRecordCollector, RecordCollectionError
 from edges.Edge import Edge
 import copy
 import torch
@@ -142,27 +144,36 @@ def _load_node_data(node, model):
     except Exception as e_load:
         return None
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4): 
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None):
     """Evaluates the model on the provided nodes, calculates standard metrics,
        and optionally calculates bias metrics based on categorical attributes.
-       
+
     Args:
         num_workers: Number of parallel workers for image loading (default: 4)
+        record_collector: Optional PredictionRecordCollector. When supplied, one row
+            per sample is accumulated (probability, logit, per-sample uncertainty,
+            source group, demographics) for the uncertainty benchmark. Without it
+            this function behaves exactly as before -- the continuous scores are
+            thresholded and discarded, so calibration and selective prediction are
+            not recoverable afterwards.
     """
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
 
-    # `_load_node_data` calls model.transform() from worker threads, and in train mode
-    # that path applies RandomHorizontalFlip / RandomRotation / ColorJitter /
-    # RandomAffine / RandomErasing -- all drawing on the global torch RNG from several
-    # threads at once. That would both randomize evaluation and make it
-    # irreproducible, so refuse to evaluate a model left in train mode.
+    # Verify eval() actually took effect, rather than assuming it did.
+    #
+    # `_load_node_data` calls model.transform() from worker threads, and CNNModel's
+    # transform dispatches on `current_mode`: in train mode it applies
+    # RandomHorizontalFlip / RandomRotation / ColorJitter / RandomAffine /
+    # RandomErasing, all drawing on the global torch RNG from several threads at
+    # once. A model whose eval() fails to clear that mode would therefore randomize
+    # its own evaluation, and silently -- the metrics would simply be noisier.
     current_mode = getattr(model, 'current_mode', 'eval')
     if current_mode != 'eval':
         raise RuntimeError(
-            f"evaluate_model requires the model in eval mode, found current_mode="
-            f"{current_mode!r}. Train-mode transforms are stochastic and are applied "
-            f"from worker threads, which would randomize evaluation."
+            f"evaluate_model called model.eval() but current_mode is still "
+            f"{current_mode!r}. Train-mode transforms are stochastic and run in worker "
+            f"threads, so evaluating in this state would randomize the results."
         )
 
     total_loss = 0.0
@@ -178,6 +189,10 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     all_labels = []
     uncertainty_sums = defaultdict(float)
     uncertainty_counts = defaultdict(int)
+    batches_failed = 0
+    first_inference_error = None
+    if record_collector is not None:
+        record_collector.note_requested(nodes_in_dataset)
     subgroup_stats = defaultdict(lambda: {'count': 0, 'correct': 0})
     categorical_attrs = []
     if attribute_metadata:
@@ -289,15 +304,35 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                     except Exception as e_bias:
                         print(f"\nWarning: Error calculating bias loss for batch in {desc}: {e_bias}")
                         total_bias_loss += 0.0 # Add 0 on error for this batch
+            except RecordCollectionError:
+                # Never swallowed: a bug in record collection must not be reported as
+                # an inference failure, and must not quietly reduce coverage.
+                raise
             except Exception as e_inf:
                  print(f"\nError during model inference or loss calculation in {desc}: {e_inf}")
+                 if record_collector is not None:
+                     record_collector.note_batch_failure(e_inf)
+                 batches_failed += 1
+                 if first_inference_error is None:
+                     first_inference_error = f"{type(e_inf).__name__}: {e_inf}"
                  # Clear GPU cache on error to prevent memory buildup
                  if torch.cuda.is_available():
                      torch.cuda.empty_cache()
-                 # Potentially skip batch or handle error appropriately
+                 swallow_or_raise(e_inf, f"evaluate_model[{desc}] batch {i}")
                  continue # Skip batch on inference error
 
-            # --- Store Predictions and Labels for Metrics --- 
+            # --- Per-sample records for the uncertainty benchmark ---
+            # Collected here because this is the only point where the prediction
+            # bundle, the loaded nodes, and the labels are all simultaneously live.
+            if record_collector is not None:
+                record_collector.add_batch(
+                    batch_nodes_loaded, batch_labels_tensor, prediction_bundle
+                    if prediction_bundle is not None
+                    else PredictionBundle(logits=outputs, probabilities=probabilities).with_predictions(),
+                    batch_index=i,
+                )
+
+            # --- Store Predictions and Labels for Metrics ---
             predictions = probabilities.cpu().numpy() > 0.5
             current_labels = batch_labels_tensor.cpu().numpy().astype(int)
             all_predictions.extend(predictions.astype(int))
@@ -358,14 +393,40 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
         final_metrics['accuracy'] = (correct_predictions / total_nodes_processed) * 100
         final_metrics['average_loss'] = total_loss / total_nodes_processed # Average loss per successfully processed sample
     else:
-        final_metrics['accuracy'] = 0.0
-        final_metrics['average_loss'] = float('nan')
+        # Raise rather than report accuracy 0.0. Reporting zero made a total failure
+        # indistinguishable from a genuinely terrible model -- which is exactly how
+        # the evidential/MC-dropout crash presented for as long as it did: every
+        # batch raised, was swallowed by the handler above, and the run cheerfully
+        # printed "Accuracy=0.00%".
+        raise RuntimeError(
+            f"evaluate_model({desc}) processed 0 of {nodes_in_dataset} nodes. "
+            f"{batches_failed} batch(es) failed"
+            + (f"; first error was {first_inference_error}" if first_inference_error else "")
+            + ". Refusing to report accuracy 0.0, which would be indistinguishable "
+              "from a model that simply predicts badly."
+        )
+
+    if batches_failed:
+        coverage = total_nodes_processed / max(1, nodes_in_dataset)
+        print(
+            f"\nWARNING: {batches_failed} batch(es) failed during {desc}; metrics "
+            f"cover {coverage:.1%} of the requested nodes. First error: "
+            f"{first_inference_error}"
+        )
+    final_metrics['batches_failed'] = batches_failed
+    final_metrics['coverage'] = total_nodes_processed / max(1, nodes_in_dataset)
 
     if bias_loss_fn:
          if total_nodes_processed > 0:
              final_metrics['average_bias_loss'] = total_bias_loss / total_nodes_processed # Average bias loss per successfully processed sample
          else:
              final_metrics['average_bias_loss'] = float('nan')
+
+    if record_collector is not None:
+        # A small, JSON-safe summary only. The rows themselves go to disk: this dict is
+        # json.dumps'd to stdout and scraped by the GPU queue manager, so embedding a
+        # 400k-row table here would bloat every log and break the parser.
+        final_metrics['records'] = record_collector.summary()
 
     if uncertainty_sums:
         final_metrics['uncertainty_summary'] = {
