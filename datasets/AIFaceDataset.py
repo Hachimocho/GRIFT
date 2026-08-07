@@ -432,9 +432,19 @@ class AIFaceDataset(Dataset):
                     filename_col = df.columns[0]
                     print(f"Using '{filename_col}' as the filename column")
 
-                # Process quality attributes
+                # Process quality attributes.
+                #
+                # Coverage is measured as "what fraction of *base* rows received
+                # quality attributes", not "what fraction of sidecar rows were used".
+                # The sidecars are a superset of the manifest: the label correction
+                # dropped CelebA and casia-webface from the splits (~31% of rows) but
+                # left the sidecars untouched, so a sidecar-side ratio would sit near
+                # 69% forever and say nothing about whether the join works. Base-row
+                # coverage is the quantity graph-distance actually depends on.
+                base_entry_count = len(attributes_map)
                 merged_count = 0
-                unmatched_count = 0
+                not_in_base_count = 0
+                unresolvable_count = 0
                 unmatched_examples = []
                 for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Processing quality attributes for {subset}"):
                     raw_filename = row[filename_col]
@@ -448,46 +458,58 @@ class AIFaceDataset(Dataset):
                     # quality rows land under keys nothing ever looks up.
                     filename = self._to_current_root(raw_filename, known_sources)
                     if filename is None:
-                        unmatched_count += 1
+                        unresolvable_count += 1
                         if len(unmatched_examples) < 3:
                             unmatched_examples.append(raw_filename.strip())
                         continue
 
-                    # Parse quality attributes
-                    _, quality_attrs = self._parse_quality_attributes((filename, row))
+                    # A sidecar row for an image the manifest no longer lists. Skip it
+                    # rather than inserting an orphan entry no node will ever look up.
+                    if filename not in attributes_map:
+                        not_in_base_count += 1
+                        continue
 
-                    # Merge with existing attributes
-                    if filename in attributes_map:
-                        attributes_map[filename].update(quality_attrs)
-                        merged_count += 1
-                    else:
-                        attributes_map[filename] = quality_attrs
+                    # Parse and merge. The key is guaranteed present by the check above,
+                    # so this only ever enriches an existing base entry.
+                    _, quality_attrs = self._parse_quality_attributes((filename, row))
+                    attributes_map[filename].update(quality_attrs)
+                    merged_count += 1
 
                 print(f"Loaded {len(attributes_map)} total attributes for {subset}")
 
-                # Report the join rate, and refuse to proceed silently if it collapsed.
-                # A 0% join is not hypothetical: it is what happened for as long as the
-                # quality paths were used verbatim, and it leaves every graph-distance
-                # method scoring nothing but its missing-value sentinels.
-                total_quality_rows = merged_count + unmatched_count
-                if total_quality_rows:
-                    join_rate = merged_count / float(total_quality_rows)
+                # Report coverage, and refuse to proceed silently if it collapsed. A 0%
+                # join is not hypothetical: it is what happened for as long as the
+                # sidecar paths were used verbatim, and its only symptom was that every
+                # graph-distance method returned its missing-value sentinels.
+                if base_entry_count:
+                    coverage = merged_count / float(base_entry_count)
                     print(
-                        f"Quality attribute join for {subset}: {merged_count:,} merged, "
-                        f"{unmatched_count:,} unmatched ({join_rate:.1%} joined)"
+                        f"Quality attribute coverage for {subset}: {merged_count:,} of "
+                        f"{base_entry_count:,} base rows enriched ({coverage:.1%})"
                     )
-                    if unmatched_examples:
-                        print(f"  example unmatched paths: {unmatched_examples}")
-                    if join_rate < self.MIN_QUALITY_JOIN_RATE:
+                    if not_in_base_count:
+                        print(
+                            f"  {not_in_base_count:,} sidecar rows skipped: the image is "
+                            f"not in this split's manifest (expected -- the sidecars were "
+                            f"not regenerated after sources were dropped)"
+                        )
+                    if unresolvable_count:
+                        print(
+                            f"  {unresolvable_count:,} sidecar rows unresolvable; "
+                            f"examples: {unmatched_examples}"
+                        )
+                    if coverage < self.MIN_QUALITY_JOIN_RATE:
                         raise ValueError(
-                            f"Quality attribute join for {subset} matched only "
-                            f"{join_rate:.1%} of {total_quality_rows:,} rows (minimum "
-                            f"{self.MIN_QUALITY_JOIN_RATE:.0%}). Nodes would be left "
-                            f"without blur/symmetry/emotion/face_embedding, which "
-                            f"silently disables graph-distance uncertainty. Check that "
-                            f"'{filename_col}' in {quality_csv} can be rewritten onto "
-                            f"data_root={self.data_root!r}; example unmatched paths: "
-                            f"{unmatched_examples}"
+                            f"Quality attributes reached only {coverage:.1%} of "
+                            f"{base_entry_count:,} base rows in {subset} (minimum "
+                            f"{self.MIN_QUALITY_JOIN_RATE:.0%}); {not_in_base_count:,} "
+                            f"sidecar rows had no matching manifest row and "
+                            f"{unresolvable_count:,} could not be resolved at all. Nodes "
+                            f"would be left without blur/symmetry/emotion/face_embedding, "
+                            f"which silently disables graph-distance uncertainty. Check "
+                            f"that '{filename_col}' in {quality_csv} can be rewritten "
+                            f"onto data_root={self.data_root!r}; example unresolvable "
+                            f"paths: {unmatched_examples}"
                         )
             except ValueError:
                 # Coverage failures are actionable configuration errors, not something

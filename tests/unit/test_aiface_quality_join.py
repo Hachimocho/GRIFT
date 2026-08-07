@@ -174,14 +174,14 @@ def test_quality_attributes_reach_the_attribute_map(dataset, dataset_root, capsy
         assert entry["face_embedding"].size == 8
         assert not np.allclose(entry["face_embedding"], 0)
 
-    assert "100.0% joined" in capsys.readouterr().out
+    assert "6 of 6 base rows enriched (100.0%)" in capsys.readouterr().out
 
 
 def test_join_reports_its_rate(dataset, capsys):
     dataset._load_additional_attributes("train")
     output = capsys.readouterr().out
-    assert "Quality attribute join for train" in output
-    assert "merged" in output and "unmatched" in output
+    assert "Quality attribute coverage for train" in output
+    assert "base rows enriched" in output
 
 
 def test_a_collapsed_join_raises_instead_of_degrading_silently(dataset_root):
@@ -205,7 +205,7 @@ def test_a_collapsed_join_raises_instead_of_degrading_silently(dataset_root):
 
     instance = AIFaceDataset.__new__(AIFaceDataset)
     instance.data_root = str(dataset_root)
-    with pytest.raises(ValueError, match="matched only"):
+    with pytest.raises(ValueError, match="reached only"):
         instance._load_additional_attributes("train")
 
 
@@ -229,7 +229,7 @@ def test_the_error_message_names_the_consequence(dataset_root):
         message = str(error)
         assert "face_embedding" in message
         assert "graph-distance" in message
-        assert "example unmatched paths" in message
+        assert "example unresolvable paths" in message
     else:
         pytest.fail("expected a ValueError")
 

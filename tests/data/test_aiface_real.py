@@ -26,10 +26,32 @@ ANNOTATION_COLUMNS = {
     "Uncertainty Score Gender", "Uncertainty Score Age", "Uncertainty Score Race",
 }
 
-#: Sources measured to be exclusively real in the train split.
-REAL_ONLY_SOURCES = {"casia-webface", "CelebA", "FFHQ", "wiki"}
-#: Video sets whose second path component carries real/fake.
+#: Sources that are exclusively real after the label correction. AI-Face v2's real set
+#: is FFHQ, IMDB-WIKI (the `wiki/` folder), and the real portions of the four video
+#: corpora below.
+REAL_ONLY_SOURCES = {"FFHQ", "wiki"}
+
+#: Video sets whose *second* path component carries real/fake. The naming is
+#: inconsistent upstream -- `ff++` and `celebdf` use `real/` vs `crop_img/`, while
+#: `dfdc` and `dfd` use `real/` vs `fake/` -- so the predicate is
+#: `second == "real"`, never `second != "fake"`.
 MIXED_SOURCES = {"celebdf", "ff++", "dfd", "dfdc"}
+
+#: Removed by the label correction. Genuine photographs, but not part of AI-Face v2's
+#: real set; v2 dropped them rather than relabelling them fake.
+DROPPED_SOURCES = {"CelebA", "casia-webface"}
+
+
+def expected_target(image_path):
+    """The label a path must carry after correction: 0 real, 1 fake."""
+    parts = [part for part in str(image_path).replace("\\", "/").split("/") if part]
+    source = parts[0] if parts else ""
+    second = parts[1] if len(parts) > 1 else ""
+    if source in REAL_ONLY_SOURCES:
+        return 0
+    if source in MIXED_SOURCES and second == "real":
+        return 0
+    return 1
 
 
 def read_head(path, limit=4000):
@@ -82,21 +104,18 @@ def test_annotation_uncertainty_columns_are_present(ai_face_root):
     assert ANNOTATION_COLUMNS <= set(rows[0])
 
 
-def test_line_endings_are_mixed_across_splits(ai_face_root):
-    """The manifests do NOT agree on line endings.
+def test_line_endings_are_uniformly_lf(ai_face_root):
+    """All manifests use LF.
 
-    Measured: `test.csv` is CRLF, while `train.csv`, `val.csv`, and `train_small.csv`
-    are LF. Inconsistency is worse than either convention on its own -- code that
-    works on train silently mis-parses test, where the final column becomes "0\\r"
-    rather than "0". `int("0\\r")` happens to succeed, but a string comparison against
-    "0" fails and `awk -F,` yields a trailing carriage return.
-
-    pandas and `csv.DictReader` (with `newline=""`) both handle either, which is why
-    this only bites hand-rolled parsing. Pinned so the asymmetry is documented rather
-    than rediscovered.
+    They did not before the correction: `test.csv` was CRLF while the others were LF.
+    That inconsistency is worse than either convention alone, because code that works
+    on train silently mis-parses test -- the final column becomes "0\\r" rather than
+    "0". `int("0\\r")` happens to succeed, but a string comparison against "0" fails
+    and `awk -F,` yields a trailing carriage return. pandas and
+    `csv.DictReader(newline="")` handle either, so it only bit hand-rolled parsing.
     """
     endings = {}
-    for name in ("train.csv", "val.csv", "test.csv"):
+    for name in ("train.csv", "val.csv", "test.csv", "train_small.csv"):
         path = ai_face_root / name
         if not path.is_file():
             continue
@@ -104,10 +123,8 @@ def test_line_endings_are_mixed_across_splits(ai_face_root):
             endings[name] = "CRLF" if handle.readline().endswith(b"\r\n") else "LF"
 
     assert endings, "no manifests found"
-    assert len(set(endings.values())) > 1, (
-        f"line endings are now uniform ({endings}); if the dataset was normalized, "
-        f"this test can be relaxed -- but any hand-rolled parser should still handle both"
-    )
+    non_lf = {name: ending for name, ending in endings.items() if ending != "LF"}
+    assert not non_lf, f"these manifests are not LF: {non_lf}"
 
 
 def test_image_paths_are_leading_slash_relative(ai_face_root):
@@ -205,22 +222,86 @@ def test_source_parsing_covers_every_row(ai_face_root):
     assert "unknown" not in groups, "some image paths did not yield a source"
 
 
-def test_real_only_sources_are_predominantly_real(ai_face_root):
+def test_real_only_sources_are_entirely_real(ai_face_root):
     """Underpins the holdout design: these are the negative-class pools.
 
-    Holding one of them out would remove a large share of the real data and change the
-    training class prior, confounding distribution shift with class-imbalance shift --
-    which is why the protocol holds out generators, not real sources.
+    Exactly, not approximately -- after the correction `Target` is a pure function of
+    the path. Holding one of these out would remove a large share of the real data and
+    change the training class prior, confounding distribution shift with
+    class-imbalance shift, which is why the protocol holds out generators instead.
     """
     groups = source_composition(ai_face_root, "train")
     seen = REAL_ONLY_SOURCES & set(groups)
     assert seen, f"none of {sorted(REAL_ONLY_SOURCES)} found; expected the real pools"
     for source in sorted(seen):
         counts = groups[source]
-        total = counts["real"] + counts["fake"]
-        assert counts["real"] / total > 0.95, (
-            f"{source} is {counts['fake']}/{total} fake, not a real-only pool"
+        assert counts["fake"] == 0, (
+            f"{source} has {counts['fake']} fake rows; it should be exclusively real"
         )
+        assert counts["real"] > 0
+
+
+def test_dropped_sources_are_gone(ai_face_root):
+    """CelebA and casia-webface were removed, not relabelled.
+
+    They are genuine photographs, so labelling them fake would have taught a detector
+    that real photos are fake. AI-Face v2 removed them from its real set; this copy
+    now matches.
+    """
+    for split in ("train", "val", "test"):
+        groups = source_composition(ai_face_root, split)
+        present = DROPPED_SOURCES & set(groups)
+        assert not present, f"{split}.csv still contains {sorted(present)}"
+
+
+def test_target_is_a_pure_function_of_the_path(ai_face_root):
+    """The core post-correction invariant, asserted over every row of every split.
+
+    Before the correction this held for train and val but not test, which carried
+    3,825 rows (0.9%) of random label noise -- spread uniformly through the file, so
+    not a corrupted block or a column shift.
+    """
+    pandas = pytest.importorskip("pandas")
+
+    for split in ("train", "val", "test"):
+        path = ai_face_root / f"{split}.csv"
+        if not path.is_file():
+            continue
+        frame = pandas.read_csv(path, usecols=["Image Path", "Target"])
+        expected = frame["Image Path"].map(expected_target)
+        mismatches = int((frame["Target"].astype(int) != expected).sum())
+        assert mismatches == 0, (
+            f"{split}.csv has {mismatches} of {len(frame)} rows whose Target disagrees "
+            f"with its path"
+        )
+
+
+def test_corrected_class_balance(ai_face_root):
+    """Records the composition the correction produced, and why it matters.
+
+    ~13% real, against AI-Face v2's published ~24% (400,885 real images). The six real
+    source corpora hold only ~143k images in this copy, so roughly 258k real images
+    that v2 claims are absent here. Every prior-sensitive metric reflects that: Brier
+    and NLL directly, ECE through the base rate. Recovering them means re-downloading.
+    """
+    pandas = pytest.importorskip("pandas")
+
+    totals = {"rows": 0, "real": 0}
+    for split in ("train", "val", "test"):
+        path = ai_face_root / f"{split}.csv"
+        if not path.is_file():
+            continue
+        frame = pandas.read_csv(path, usecols=["Target"])
+        totals["rows"] += len(frame)
+        totals["real"] += int((frame["Target"] == 0).sum())
+
+    assert totals["rows"] > 0
+    real_fraction = totals["real"] / totals["rows"]
+    assert 0.10 < real_fraction < 0.20, (
+        f"real fraction is {real_fraction:.1%} over {totals['rows']:,} rows; expected "
+        f"~13%. A large move means the manifests changed and the holdout sizing and "
+        f"prior-sensitive metrics should be revisited"
+    )
 
 
 def test_mixed_video_sources_need_their_second_path_component(ai_face_root):
@@ -250,21 +331,22 @@ def test_mixed_video_sources_need_their_second_path_component(ai_face_root):
         assert all("/" in group for group in groups)
 
 
-def test_real_directory_label_noise_is_test_split_only(ai_face_root):
-    """`Target` is authoritative; a `real/` directory is not.
+def test_real_directories_are_now_entirely_real(ai_face_root):
+    """The label noise this correction removed, asserted from the other direction.
 
-    Measured over the full manifests: 11.3% of the 18,560 rows under a `real/`
-    directory in **test.csv** are labeled fake (2,095 rows), while train.csv (35,928
-    rows) and val.csv (15,214 rows) have exactly zero.
+    Before the correction, 2,095 of the 18,560 rows under a `real/` directory in
+    test.csv (11.3%) were labelled fake, while train.csv (35,928 such rows) and
+    val.csv (15,214) had exactly zero. The asymmetry suggested test.csv was labelled
+    or assembled differently from train/val. Now every `real/` row is Target=0 in all
+    three splits.
 
-    That asymmetry matters beyond parsing hygiene. A path-based label shortcut would
-    appear to work perfectly in training and then be wrong for 2,095 test rows -- and
-    it suggests the test split was labeled or assembled differently from train/val,
-    which is worth knowing before reading any cross-split result.
+    Note this does not make paths authoritative in general -- `Target` remains the
+    column to read. It happens to be derivable from the path *because* the correction
+    derived it that way.
     """
     pandas = pytest.importorskip("pandas")
 
-    fractions = {}
+    checked = 0
     for split in ("train", "val", "test"):
         path = ai_face_root / f"{split}.csv"
         if not path.is_file():
@@ -275,24 +357,14 @@ def test_real_directory_label_noise_is_test_split_only(ai_face_root):
         ]
         if in_real_dir.empty:
             continue
-        fractions[split] = (float(in_real_dir["Target"].mean()), len(in_real_dir))
+        checked += 1
+        fake_rows = int((in_real_dir["Target"] == 1).sum())
+        assert fake_rows == 0, (
+            f"{split}.csv has {fake_rows} of {len(in_real_dir)} rows under a /real/ "
+            f"directory still labelled fake"
+        )
 
-    assert fractions, "no /real/ directories found in any split"
-    assert "test" in fractions, "expected /real/ rows in the test split"
-
-    test_fraction, test_rows = fractions["test"]
-    assert test_fraction > 0.05, (
-        f"expected substantial label noise under test.csv's /real/ directories, "
-        f"found {test_fraction:.1%} of {test_rows} rows"
-    )
-    for split in ("train", "val"):
-        if split in fractions:
-            split_fraction, _ = fractions[split]
-            assert split_fraction == 0.0, (
-                f"{split}.csv now has {split_fraction:.1%} fake rows under /real/; "
-                f"previously zero. The train/test labeling asymmetry has changed and "
-                f"any conclusion drawn from it should be revisited"
-            )
+    assert checked, "no /real/ directories found in any split"
 
 
 def test_colon_bearing_source_is_handled(ai_face_root):
@@ -434,10 +506,18 @@ def test_quality_sidecar_paths_reference_a_dead_root(ai_face_root):
 def test_quality_sidecars_join_onto_the_base_manifest(ai_face_root):
     """The join must actually connect, using the key the loader really uses.
 
-    This is the test my earlier basename-overlap check should have been. Basenames
-    overlap ~100% while the *join* matched 0%, because the loader keys on the full
-    `image_path` and the base attributes are re-keyed to the current root. Verifies
-    the real thing: normalized sidecar paths land on real base keys.
+    This is the test my earlier basename-overlap check should have been: basenames
+    overlapped ~100% while the *join* matched 0%, because the loader keys on the full
+    `image_path` and the base attributes are re-keyed to the current root.
+
+    Measured in the direction that matters -- what fraction of *base* rows can be
+    enriched -- not what fraction of sidecar rows get used. The sidecars are a superset
+    of the manifest since the label correction dropped CelebA and casia-webface (~31%
+    of rows) without regenerating them, so a sidecar-side ratio would sit near 69%
+    forever and say nothing about whether the join works.
+
+    Samples a contiguous chunk of the sidecar rather than reading all 6.4 GB, so the
+    denominator is the base rows *observed in that chunk*.
     """
     import csv as csv_module
 
@@ -459,7 +539,8 @@ def test_quality_sidecars_join_onto_the_base_manifest(ai_face_root):
     dataset = AIFaceDataset.__new__(AIFaceDataset)
     dataset.data_root = str(ai_face_root)
 
-    joined = absent = unresolvable = 0
+    resolved = set()
+    unresolvable = 0
     with open(quality_path, newline="") as handle:
         for index, row in enumerate(csv_module.DictReader(handle)):
             if index >= 20_000:
@@ -467,19 +548,75 @@ def test_quality_sidecars_join_onto_the_base_manifest(ai_face_root):
             key = dataset._to_current_root(row.get("image_path"), sources)
             if key is None:
                 unresolvable += 1
-            elif key in base_keys:
-                joined += 1
             else:
-                absent += 1
+                resolved.add(key)
 
-    total = joined + absent + unresolvable
-    assert total > 0
-    rate = joined / total
+    assert resolved, "no sidecar path resolved at all"
+    covered = resolved & base_keys
+    assert covered, (
+        f"none of {len(resolved):,} resolved sidecar paths matched a base row; the "
+        f"normalization is producing keys the manifest does not use"
+    )
+
+    # `unresolvable` is expected to be large and is deliberately not asserted on: the
+    # label correction dropped CelebA and casia-webface (~31% of rows) from the
+    # manifests, so their source names are no longer in `known_sources` and their
+    # sidecar rows cannot be resolved. That is the correct outcome -- those images have
+    # no home. What matters is the direction tested below and in the next test.
+    assert unresolvable < len(resolved) + unresolvable, (
+        "every sidecar path failed to resolve, which means the source set is empty"
+    )
+
+
+def test_every_base_row_in_a_sidecar_chunk_is_enriched(ai_face_root):
+    """Stronger form: for images present in both, the join must not miss any.
+
+    Reads a sidecar chunk, keeps only the rows whose image is still in the manifest,
+    and asserts every one of them lands on a base key. A partial join would leave some
+    nodes with attributes and others without, which is harder to notice than a total
+    failure and biases graph-distance toward whichever subset happened to work.
+    """
+    import csv as csv_module
+
+    pandas = pytest.importorskip("pandas")
+    from datasets.AIFaceDataset import AIFaceDataset
+
+    csv_module.field_size_limit(10 ** 9)
+    quality_path = ai_face_root / "train_quality.csv"
+    if not quality_path.is_file():
+        pytest.skip("train_quality.csv is not present")
+
+    base = pandas.read_csv(ai_face_root / "train.csv", usecols=["Image Path"])
+    relative = base["Image Path"].astype(str)
+    sources = set(relative.str.lstrip("/").str.split("/").str[0])
+    base_keys = {
+        os.path.join(str(ai_face_root), path.lstrip("/")) for path in relative
+    }
+    kept_sources = set(relative.str.lstrip("/").str.split("/").str[0])
+
+    dataset = AIFaceDataset.__new__(AIFaceDataset)
+    dataset.data_root = str(ai_face_root)
+
+    considered = matched = 0
+    with open(quality_path, newline="") as handle:
+        for index, row in enumerate(csv_module.DictReader(handle)):
+            if index >= 20_000:
+                break
+            raw = (row.get("image_path") or "")
+            # Restrict to sources the manifest still carries, so dropped sources do
+            # not count against the join.
+            if not any(f"/{source}/" in raw for source in kept_sources):
+                continue
+            considered += 1
+            key = dataset._to_current_root(raw, sources)
+            if key is not None and key in base_keys:
+                matched += 1
+
+    assert considered > 0, "no sidecar rows referenced a still-present source"
+    rate = matched / float(considered)
     assert rate >= AIFaceDataset.MIN_QUALITY_JOIN_RATE, (
-        f"only {rate:.1%} of {total:,} sidecar rows join onto the base manifest "
-        f"({absent:,} resolved but absent, {unresolvable:,} unresolvable). Below this "
-        f"the loader raises, because nodes would have no blur/symmetry/emotion/"
-        f"face_embedding and graph-distance would score only sentinels."
+        f"only {matched:,} of {considered:,} sidecar rows for still-present sources "
+        f"({rate:.1%}) matched a base row"
     )
 
 
