@@ -18,6 +18,14 @@ class AIFaceDataset(Dataset):
     tags = ["deepfakes", "image", "attributes"]
     hyperparameters = None
 
+    #: Minimum fraction of quality-sidecar rows that must join onto the base
+    #: manifest before loading is allowed to continue. The sidecars supply every
+    #: continuous attribute graph-distance uncertainty reads -- blur, brightness,
+    #: contrast, compression, symmetry_*, emotion_*, and face_embedding -- so a
+    #: collapsed join disables that method entirely while everything else appears
+    #: to work. Fail loudly instead.
+    MIN_QUALITY_JOIN_RATE = 0.90
+
     def _parse_quality_attributes(self, row_data):
         """Process a single row of quality attribute data"""
         filename, row = row_data
@@ -254,15 +262,62 @@ class AIFaceDataset(Dataset):
             print(f"Error analyzing CSV: {str(e)}")
             return set()
 
+    def _to_current_root(self, path, known_sources):
+        """Rewrite an image path so it is absolute under the *current* data root.
+
+        The quality sidecars record ``image_path`` against the root the extraction
+        script ran under, which is no longer where the dataset lives:
+
+            image_path = /home/brg2890/major/datasets/ai-face/casia-webface/001597/00120404.jpg
+            data_root  = /shared/datasets/ai-face/ai-face
+
+        Base attributes are re-keyed to the current root, so without this the two
+        maps share no keys and *every* quality attribute is silently dropped --
+        leaving nodes with no blur/brightness/contrast/compression, no symmetry_*, no
+        emotion_*, and no face_embedding. Graph-distance uncertainty then has nothing
+        to compare and degenerates to its missing-value sentinels.
+
+        Works by locating the first path component that names a known source folder
+        and treating everything from there on as dataset-relative, so it is
+        independent of what either root happens to be.
+
+        Deliberately *not* matched on basename: basenames are far from unique
+        (216,267 collisions in train alone, with ``50.jpg`` appearing 3,991 times
+        across identity folders), so a basename join would confidently attach one
+        identity's attributes to thousands of unrelated images -- worse than the
+        current failure, because it would look like it worked.
+
+        Returns the rewritten absolute path, or None if no source component is found.
+        """
+        if not path:
+            return None
+        normalized = str(path).strip().replace('\\', '/')
+
+        # Already under the current root: nothing to do.
+        root = str(self.data_root).replace('\\', '/').rstrip('/')
+        if normalized.startswith(root + '/'):
+            return os.path.normpath(normalized)
+
+        components = [component for component in normalized.split('/') if component]
+        for index, component in enumerate(components):
+            if component in known_sources:
+                relative = '/'.join(components[index:])
+                return os.path.normpath(os.path.join(self.data_root, relative))
+        return None
+
     def _load_additional_attributes(self, subset):
         """Load additional attributes from CSV file for the given split"""
         print(f"Loading additional attributes for {subset}...")
         # Load both base and quality attributes
         base_csv = os.path.join(self.data_root, f"{subset}.csv")
         quality_csv = os.path.join(self.data_root, f"{subset}_quality.csv")
-        
+
         attributes_map = {}
-        
+        #: Top-level source folder names seen in the base manifest (e.g. "FFHQ",
+        #: "dfdc", "casia-webface"). Populated while loading base attributes and used
+        #: to normalize the quality CSV's paths -- see _to_current_root().
+        known_sources = set()
+
         # Perform analysis on the CSV files to understand filename patterns
         print(f"Analyzing base CSV file: {base_csv}")
         base_unique_filenames = self._analyze_csv_filename_stats(base_csv)
@@ -327,16 +382,23 @@ class AIFaceDataset(Dataset):
                     if attrs:  # Only add if we have valid attributes
                         attributes_map[filename] = attrs
                         valid_count += 1
-                
+                        # Remember the top-level source folder. Used below to locate
+                        # the dataset-relative portion of the quality CSV's paths,
+                        # which are recorded against a different (now-dead) root.
+                        first_component = filename.lstrip('/').split('/', 1)[0]
+                        if first_component:
+                            known_sources.add(first_component)
+
                 print(f"Loaded {len(attributes_map)} base attributes for {subset}")
                 print(f"Valid entries: {valid_count}, Invalid entries: {invalid_count}")
-                
+
                 # Update base attributes with root directory
                 for filename in list(attributes_map.keys()):
                     full_path = os.path.join(self.data_root, filename.lstrip('/'))
                     attributes_map[full_path] = attributes_map.pop(filename)
 
                 print(f"Updated base attributes with root directory for {subset}")
+                print(f"Discovered {len(known_sources)} source folders for path normalization")
             except Exception as e:
                 print(f"Warning: Error loading base attributes for {subset}: {str(e)}")
                 # Print available columns for debugging
@@ -354,40 +416,83 @@ class AIFaceDataset(Dataset):
                 # Read the CSV file once
                 df = pd.read_csv(quality_csv)
                 
-                # Determine filename column for quality CSV
-                filename_col = 'image_path'
-                # for possible_col in ['image_id', 'image_path', 'Image Path', 'filename']:
-                #     if possible_col in df.columns:
-                #         filename_col = possible_col
-                #         break
-                
+                # `image_path` holds a full path (under whatever root the extraction
+                # ran on); `image_id` holds only a basename, which is not unique
+                # enough to join on. Prefer the full path and normalize it below.
+                filename_col = 'image_path' if 'image_path' in df.columns else None
+                if filename_col is None:
+                    for possible_col in ['Image Path', 'filename', 'image_id']:
+                        if possible_col in df.columns:
+                            filename_col = possible_col
+                            break
+
                 if filename_col is None:
                     print(f"Warning: Could not find filename column in {quality_csv}. Available columns: {df.columns.tolist()}")
                     # Try to use the first column as a fallback
                     filename_col = df.columns[0]
                     print(f"Using '{filename_col}' as the filename column")
-                
+
                 # Process quality attributes
+                merged_count = 0
+                unmatched_count = 0
+                unmatched_examples = []
                 for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Processing quality attributes for {subset}"):
                     raw_filename = row[filename_col]
-                    
+
                     # Skip invalid filenames
                     if pd.isna(raw_filename) or not isinstance(raw_filename, str):
                         continue
-                    
-                    # Use the full path directly - no normalization
-                    filename = raw_filename.strip()
-                    
+
+                    # Rewrite onto the current data root so this joins against the
+                    # base attributes, which were re-keyed above. Without this the
+                    # quality rows land under keys nothing ever looks up.
+                    filename = self._to_current_root(raw_filename, known_sources)
+                    if filename is None:
+                        unmatched_count += 1
+                        if len(unmatched_examples) < 3:
+                            unmatched_examples.append(raw_filename.strip())
+                        continue
+
                     # Parse quality attributes
                     _, quality_attrs = self._parse_quality_attributes((filename, row))
-                    
+
                     # Merge with existing attributes
                     if filename in attributes_map:
                         attributes_map[filename].update(quality_attrs)
+                        merged_count += 1
                     else:
                         attributes_map[filename] = quality_attrs
-                
+
                 print(f"Loaded {len(attributes_map)} total attributes for {subset}")
+
+                # Report the join rate, and refuse to proceed silently if it collapsed.
+                # A 0% join is not hypothetical: it is what happened for as long as the
+                # quality paths were used verbatim, and it leaves every graph-distance
+                # method scoring nothing but its missing-value sentinels.
+                total_quality_rows = merged_count + unmatched_count
+                if total_quality_rows:
+                    join_rate = merged_count / float(total_quality_rows)
+                    print(
+                        f"Quality attribute join for {subset}: {merged_count:,} merged, "
+                        f"{unmatched_count:,} unmatched ({join_rate:.1%} joined)"
+                    )
+                    if unmatched_examples:
+                        print(f"  example unmatched paths: {unmatched_examples}")
+                    if join_rate < self.MIN_QUALITY_JOIN_RATE:
+                        raise ValueError(
+                            f"Quality attribute join for {subset} matched only "
+                            f"{join_rate:.1%} of {total_quality_rows:,} rows (minimum "
+                            f"{self.MIN_QUALITY_JOIN_RATE:.0%}). Nodes would be left "
+                            f"without blur/symmetry/emotion/face_embedding, which "
+                            f"silently disables graph-distance uncertainty. Check that "
+                            f"'{filename_col}' in {quality_csv} can be rewritten onto "
+                            f"data_root={self.data_root!r}; example unmatched paths: "
+                            f"{unmatched_examples}"
+                        )
+            except ValueError:
+                # Coverage failures are actionable configuration errors, not something
+                # to swallow into a warning like the parse errors below.
+                raise
             except Exception as e:
                 print(f"Warning: Error loading quality attributes for {subset}: {str(e)}")
                 # Print available columns for debugging

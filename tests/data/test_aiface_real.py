@@ -405,41 +405,81 @@ def test_quality_attributes_are_populated(ai_face_root):
     )
 
 
-def test_quality_sidecars_cover_the_base_manifests(ai_face_root):
-    """Coverage must be near-total, or graph-distance is scoring mostly sentinels.
+def test_quality_sidecar_paths_reference_a_dead_root(ai_face_root):
+    """Documents *why* the join needs normalizing at all.
 
-    Measured at 100% for all three splits: every base-manifest filename has a
-    corresponding quality row and vice versa (train 827,339, val 354,121,
-    test 422,352). Checked here on a sample, since a full scan reads multiple GB.
+    The sidecars' `image_path` column records the root the extraction script ran
+    under, which is no longer where the dataset lives. Pinned so that if the sidecars
+    are ever regenerated against the current root, the normalization becomes a no-op
+    rather than silently doing something unexpected.
+    """
+    import csv as csv_module
+
+    csv_module.field_size_limit(10 ** 9)
+    path = ai_face_root / "train_quality.csv"
+    if not path.is_file():
+        pytest.skip("train_quality.csv is not present")
+
+    with open(path, newline="") as handle:
+        row = next(csv_module.DictReader(handle))
+    recorded = (row.get("image_path") or "").strip()
+    assert recorded, "no image_path in the sidecar"
+    assert not recorded.startswith(str(ai_face_root)), (
+        f"sidecar paths now start with the live root ({recorded!r}); the normalization "
+        f"in AIFaceDataset._to_current_root should still be a no-op, but this test's "
+        f"premise has changed"
+    )
+
+
+def test_quality_sidecars_join_onto_the_base_manifest(ai_face_root):
+    """The join must actually connect, using the key the loader really uses.
+
+    This is the test my earlier basename-overlap check should have been. Basenames
+    overlap ~100% while the *join* matched 0%, because the loader keys on the full
+    `image_path` and the base attributes are re-keyed to the current root. Verifies
+    the real thing: normalized sidecar paths land on real base keys.
     """
     import csv as csv_module
 
     pandas = pytest.importorskip("pandas")
+    from datasets.AIFaceDataset import AIFaceDataset
+
     csv_module.field_size_limit(10 ** 9)
-
-    base = pandas.read_csv(ai_face_root / "train.csv", usecols=["Image Path"], nrows=5000)
-    base_names = {os.path.basename(str(path)) for path in base["Image Path"]}
-
     quality_path = ai_face_root / "train_quality.csv"
     if not quality_path.is_file():
         pytest.skip("train_quality.csv is not present")
 
-    quality_names = set()
-    with open(quality_path, newline="") as handle:
-        reader = csv_module.DictReader(handle)
-        for index, row in enumerate(reader):
-            if index >= 200_000:
-                break
-            identifier = (row.get("image_id") or "").strip()
-            if identifier:
-                quality_names.add(os.path.basename(identifier))
+    base = pandas.read_csv(ai_face_root / "train.csv", usecols=["Image Path"])
+    relative = base["Image Path"].astype(str)
+    sources = set(relative.str.lstrip("/").str.split("/").str[0])
+    base_keys = {
+        os.path.join(str(ai_face_root), path.lstrip("/")) for path in relative
+    }
 
-    overlap = base_names & quality_names
-    coverage = len(overlap) / len(base_names)
-    assert coverage > 0.5, (
-        f"only {coverage:.1%} of sampled base filenames have a quality row. Full-file "
-        f"overlap was measured at 100%, so a large drop here means the sidecars no "
-        f"longer correspond to the manifests and graph-distance is scoring sentinels."
+    dataset = AIFaceDataset.__new__(AIFaceDataset)
+    dataset.data_root = str(ai_face_root)
+
+    joined = absent = unresolvable = 0
+    with open(quality_path, newline="") as handle:
+        for index, row in enumerate(csv_module.DictReader(handle)):
+            if index >= 20_000:
+                break
+            key = dataset._to_current_root(row.get("image_path"), sources)
+            if key is None:
+                unresolvable += 1
+            elif key in base_keys:
+                joined += 1
+            else:
+                absent += 1
+
+    total = joined + absent + unresolvable
+    assert total > 0
+    rate = joined / total
+    assert rate >= AIFaceDataset.MIN_QUALITY_JOIN_RATE, (
+        f"only {rate:.1%} of {total:,} sidecar rows join onto the base manifest "
+        f"({absent:,} resolved but absent, {unresolvable:,} unresolvable). Below this "
+        f"the loader raises, because nodes would have no blur/symmetry/emotion/"
+        f"face_embedding and graph-distance would score only sentinels."
     )
 
 
