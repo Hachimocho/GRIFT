@@ -150,6 +150,13 @@ or the uncertainty modules:
 CUDA_VISIBLE_DEVICES=0 pytest --run-all
 ```
 
+## Related
+
+[`docs/uq_benchmark.md`](uq_benchmark.md) covers the other half of this work: how to
+build a node cache, run with `--uq-records`, launch and aggregate deep ensembles, apply
+the two shift protocols, and generate the report — plus how to read the resulting table
+without misinterpreting it.
+
 ## Environment notes
 
 - **`pytest` was absent from every environment that had torch.** It is now in
