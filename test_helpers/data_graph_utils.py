@@ -530,6 +530,29 @@ def plot_subgroup_i_values(history, output_filename):
         import traceback # Redundant if already imported at top, but safe
         traceback.print_exc()
 
+def _apply_configured_holdout(args, resolved_data_root, train_nodes, val_nodes,
+                              test_nodes):
+    """Apply ``--holdout`` if one is configured. Returns the three node lists.
+
+    Records the resulting stats on ``args.holdout_stats`` so the run manifest can carry
+    the class-prior shift -- the number that makes the paired ID-only control necessary
+    rather than optional.
+    """
+    from evaluation.uq.holdouts import apply_holdout, get_holdout
+
+    spec = get_holdout(getattr(args, 'holdout', None))
+    if spec is None:
+        args.holdout_stats = {"holdout_id": None}
+        return train_nodes, val_nodes, test_nodes
+
+    print(f"\nApplying holdout: {spec.describe()}")
+    train_nodes, val_nodes, test_nodes, stats = apply_holdout(
+        train_nodes, val_nodes, test_nodes, spec, resolved_data_root
+    )
+    args.holdout_stats = stats
+    return train_nodes, val_nodes, test_nodes
+
+
 def load_and_prepare_data_splits(args, data_root):
     """Loads, splits, caches, and balances node data based on arguments."""
     resolved_data_root = resolve_ai_face_data_root(getattr(args, 'data_root', None) if args is not None else data_root)
@@ -617,12 +640,21 @@ def load_and_prepare_data_splits(args, data_root):
             train_nodes, val_nodes, test_nodes = None, None, None  # Reset
         else:
             print("Successfully loaded nodes from cache.")
+
+            # The holdout must be applied on this branch too. The early return below
+            # bypasses the direct-load path entirely, and cached runs are how the
+            # benchmark is actually run -- so filtering only there would silently give
+            # every cached holdout run the unfiltered population.
+            train_nodes, val_nodes, test_nodes = _apply_configured_holdout(
+                args, resolved_data_root, train_nodes, val_nodes, test_nodes
+            )
+
             # If loaded from cache, full versions might not be loaded unless cache format changes or they are loaded separately.
             # For now, assume loaded lists are sufficient. Re-caching might not save original full sets.
             train_nodes_full = train_nodes # Placeholder if full not separately cached/loaded
             val_nodes_full = val_nodes   # Placeholder
             test_nodes_full = test_nodes  # Placeholder
-            
+
             # Return early when cache loading succeeds to prevent unnecessary cache regeneration
             node_loading_time = time.time() - node_loading_start
             print(f"Node loading/preparation (from cache) time: {node_loading_time:.2f} seconds")
@@ -642,6 +674,14 @@ def load_and_prepare_data_splits(args, data_root):
         val_nodes_full = [node for node in all_nodes if node.split == 'val']
         test_nodes_full = [node for node in all_nodes if node.split == 'test']
         print(f"  Full Train: {len(train_nodes_full)}, Full Val: {len(val_nodes_full)}, Full Test: {len(test_nodes_full)}")
+
+        # Between split separation and caching, and before balancing. Before caching,
+        # or a later --use-cached run reads back the unfiltered population; before
+        # balancing, or the holdout removes an unpredictable fraction of an
+        # already-fixed-size set, so the graph size would depend on the holdout.
+        train_nodes_full, val_nodes_full, test_nodes_full = _apply_configured_holdout(
+            args, resolved_data_root, train_nodes_full, val_nodes_full, test_nodes_full
+        )
 
         if args.cache_nodes:
             print(f"Caching full node lists to {args.cache_file}...")
