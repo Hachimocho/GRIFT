@@ -147,7 +147,11 @@ class AdaptiveTrainer(Trainer):
         new_traversal = self._create_traversal(new_traversal_type, **traversal_kwargs)
         
         # Transfer state if possible
-        if self.current_traversal and hasattr(self.current_traversal, 'get_state'):
+        # `is not None`, not truthiness: a truthiness test calls __len__, which the
+        # Random* traversals do not implement (Traversal.__len__ raises), so every
+        # run using one died here. For the traversals that *do* implement it, a
+        # zero-length traversal would have been silently treated as absent.
+        if self.current_traversal is not None and hasattr(self.current_traversal, 'get_state'):
             try:
                 state = self.current_traversal.get_state()
                 if hasattr(new_traversal, 'set_state'):
@@ -197,7 +201,8 @@ class AdaptiveTrainer(Trainer):
         
     def train(self, epoch=None):
         """Train using current traversal method."""
-        if not self.current_traversal:
+        # See _switch_traversal: truthiness on a traversal invokes __len__.
+        if self.current_traversal is None:
             raise ValueError("No traversal method set")
             
         return self.capabilities.train_with_traversal(self.current_traversal, epoch)
@@ -241,7 +246,7 @@ class AdaptiveTrainer(Trainer):
     
     def get_current_traversal_info(self):
         """Get information about the current traversal configuration."""
-        if not self.current_traversal:
+        if self.current_traversal is None:
             return "No traversal set"
         
         info = {
