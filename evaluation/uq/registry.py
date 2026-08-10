@@ -149,8 +149,8 @@ UQ_METHODS = {
         family=FAMILY_ENSEMBLE,
         requires=_LOGITS | frozenset({Capability.MULTI_CHECKPOINT}),
         uncertainty_columns=(
-            "u_ens_variance", "u_ens_entropy", "u_ens_mutual_information",
-            "u_ens_disagreement",
+            "u_ens_variance", "u_ens_entropy", "u_ens_entropy_aleatoric",
+            "u_ens_mutual_information", "u_ens_disagreement",
         ),
         primary_column="u_ens_mutual_information",
         produces_probabilities=True, model_agnostic=True,

@@ -224,7 +224,14 @@ class PredictionRecordCollector:
                 "source_top": source_top,
                 "source_group": source_group,
                 "split": self.split,
-                "domain": self.domain_of_source.get(source_group)
+                # The node's own attribute wins: `holdouts.apply_holdout` sets it on
+                # exactly the nodes it filtered, so it is the same code's own record of
+                # what it did. `domain_of_source` remains for callers that label by
+                # group without having run a holdout -- but if both are present and
+                # disagree, trusting the group map would silently mislabel whichever
+                # nodes the holdout actually moved.
+                "domain": attributes.get("domain")
+                or self.domain_of_source.get(source_group)
                 or self.domain_of_source.get(source_top)
                 or self.default_domain,
                 "corruption": self.corruption,

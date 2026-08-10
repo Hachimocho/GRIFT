@@ -197,6 +197,51 @@ def parse_args():
                         help='Train the whole network (default)')
     parser.set_defaults(finetune=False)
 
+    # Benchmark artifacts
+    parser.add_argument('--uq-records', action='store_true',
+                        help='Write per-sample prediction records for the final test '
+                             'evaluation to run_outputs/<run-id>/<description>/records.csv.gz. '
+                             'This is the benchmark\'s only input: the metrics dict printed to '
+                             'stdout carries batch means on incomparable scales, which cannot '
+                             'answer which uncertainty method is better')
+    parser.add_argument('--uq-records-splits', type=str, default='test',
+                        help='Comma-separated splits to record when --uq-records is set. '
+                             'Temperature scaling has to be fitted on val and applied to test, '
+                             'so a benchmark run needs both (default: test)')
+
+    # Distribution shift
+    parser.add_argument('--holdout', type=str, default='none',
+                        help='Held-out source-group family. Removes those generators '
+                             'from train and val and labels them domain=ood on test '
+                             '(test nodes are never dropped, so a holdout run and its '
+                             'control score the same samples). Holding out generators '
+                             'shifts the class prior, so each holdout needs a paired '
+                             '--holdout none control on the same reduced set. '
+                             'See evaluation/uq/holdouts.py for the list')
+    parser.add_argument('--list-holdouts', action='store_true',
+                        help='Print the available holdouts with their measured sizes '
+                             'and exit.')
+    parser.add_argument('--corruption', type=str, default='none',
+                        choices=['none', 'gaussian_blur', 'jpeg', 'gaussian_noise'],
+                        help='Image corruption applied to the final test evaluation, '
+                             'before the model resize. Severity 0 is byte-identical to '
+                             'clean (default: none)')
+    parser.add_argument('--corruption-severity', type=int, default=0,
+                        choices=[0, 1, 2, 3, 4, 5],
+                        help='Corruption severity. 0 is the identity (default: 0)')
+
+    # Deep ensembles
+    parser.add_argument('--ensemble-member', type=int, default=None,
+                        help='Index of this run within a deep ensemble. Varies model '
+                             'initialization while leaving --seed fixed, so all members share '
+                             'one graph cache -- the graph cache key embeds the seed, so N '
+                             'differently-seeded members would each rebuild the train graph. '
+                             'It is also the better experiment: an ensemble should differ in '
+                             'initialization, not in its training data')
+    parser.add_argument('--ensemble-id', type=str, default=None,
+                        help='Identifier shared by every member of one ensemble, recorded in '
+                             'determinism.json so members can be discovered without globbing')
+
     # Reproducibility
     parser.add_argument('--determinism', type=str, default='fast', choices=['strict', 'fast'],
                         help='strict = bit-exact everywhere (deterministic algorithms, TF32 off, '

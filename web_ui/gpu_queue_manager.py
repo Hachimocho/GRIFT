@@ -263,7 +263,17 @@ class GPUQueueManager:
                 env = os.environ.copy()
                 env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
                 env['PYTHONUNBUFFERED'] = '1'
-                
+                # Determinism variables that must be set *before* interpreter start:
+                # PYTHONHASHSEED cannot be assigned from inside Python, and
+                # CUBLAS_WORKSPACE_CONFIG is read when the cuBLAS handle is created.
+                # Only run_reproducible.sh set these, which the queue bypasses -- so
+                # a UI-launched run could not honor --determinism strict at all, and
+                # test_hierarchical.py's bootstrap had to re-exec itself to recover.
+                # setdefault, not assignment: an operator who exported a different
+                # value deliberately should keep it.
+                env.setdefault('PYTHONHASHSEED', '0')
+                env.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+
                 process = subprocess.Popen(
                     cmd_args,
                     stdout=f,
@@ -621,6 +631,11 @@ class GPUQueueManager:
             "cached_nodes": "--use-cached",
             "cache_nodes": "--cache-nodes",
             "cached_nodes_count": "--cached-nodes",
+            # Without this, --cache-file was dropped and every queue-launched run fell
+            # back to the default path -- so pointing a sweep at a purpose-built cache
+            # silently had no effect.
+            "cache_file": "--cache-file",
+            "dynamic_cache_detection": "--dynamic-cache-detection",
             "fair_train": "--fair-train",
             "fair_test": "--fair-test",
             "enable_ivalue_viz": "--enable-ivalue-viz",
@@ -652,30 +667,72 @@ class GPUQueueManager:
             "uncertainty_dropout_rate": "--uncertainty-dropout-rate",
             "uncertainty_train_frequency": "--uncertainty-train-frequency",
             "graph_uncertainty_methods": "--graph-uncertainty-methods",
-            "graph_degree_penalty_weight": "--graph-degree-penalty-weight"
+            "graph_degree_penalty_weight": "--graph-degree-penalty-weight",
+            "sngp_precision_policy": "--sngp-precision-policy",
+            # Reproducibility. Absent from this table, --determinism was silently
+            # dropped from every UI- and ensemble-launched run, so those runs were
+            # non-strict no matter what was requested.
+            "determinism": "--determinism",
+            "lr_schedule": "--lr-schedule",
+            # Model construction
+            "finetune": "--finetune",
+            # Benchmark artifacts and deep ensembles
+            "uq_records": "--uq-records",
+            "uq_records_splits": "--uq-records-splits",
+            "ensemble_member": "--ensemble-member",
+            "ensemble_id": "--ensemble-id",
+            # Distribution shift
+            "holdout": "--holdout",
+            "corruption": "--corruption",
+            "corruption_severity": "--corruption-severity",
+            # Remaining CLI flags that had no route through the queue at all.
+            "enable_train_bias_inference": "--enable-train-bias-inference",
+            "enable_val_bias_inference": "--enable-val-bias-inference",
+            "load_last_checkpoint": "--load-last-checkpoint",
+            "export_csv_per_run": "--export-csv-per-run",
+            "disconnected_switching": "--disconnected-switching",
+            "viz_step_frequency": "--viz-step-frequency",
         }
         
         # Add arguments based on configuration
         for config_key, arg_name in arg_mapping.items():
             if config_key in config:
                 value = config[config_key]
-                
+
                 # Handle boolean flags
                 if isinstance(value, bool):
                     if value:
                         args.append(arg_name)
+                elif value is None:
+                    # str(None) is "None", which argparse would accept as a literal
+                    # value for any str-typed flag. Omit instead, so the CLI default
+                    # applies.
+                    continue
                 else:
-                    if config_key == "graph_uncertainty_methods" and isinstance(value, list):
-                        value = ",".join(str(item).strip() for item in value if str(item).strip())
+                    # Every comma-separated CLI flag must be joined here. This was
+                    # special-cased for graph_uncertainty_methods only, so a list
+                    # `architectures` -- which is how the UI and the ensemble launcher
+                    # both pass it -- reached the CLI as the Python repr
+                    # `['resnestdf']` and failed architecture validation.
+                    if isinstance(value, (list, tuple, set)):
+                        value = ",".join(
+                            str(item).strip() for item in value if str(item).strip()
+                        )
                     args.extend([arg_name, str(value)])
-        
-        # Special handling for cache flags
-        if config.get("cached_nodes", False):
-            args.append("--use-cached")
 
+        # `cached_nodes` already maps to --use-cached above, so appending it again
+        # would duplicate the flag. Kept as an explicit no-op note rather than deleted,
+        # because the key's name reads like a count and the mapping is easy to miss.
+
+        # Flags that default to *on*, so only the negation ever needs emitting. These
+        # cannot live in arg_mapping: a False value there emits nothing at all, which
+        # would silently leave the default in place.
         if config.get("build_val_test_edges", True) is False:
             args.append("--no-build-val-test-edges")
-        
+
+        if config.get("graph_distance_robust_stats", True) is False:
+            args.append("--no-graph-distance-robust-stats")
+
         # Add run ID if provided
         if run_id:
             args.extend(["--run-id", run_id])

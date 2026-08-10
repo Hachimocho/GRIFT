@@ -52,8 +52,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception
 from test_helpers.determinism import (
-    assert_strict_invariants, configure_determinism, is_strict, rng_for, run_fingerprint,
-    swallow_or_raise,
+    assert_strict_invariants, configure_determinism, is_strict, rng_for,
+    seed_model_init, swallow_or_raise, write_run_fingerprint,
 )
 from test_helpers.cache_keys import cache_filenames, graph_cache_key
 from test_helpers.args_utils import parse_args
@@ -106,6 +106,7 @@ from models.uncertainty.capabilities import (
     describe_detector, supported_detectors, validate_architectures,
 )
 from evaluation.uq.records import PredictionRecordCollector, RecordCollectionError
+from evaluation.uq.corruptions import ImageCorruption
 from edges.Edge import Edge
 import copy
 import torch
@@ -120,7 +121,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader 
 import io
 
-def _load_node_data(node, model):
+def _load_node_data(node, model, image_corruption=None):
     """Helper function to load a single node's data. Used for parallel loading."""
     try:
         node_data = node.get_data()
@@ -128,6 +129,13 @@ def _load_node_data(node, model):
             img = node_data.load_data()
             label = node.get_label()
             if img is not None and label is not None:
+                # Corrupt the decoded image *before* transform's resize and
+                # normalization: model-agnostic, and the only point where the image is
+                # still uint8 BGR at its source resolution. Inside the existing try, so
+                # a broken corruption degrades `coverage` rather than crashing the run
+                # -- and the coverage guard then refuses the cell.
+                if image_corruption is not None:
+                    img = image_corruption(img, node)
                 # Apply transformations using the model's internal method
                 img_tensor = model.transform(img)
                 
@@ -144,7 +152,52 @@ def _load_node_data(node, model):
     except Exception as e_load:
         return None
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None):
+def _uq_record_splits(args):
+    """Which splits --uq-records should write. Empty tuple means "don't record"."""
+    if not getattr(args, 'uq_records', False):
+        return ()
+    raw = getattr(args, 'uq_records_splits', 'test') or 'test'
+    return tuple(
+        name for name in (part.strip() for part in raw.split(','))
+        if name in ('train', 'val', 'test')
+    )
+
+
+def _save_uq_records(collector, output_dir, split, extra_manifest=None):
+    """Persist a collector's rows plus its manifest. Returns the records path.
+
+    Failure here must not lose a finished training run, so the exception is caught
+    and reported. But it is reported *loudly* and the coverage number is printed
+    either way: a records table silently written from 3% of the evaluation set is
+    exactly the failure mode the benchmark's coverage guard exists to catch, and
+    catching it here would defeat that.
+    """
+    from evaluation.uq.records import save_records
+
+    summary = collector.summary()
+    print(f"  [uq] {split}: {summary['n_rows']} rows from {summary['n_requested']} "
+          f"requested (coverage {summary['coverage']:.1%}, "
+          f"{summary['n_batches_failed']} batches failed)")
+    if summary['first_error']:
+        print(f"  [uq] {split}: first batch error was {summary['first_error']}")
+    if not collector.rows:
+        print(f"  [uq] {split}: nothing collected, skipping write")
+        return None
+
+    records_path = os.path.join(str(output_dir), f"records_{split}.csv.gz")
+    try:
+        _frame, manifest = save_records(collector, records_path,
+                                       extra_manifest=extra_manifest)
+    except Exception as exc:  # noqa: BLE001 - a finished run must not be lost
+        print(f"  [uq] ERROR writing {split} records: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return None
+    print(f"  [uq] {split}: wrote {records_path} "
+          f"(sha256 {manifest['sha256_records'][:12]})")
+    return records_path
+
+
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None, image_corruption=None):
     """Evaluates the model on the provided nodes, calculates standard metrics,
        and optionally calculates bias metrics based on categorical attributes.
 
@@ -156,6 +209,10 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             this function behaves exactly as before -- the continuous scores are
             thresholded and discarded, so calibration and selective prediction are
             not recoverable afterwards.
+        image_corruption: Optional callable ``(image, node) -> image`` applied to each
+            decoded uint8 BGR image before ``model.transform``. Used for the
+            severity-ladder shift protocol. Model-agnostic by construction, since no
+            detector is involved. ``None`` leaves every existing call site unchanged.
     """
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
@@ -175,6 +232,19 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             f"{current_mode!r}. Train-mode transforms are stochastic and run in worker "
             f"threads, so evaluating in this state would randomize the results."
         )
+
+    # A corruption whose label disagrees with what was actually applied is the worst
+    # kind of error here: the table is well-formed, the numbers are real, and they are
+    # filed under the wrong severity. Both sides carry the label, so check them.
+    if image_corruption is not None and record_collector is not None:
+        applied = (getattr(image_corruption, 'corruption', None),
+                   getattr(image_corruption, 'severity', None))
+        labelled = (record_collector.corruption, record_collector.severity)
+        if applied != (None, None) and applied != labelled:
+            raise RuntimeError(
+                f"image_corruption applies {applied} but record_collector labels rows "
+                f"{labelled}. The records would be filed under the wrong severity."
+            )
 
     total_loss = 0.0
     total_bias_loss = 0.0
@@ -224,7 +294,10 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             # deterministic -- and it is what lets the benchmark assign stable
             # per-sample record ids.
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [executor.submit(_load_node_data, node, model) for node in batch_nodes]
+                futures = [
+                    executor.submit(_load_node_data, node, model, image_corruption)
+                    for node in batch_nodes
+                ]
                 for future in futures:
                     result = future.result()
                     if result is not None:
@@ -676,6 +749,25 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
 
 def main():
     args = parse_args() # Parse args first
+
+    if getattr(args, 'list_holdouts', False):
+        from evaluation.uq.holdouts import summarize_available
+        from evaluation.uq.corruptions import describe as describe_corruptions
+        print(summarize_available())
+        print()
+        print(describe_corruptions())
+        sys.exit(0)
+
+    # Fail on an unknown --holdout now, not after a graph build. get_holdout also
+    # refuses a spec that would hold out a real source, which would remove part of the
+    # negative class rather than shifting the distribution.
+    from evaluation.uq.holdouts import get_holdout
+    try:
+        get_holdout(getattr(args, 'holdout', None))
+    except ValueError as error:
+        print(f"\nERROR: {error}")
+        sys.exit(1)
+
     graph_uncertainty_methods = [
         method.strip() for method in getattr(args, 'graph_uncertainty_methods', '').split(',') if method.strip()
     ]
@@ -925,6 +1017,11 @@ def main():
             build_val_test_edges=getattr(args, 'build_val_test_edges', True),
             hyperparameters=dataloader_class.hyperparameters,
             args=args,
+            # A holdout removes nodes, so a held-out run and its control build
+            # genuinely different graphs. The parameter has always existed here;
+            # nothing passed it, so every key ended `_honone` and the two runs shared
+            # one cache entry.
+            holdout_id=getattr(args, 'holdout', None),
         )
         _cache_paths = cache_filenames(graph_cache_dir, cache_base)
         pickle_cache_filename = _cache_paths['pickle']
@@ -1209,6 +1306,20 @@ def main():
         run_output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[Quanty] All visualizations and outputs for this run will be saved under: {run_output_dir}")
 
+        # determinism.json is written *now*, not at the end: a run that crashes
+        # halfway is exactly the one whose environment you need to inspect, and it is
+        # also how an ensemble launcher discovers its members while they are still
+        # in flight. The final-results fields are filled in by a second write below.
+        determinism_path = run_output_dir / "determinism.json"
+        write_run_fingerprint(
+            determinism_path,
+            run_id=run_id,
+            seed=args.seed,
+            ensemble_member=getattr(args, 'ensemble_member', None),
+            ensemble_id=getattr(args, 'ensemble_id', None),
+            configs=[entry['description'] for entry in test_configs],
+        )
+
         # Test each configuration
         for config in test_configs:
             print(f"\n{'='*80}")
@@ -1218,6 +1329,13 @@ def main():
             try:
                 # Create model
                 arch = config['arch']
+                # Deep-ensemble members differ here and nowhere else: same seed, same
+                # graph, same data order, different weight initialization. A no-op
+                # unless --ensemble-member was passed.
+                member_seed = seed_model_init(getattr(args, 'ensemble_member', None))
+                if member_seed is not None:
+                    print(f"  Ensemble member {args.ensemble_member}: "
+                          f"weight-init seed {member_seed}")
                 model = create_model(
                     arch,
                     f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
@@ -1666,6 +1784,46 @@ def main():
                             print(f"\n⚠️  No checkpoint found at {best_model_checkpoint_path}. Using current model state for final testing...")
                         
                         model_to_eval.eval()
+
+                        # Per-sample records for the uncertainty benchmark. The metrics
+                        # dict below carries only batch *means* of each raw uncertainty
+                        # signal, and those live on incomparable scales -- calibration,
+                        # selective prediction, and OOD detection all need the
+                        # per-sample table.
+                        record_splits = _uq_record_splits(args)
+                        uq_artifacts = {}
+                        # Severity 0 / corruption 'none' constructs an identity, which
+                        # short-circuits before any image work -- so a clean run pays
+                        # nothing and its rows are byte-identical to an uncorrupted one.
+                        test_corruption = ImageCorruption(
+                            corruption=getattr(args, 'corruption', 'none'),
+                            severity=getattr(args, 'corruption_severity', 0),
+                            data_root=data_root,
+                        )
+                        uq_manifest = {
+                            "run_id": run_id,
+                            "description": config['description'],
+                            "detector": arch,
+                            "uncertainty_head": args.uncertainty_head,
+                            "mc_dropout_samples": args.mc_dropout_samples,
+                            "seed": args.seed,
+                            "ensemble_member": getattr(args, 'ensemble_member', None),
+                            "ensemble_id": getattr(args, 'ensemble_id', None),
+                            "determinism_mode": args.determinism,
+                            "holdout_id": getattr(args, 'holdout', None),
+                            "holdout_stats": getattr(args, 'holdout_stats', None),
+                            "best_epoch": best_epoch,
+                        }
+                        test_collector = (
+                            PredictionRecordCollector(
+                                split='test', data_root=data_root,
+                                # Labelled from the same object that applies it, so
+                                # the two cannot disagree.
+                                corruption=test_corruption.corruption,
+                                severity=test_corruption.severity,
+                            )
+                            if 'test' in record_splits else None
+                        )
                         test_metrics = evaluate_model(
                             model=model_to_eval,
                             nodes_to_evaluate=test_nodes_from_graph,
@@ -1674,10 +1832,75 @@ def main():
                             bias_loss_fn=getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None,
                             device=device,
                             desc="Final Test",
-                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None,
+                            record_collector=test_collector,
+                            image_corruption=None if test_corruption.is_identity else test_corruption,
                         )
                         print("\n--- Final Test Results ---")
                         print(json.dumps(test_metrics, indent=2))
+
+                        # After the eval, so n_applied is the real count rather than the
+                        # zero it would be if snapshotted at construction.
+                        uq_manifest["corruption"] = test_corruption.summary()
+
+                        if record_splits:
+                            uq_dir = run_output_dir / config['description']
+                            uq_dir.mkdir(parents=True, exist_ok=True)
+                            if test_collector is not None:
+                                uq_artifacts['test'] = _save_uq_records(
+                                    test_collector, uq_dir, 'test', uq_manifest
+                                )
+                            # Val records exist for temperature scaling, which must be
+                            # fitted on data the reported test numbers never saw. Run
+                            # on the same best checkpoint, which is already loaded.
+                            if 'val' in record_splits and val_nodes_from_graph:
+                                val_collector = PredictionRecordCollector(
+                                    split='val', data_root=data_root
+                                )
+                                evaluate_model(
+                                    model=model_to_eval,
+                                    nodes_to_evaluate=val_nodes_from_graph,
+                                    loss_fn=criterion,
+                                    batch_size=args.batch_size,
+                                    device=device,
+                                    desc="UQ Val Records",
+                                    num_workers=getattr(args, 'val_num_workers', 4),
+                                    record_collector=val_collector,
+                                )
+                                uq_artifacts['val'] = _save_uq_records(
+                                    val_collector, uq_dir, 'val', uq_manifest
+                                )
+                            # A small, greppable marker so the web UI's log scraper can
+                            # link the artifacts without the 400k-row table ever
+                            # entering the metrics JSON it parses.
+                            print("--- UQ Artifacts ---")
+                            print(json.dumps(uq_artifacts))
+
+                        # Second fingerprint write, now that the results exist. This is
+                        # what an ensemble launcher reads to decide whether a member is
+                        # complete and mergeable -- head and detector included, so
+                        # averaging across mismatched heads is refusable rather than
+                        # silently wrong.
+                        write_run_fingerprint(
+                            determinism_path,
+                            run_id=run_id,
+                            seed=args.seed,
+                            ensemble_member=getattr(args, 'ensemble_member', None),
+                            ensemble_id=getattr(args, 'ensemble_id', None),
+                            results={
+                                config['description']: {
+                                    "detector": arch,
+                                    "uncertainty_head": args.uncertainty_head,
+                                    "mc_dropout_samples": args.mc_dropout_samples,
+                                    "best_epoch": best_epoch,
+                                    "best_val_accuracy": best_val_accuracy,
+                                    "checkpoint": best_model_checkpoint_path,
+                                    "test_accuracy": test_metrics.get('accuracy'),
+                                    "records": uq_artifacts,
+                                    "complete": True,
+                                }
+                            },
+                        )
                         # Log final test bias metrics (only if bias inference is enabled)
                         if getattr(args, 'enable_val_bias_inference', False):
                             bias_tracker.log_bias_metrics(epoch=best_epoch-1 if best_epoch > 0 else args.num_epochs-1, test_metrics=test_metrics)
