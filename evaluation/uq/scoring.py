@@ -181,6 +181,11 @@ def score_cell(cell, n_boot=0, bootstrap_seed=42):
 
 def _identity(cell, spec):
     return {
+        # The source table's label. Two cells can share (detector, method_id) and still
+        # be different measurements -- max-probability scored on one member's records
+        # and on an ensemble's averaged records is the clearest case -- so without this
+        # the tidy table has rows that are indistinguishable but not equal.
+        "label": cell.extra.get("label", ""),
         "detector": cell.detector,
         "method_id": cell.method_id,
         "method_family": spec.family,
