@@ -3,7 +3,6 @@ from tqdm import tqdm
 import time
 import torch
 import torch.nn as nn
-import wandb
 from torchvision import transforms
 from torchmetrics import Accuracy, F1Score, AUROC
 from datasets import *
@@ -47,6 +46,11 @@ class Trainer():
         self.attribute_metadata = attribute_metadata
         
     def run(self):
+        # Deferred: a module-level `import wandb` here made it a hard dependency of
+        # every importer of `trainers` (the package `__init__.py` auto-imports every
+        # module), including the fast test tier, which deliberately omits wandb.
+        import wandb
+
         print("Running trainer.")
         t = time.time()
         best_accs = [0 for model in self.models]
@@ -70,6 +74,8 @@ class Trainer():
         wandb.log({"time": time.time() - t})
         
     def test_run(self):
+        import wandb
+
         print("Test run!")
         t = time.time()
         for _ in range(self.num_steps):

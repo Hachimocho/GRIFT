@@ -28,7 +28,6 @@ from networkx import Graph
 from graphs.HyperGraph import HyperGraph
 from models.CNNModel import CNNModel
 from datasets.DeepfakeDataset import DeepfakeDataset
-import wandb
 from trainers.Trainer import Trainer
 
 class DeepfakeAttributeTrainer(Trainer):
@@ -134,6 +133,9 @@ class DeepfakeAttributeTrainer(Trainer):
         self.model.test()
         print("Finished.")
         # Since a model should never be tested more than once to avoid data leakage, we put some safeguards here.
+        # Deferred import: see trainers/Trainer.py's run() for why this cannot sit at
+        # module level.
+        import wandb
         wandb.finish()
         self.model = None
         self.dataset = None

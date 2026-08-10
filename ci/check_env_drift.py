@@ -28,7 +28,6 @@ EXPECTED_ABSENT = {
 
 #: Packages the CI env adds that the training env lacks.
 EXPECTED_EXTRA = {
-    "cpuonly": "forces a CPU torch build",
     "pytest": "not in environment.yml until this work added it",
     "pytest-cov": "coverage reporting",
     "pytest-timeout": "per-test timeouts",

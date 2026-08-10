@@ -14,10 +14,13 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  # CPU-only torch. `cpuonly` keeps conda from resolving a CUDA build.
-  - pytorch
-  - torchvision
-  - cpuonly
+  # CPU-only torch. `cpuonly` is a `pytorch`-channel metapackage and does not exist
+  # on conda-forge (this environment's only channel) -- with it listed, `mamba env
+  # create` cannot solve at all ("cpuonly =* * does not exist"), so the entire fast
+  # CI job never got past environment setup. conda-forge's own convention is a build
+  # string pin instead: `pytorch=*=cpu*` selects the CPU build directly.
+  - pytorch=*=cpu*
+  - torchvision=*=cpu*
   # numpy<2: the repo pins 1.26.4 and several modules assume that ABI.
   - numpy<2
   - pandas
@@ -26,7 +29,13 @@ dependencies:
   - networkx
   - python-louvain          # absent from the training env, so Louvain is a no-op there
   - opencv
+  - scikit-image            # models/Model.py imports skimage.io at module load time,
+                             # so every model subclass import chain needs it -- absent
+                             # here, it broke collection of every test that touches
+                             # models/, not just ones that use it directly
   - matplotlib-base         # -base: no Qt, so no display needed
+  - seaborn                 # trainers/BiasMetricsTracker.py imports it at module
+                             # level, same failure shape as scikit-image above
   - pillow
   - tqdm
   - dill

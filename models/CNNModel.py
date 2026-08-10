@@ -112,12 +112,14 @@ class CNNModel(Model):
         )
         
         # Add learning rate scheduler
+        # `verbose` was deprecated and then removed from ReduceLROnPlateau -- absent
+        # on newer torch builds (2.6+), present but warning on others. It only ever
+        # controlled a console print on LR drop, so dropping it changes no numerics.
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optim,
             mode='min',
             factor=0.5,
             patience=2,
-            verbose=True
         )
         
         # Common transforms for both training and validation
