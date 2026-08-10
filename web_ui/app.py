@@ -537,20 +537,22 @@ def generate_cache_background(
             print("Generating node cache...")
             node_cache_dir = "node_cache"
             os.makedirs(node_cache_dir, exist_ok=True)
-            
-            # Save nodes for each split
-            cache_data = {}
-            for split_name, nodes in [
-                ('train', train_nodes if balance_nodes else train_nodes_full),
-                ('val', val_nodes if balance_nodes else val_nodes_full),
-                ('test', test_nodes if balance_nodes else test_nodes_full)
-            ]:
-                cache_data[split_name] = nodes
-            
-            # Save to cache file
             cache_file = os.path.join(node_cache_dir, 'cached_nodes.pkl')
-            with open(cache_file, 'wb') as f:
-                dill.dump(cache_data, f)
+
+            # Route through the production writer rather than pickling by hand.
+            # This used to dump `{split: [nodes]}`, which matches none of the three
+            # shapes load_cached_nodes accepts -- it is not `{split: {'full':...,
+            # 'balanced':...}}`, has no top-level 'full' key, and is not a bare list --
+            # so every cache this button produced was silently rejected on load and the
+            # run fell back to a full dataset read.
+            save_cached_nodes(
+                train_nodes_full, val_nodes_full, test_nodes_full,
+                cache_file,
+                target_num_nodes=min(
+                    len(train_nodes_full), len(val_nodes_full), len(test_nodes_full),
+                    len(train_nodes) if balance_nodes else len(train_nodes_full),
+                ),
+            )
             print(f"Node cache saved to {cache_file}")
         
         # Generate graph cache if requested

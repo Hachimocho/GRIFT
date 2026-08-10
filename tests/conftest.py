@@ -329,6 +329,33 @@ def image_nodes(tmp_path):
 
 
 @pytest.fixture
+def tiny_node_cache(tmp_path):
+    """A node cache written by the production writer. Yields its path.
+
+    Generated rather than committed: the pickle embeds absolute node_id paths, dill
+    executes code from it on load, and it breaks on any rename to AttributeNode or
+    ImageFileData. Small enough (200 nodes) that generating it costs less than a
+    second.
+    """
+    from tests.helpers.node_cache import write_synthetic_node_cache
+    return write_synthetic_node_cache(
+        tmp_path / "node_cache" / "cached_nodes.pkl",
+        tmp_path / "cache_images",
+        n_train=120, n_val=40, n_test=40, embedding_dim=16,
+    )
+
+
+@pytest.fixture
+def tiny_ai_face_root(tmp_path):
+    """A miniature AI-Face directory the real AIFaceDataset can load.
+
+    No `*_quality.csv`, so the os.path.exists guards skip the sidecar read entirely.
+    """
+    from tests.helpers.node_cache import write_tiny_ai_face_root
+    return write_tiny_ai_face_root(tmp_path / "tiny_ai_face")
+
+
+@pytest.fixture
 def tiny_detector():
     """Install the graftable tiny detector; yields its architecture name."""
     from tests.helpers.tiny_detector import register_tiny_detector, unregister_tiny_detectors

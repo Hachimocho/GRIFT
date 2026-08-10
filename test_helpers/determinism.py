@@ -20,6 +20,7 @@ PYTHONHASHSEED-dependent, which would make sub-seeds vary across processes.
 """
 
 import hashlib
+import json
 import os
 import random
 import sys
@@ -65,6 +66,7 @@ COMPONENTS = frozenset({
     "balance.subgroup",
     "dataset.split_shuffle",
     "dataset.debug_sample",
+    "cache.node_subsample",
     # graph mutation
     "reduction.remove",
     "reduction.restore",
@@ -74,7 +76,7 @@ COMPONENTS = frozenset({
     # evaluation
     "eval.val_subsample",
     "eval.train_bias_subsample",
-    # model init
+    # model init (ensemble members derive as "model.init.member<n>")
     "model.batchensemble_init",
     "model.sngp_rff",
     # misc
@@ -161,6 +163,35 @@ def configure_determinism(seed=42, mode="fast", allow_multi_gpu=False):
     )
     _STATE["config"] = config
     return config
+
+
+def seed_model_init(member=None):
+    """Reseed the torch RNGs so a model's weights depend on ``member``.
+
+    Deep ensembles need members that differ in *initialization* only. Varying
+    ``--seed`` would do that, but the graph cache key embeds the seed whenever a
+    split has edges, so N seeds means N full graph rebuilds -- the expensive part of
+    a run, repeated for no experimental gain. It would also vary the training data
+    order, which confounds "ensemble diversity" with "trained on a different
+    curriculum".
+
+    So the seed stays fixed and this shifts only the weight-init stream. Call it
+    immediately before constructing the model.
+
+    ``member=None`` is the single-run case and is a **no-op** -- reseeding from a
+    derived stream would change every existing non-ensemble run's weights, which
+    would silently invalidate the reference numbers already recorded.
+
+    Returns the seed used, or None when nothing was reseeded.
+    """
+    if member is None:
+        return None
+    seed = seed_for(f"model.init.member{int(member)}")
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    return seed
 
 
 def _assert_strict_env(seed, allow_multi_gpu=False):
@@ -426,6 +457,58 @@ def run_fingerprint(extra=None):
     if extra:
         fingerprint.update(extra)
     return fingerprint
+
+
+def write_run_fingerprint(path, **extra):
+    """Write (or update) ``determinism.json``. Returns the fingerprint written.
+
+    Also the deep-ensemble member manifest: a launcher discovers its members by
+    reading these files rather than by globbing checkpoint names, so a member that
+    was launched with a different head or a different config cannot be silently
+    folded into the average.
+
+    Called more than once per run -- first at startup so a crashed run still leaves
+    its environment on disk, then again after each configuration finishes. Later keys
+    merge over earlier ones rather than replacing the file, and dict-valued keys merge
+    one level deep so a multi-configuration run accumulates all of its results instead
+    of each config clobbering the last.
+    """
+    path = str(path)
+    existing = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as handle:
+                existing = json.load(handle)
+        except (OSError, ValueError):
+            # A corrupt or truncated file is not worth failing a training run over;
+            # it gets overwritten with a good one.
+            existing = {}
+
+    fingerprint = run_fingerprint()
+    # Environment facts are re-measured every write (flags can drift mid-run, which
+    # is precisely what assert_strict_invariants exists to catch); caller-supplied
+    # fields accumulate.
+    merged = dict(existing)
+    merged.update(fingerprint)
+    for key, value in extra.items():
+        if value is None:
+            continue
+        previous = merged.get(key)
+        if isinstance(previous, dict) and isinstance(value, dict):
+            combined = dict(previous)
+            combined.update(value)
+            merged[key] = combined
+        else:
+            merged[key] = value
+
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    temporary = f"{path}.tmp"
+    with open(temporary, "w") as handle:
+        json.dump(merged, handle, indent=2, sort_keys=True, default=str)
+    os.replace(temporary, path)
+    return merged
 
 
 def _git_state():
