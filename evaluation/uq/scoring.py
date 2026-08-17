@@ -65,6 +65,13 @@ class Cell:
     seed: Optional[int] = None
     cost_forward_passes: object = 1
     cost_training_runs: int = 0
+    #: Decision threshold the thresholded metrics are taken at. 0.5 reproduces the
+    #: original numbers exactly; a fitted value comes from `evaluation/uq/threshold.py`
+    #: and must have been fitted on validation data, never on the split being scored.
+    #: It changes accuracy, balanced accuracy, *and* the definition of an "error" -- so
+    #: selective prediction and uncertainty-error ranking move with it too, which is
+    #: correct: those measure the mistakes the model actually makes at its operating point.
+    threshold: float = 0.5
     extra: Dict[str, object] = field(default_factory=dict)
 
 
@@ -102,29 +109,37 @@ def score_cell(cell, n_boot=0, bootstrap_seed=42):
     row = {**_identity(cell, spec), "status": "ok", "n": int(len(frame))}
     flags = set()
 
-    discrimination, discrimination_flags = discrimination_metrics(labels, probabilities)
+    discrimination, discrimination_flags = discrimination_metrics(
+        labels, probabilities, threshold=cell.threshold
+    )
     flags.update(discrimination_flags)
     row.update({f"clf_{name}": value for name, value in discrimination.items() if name != "n"})
 
     # Ranking metrics -- valid for every method, since they depend only on the
     # ordering of the score.
-    error_auroc = uncertainty_error_auroc(labels, probabilities, scores)
+    error_auroc = uncertainty_error_auroc(
+        labels, probabilities, scores, threshold=cell.threshold
+    )
     row["auroc_error"] = error_auroc.value
     row["error_rate"] = error_auroc.extra.get("error_rate", np.nan)
     flags.update(error_auroc.status_flags)
 
-    error_aupr = aupr_error(labels, probabilities, scores)
+    error_aupr = aupr_error(labels, probabilities, scores, threshold=cell.threshold)
     row["aupr_error"] = error_aupr.value
     row["aupr_error_baseline"] = error_aupr.extra.get("aupr_error_baseline", np.nan)
     flags.update(error_aupr.status_flags)
 
-    risk_coverage = risk_coverage_curve(labels, probabilities, scores)
+    risk_coverage = risk_coverage_curve(
+        labels, probabilities, scores, threshold=cell.threshold
+    )
     row["aurc"] = risk_coverage.aurc
     row["aurc_oracle"] = risk_coverage.aurc_oracle
     row["eaurc"] = risk_coverage.eaurc
     flags.update(risk_coverage.status_flags)
 
-    row.update(accuracy_at_coverage(labels, probabilities, scores))
+    row.update(accuracy_at_coverage(
+        labels, probabilities, scores, threshold=cell.threshold
+    ))
 
     # Calibration -- only meaningful for a method that produces a probability.
     if spec.produces_probabilities:
@@ -192,6 +207,17 @@ def _identity(cell, spec):
         "score_column": cell.score_column,
         "holdout": cell.holdout,
         "domain": cell.extra.get("domain", "id"),
+        # Which slice of the evaluation set this row measures. "overall"/"all" for a
+        # whole-set cell, otherwise a demographic dimension and one of its values (see
+        # evaluation/uq/subgroups.py). Present on every row so a consumer can filter to
+        # overall rows without knowing whether subgroup scoring ran.
+        "subgroup_dimension": cell.extra.get("subgroup_dimension", "overall"),
+        "subgroup_value": cell.extra.get("subgroup_value", "all"),
+        # Observations about the *slice* rather than about the scoring, so `score_cell`
+        # cannot derive them. Carried here so `subgroups.annotate_small_subgroups` can
+        # fold them into status_flags -- without this, a ten-row subgroup is scored and
+        # reported as though it were measurable.
+        "subgroup_flags": cell.extra.get("subgroup_flags", ""),
         "corruption": cell.corruption,
         "severity": cell.severity,
         "coverage": cell.coverage,
@@ -204,6 +230,7 @@ def _identity(cell, spec):
         "rank_equivalent_to": spec.rank_equivalent_to,
         "cost_forward_passes": cell.cost_forward_passes,
         "cost_training_runs": cell.cost_training_runs,
+        "threshold": cell.threshold,
     }
 
 

@@ -84,8 +84,6 @@ def test_traversal_discovery_is_complete():
         "RandomNoReturnWarpTraversal",
         "ComprehensiveTraversal",
         "IValueTraversal",
-        "IValueTraversalSubcluster",
-        "IValueTraversalClusterHop",
     }
     missing = expected - discovered
     assert not missing, f"traversal classes not discovered by reflection: {sorted(missing)}"

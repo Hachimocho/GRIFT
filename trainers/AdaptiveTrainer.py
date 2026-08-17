@@ -13,10 +13,8 @@ from trainers.Trainer import Trainer
 from trainers.capabilities.CapabilityManager import CapabilityManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.RandomTraversal import RandomTraversal
+from test_helpers.args_utils import canonical_traversal_type
 from traversals.IValueTraversal import IValueTraversal
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop
-from traversals.IValueTraversal import IValueTraversalSubcluster
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHopSubcluster
 
 
 class AdaptiveTrainer(Trainer):
@@ -164,37 +162,36 @@ class AdaptiveTrainer(Trainer):
         self.set_traversal(new_traversal, new_traversal_type)
         
     def _create_traversal(self, traversal_type, **kwargs):
-        """
-        Factory method to create traversal instances.
-        Automatically selects the correct I-value traversal variant based on graph type and subclustering.
+        """Factory for traversal instances.
+
+        The I-value traversal is one class now, and it picks its own walk from the graph --
+        this method used to fan `"i-value"` out across four subclasses on `graph_type` and a
+        `subclusters` probe, duplicating a decision the traversal is better placed to make.
+        The two subcluster subclasses are gone entirely.
         """
         graph = kwargs.get('graph', self.graphmanager.get_graph())
         num_pointers = kwargs.get('num_pointers', 1)
         num_steps = kwargs.get('num_steps', 1000)
-        # Try to infer graph_type from graph, else use kwarg, else default to clustered
-        graph_type = getattr(graph, 'graph_type', None) or kwargs.get('graph_type', None) or 'clustered'
-        # Detect subclustering: True if graph.subclusters exists and is not None, or if subclustering kwarg is set
-        subclustering = (hasattr(graph, 'subclusters') and getattr(graph, 'subclusters', None) is not None) or kwargs.get('subclustering', False)
 
-        # Map generic I-value traversal to the correct variant
+        traversal_type = canonical_traversal_type(traversal_type, quiet=True)
         if traversal_type == "i-value":
-            if graph_type == "clustered" and subclustering:
-                bias_hop_period = kwargs.get('bias_hop_period', 2)
-                return IValueTraversalClusterHopSubcluster(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
-            elif graph_type == "clustered":
-                bias_hop_period = kwargs.get('bias_hop_period', 2)
-                return IValueTraversalClusterHop(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
-            elif subclustering:
-                return IValueTraversalSubcluster(graph, num_pointers, num_steps, trainer=self)
-            else:
-                return IValueTraversal(graph, num_pointers, num_steps, trainer=self)
+            return IValueTraversal(
+                graph, num_pointers, num_steps, trainer=self,
+                bias_hop_period=kwargs.get('bias_hop_period', 2),
+                # An explicit --graph-type from the caller wins over the graph's own
+                # attribute, which a cached graph shell may not carry.
+                cluster_hop=(
+                    str(kwargs['graph_type']).startswith('clustered')
+                    if kwargs.get('graph_type') else None
+                ),
+            )
         elif traversal_type == "comprehensive":
             return ComprehensiveTraversal(graph, num_pointers, num_steps)
         elif traversal_type == "random":
             return RandomTraversal(graph, num_pointers, num_steps)
         else:
             raise ValueError(f"Unknown traversal type: {traversal_type}")
-        
+
     def get_i_value(self, node, model_idx=0):
         """Get I-value using appropriate capability."""
         return self.capabilities.get_i_value(node, model_idx)

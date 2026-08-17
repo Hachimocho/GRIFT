@@ -57,6 +57,15 @@ from test_helpers.determinism import (
 )
 from test_helpers.cache_keys import cache_filenames, graph_cache_key
 from test_helpers.args_utils import parse_args
+
+#: Whether Louvain subclustering can actually run. `HyperGraph.assign_louvain_subclusters`
+#: degrades to a no-op without it, so a `*_subclustered` graph type would silently behave
+#: as its plain counterpart; the graph-type dispatch refuses that rather than allowing it.
+try:
+    import community as _community_louvain  # noqa: F401 - probe only
+    _LOUVAIN_AVAILABLE = True
+except ImportError:
+    _LOUVAIN_AVAILABLE = False
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
@@ -95,9 +104,9 @@ from managers.NoGraphManager import NoGraphManager
 from managers.PerformanceGraphManager import PerformanceGraphManager
 from managers.GraphReductionManager import GraphReductionManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
-from traversals.IValueTraversal import IValueTraversal, IValueTraversalSubcluster
-from traversals.IValueTraversalClusterHop import (
-    IValueTraversalClusterHop, IValueTraversalClusterHopSubcluster,
+from traversals.IValueTraversal import IValueTraversal
+from test_helpers.args_utils import (
+    IVALUE_TRAVERSAL_ALIASES, canonical_traversal_type,
 )
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
@@ -257,6 +266,7 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
     all_predictions = []
     all_labels = []
+    all_probabilities = []
     uncertainty_sums = defaultdict(float)
     uncertainty_counts = defaultdict(int)
     batches_failed = 0
@@ -293,7 +303,11 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             # parallelism that this executor exists for while making the batch
             # deterministic -- and it is what lets the benchmark assign stable
             # per-sample record ids.
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # max(1, ...): `--num-workers 0` reads as "no parallelism" by torch
+            # DataLoader convention, but ThreadPoolExecutor rejects it outright with
+            # `max_workers must be greater than 0` -- which surfaced as a failed
+            # configuration mid-evaluation, long after the value was accepted.
+            with ThreadPoolExecutor(max_workers=max(1, int(num_workers or 1))) as executor:
                 futures = [
                     executor.submit(_load_node_data, node, model, image_corruption)
                     for node in batch_nodes
@@ -406,10 +420,16 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                 )
 
             # --- Store Predictions and Labels for Metrics ---
-            predictions = probabilities.cpu().numpy() > 0.5
+            batch_probabilities = probabilities.cpu().numpy().reshape(-1)
+            predictions = batch_probabilities > 0.5
             current_labels = batch_labels_tensor.cpu().numpy().astype(int)
             all_predictions.extend(predictions.astype(int))
             all_labels.extend(current_labels)
+            # Probabilities too, not just the thresholded predictions. Accuracy alone
+            # cannot distinguish a model that learned nothing from one whose every output
+            # happens to sit on one side of 0.5, and on an 87%-positive split those score
+            # the same. Balanced accuracy and AUROC need the continuous scores.
+            all_probabilities.extend(batch_probabilities.astype(float))
             
             # Clear GPU cache periodically to prevent memory buildup
             if i % 10 == 0 and torch.cuda.is_available():
@@ -465,6 +485,29 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     if total_nodes_processed > 0:
         final_metrics['accuracy'] = (correct_predictions / total_nodes_processed) * 100
         final_metrics['average_loss'] = total_loss / total_nodes_processed # Average loss per successfully processed sample
+
+        # Threshold-free and prevalence-free companions to accuracy, from the same
+        # implementation the benchmark scores with, so the number logged each epoch and the
+        # number in the results table cannot drift apart.
+        #
+        # Accuracy on this dataset is ~87% for a model that emits one class for every
+        # sample, which is both the majority-class prior and a completely uninformative
+        # result. Balanced accuracy pins to exactly 0.5 in that case and AUROC still
+        # measures the ranking, so between them they distinguish "learned nothing" from
+        # "learned something, wrong operating point" -- a distinction accuracy cannot make
+        # and which checkpoint selection depends on.
+        if all_labels and all_probabilities:
+            from evaluation.uq.metrics import discrimination_metrics
+
+            discrimination, discrimination_flags = discrimination_metrics(
+                all_labels, all_probabilities
+            )
+            final_metrics['balanced_accuracy'] = discrimination['balanced_accuracy'] * 100
+            final_metrics['auroc'] = discrimination['auroc']
+            final_metrics['n_positive'] = discrimination['n_positive']
+            if discrimination_flags:
+                final_metrics['discrimination_flags'] = sorted(discrimination_flags)
+                print(f"  NOTE ({desc}): {', '.join(sorted(discrimination_flags))}")
     else:
         # Raise rather than report accuracy 0.0. Reporting zero made a total failure
         # indistinguishable from a genuinely terrible model -- which is exactly how
@@ -616,46 +659,17 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
         return ComprehensiveTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
     elif traversal_type == "random":
         return RandomTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
-    elif traversal_type == "i-value":
+    elif traversal_type in IVALUE_TRAVERSAL_ALIASES:
+        # One class, one name. The cluster-hopping walk is selected from the graph rather
+        # than from the traversal name: hopping exists because a clustered graph is built
+        # from disjoint race-gender groups that a pointer cannot walk between, so it is a
+        # property of the construction, not an independent strategy.
         return IValueTraversal(
-            graph=graph,
-            num_pointers=num_pointers,
-            num_steps=num_steps,
-            trainer=trainer
-        )
-    elif traversal_type == "i-value-cluster-hop":
-        bias_hop_period = kwargs.get('bias_hop_period', 100)
-        return IValueTraversalClusterHop(
-            graph=graph,
-            num_pointers=num_pointers,
-            num_steps=num_steps,
-            trainer=trainer,
-            bias_hop_period=bias_hop_period
-        )
-    elif traversal_type == "i-value-subcluster":
-        # These two were advertised in --traversal-type's `choices` but had no
-        # branch here, so selecting either raised "Unsupported traversal type"
-        # immediately. Note both rely on graph.subclusters, which is populated by
-        # Louvain -- and if python-louvain ("community") is not installed,
-        # HyperGraph.assign_louvain_subclusters is a silent no-op and these fall
-        # back to their no-subcluster paths.
-        return IValueTraversalSubcluster(
-            graph=graph,
-            num_pointers=num_pointers,
-            num_steps=num_steps,
-            trainer=trainer,
-            outlier_std=kwargs.get('outlier_std', 2.0),
-            softmax_temp=kwargs.get('softmax_temp', 0.5),
-        )
-    elif traversal_type == "i-value-cluster-hop-subcluster":
-        return IValueTraversalClusterHopSubcluster(
             graph=graph,
             num_pointers=num_pointers,
             num_steps=num_steps,
             trainer=trainer,
             bias_hop_period=kwargs.get('bias_hop_period', 100),
-            outlier_std=kwargs.get('outlier_std', 2.0),
-            softmax_temp=kwargs.get('softmax_temp', 0.5),
         )
     else:
         raise ValueError(f"Unsupported traversal type: {traversal_type}")
@@ -747,8 +761,190 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
             finetune=kwargs.get('finetune', False),
         )
 
-def main():
-    args = parse_args() # Parse args first
+def _fit_decision_threshold(uq_artifacts, uq_dir, args):
+    """Fit the decision threshold on the val records and report test at both points.
+
+    Returns the `ThresholdFit`, or None when it could not be fitted. Reads the record
+    tables that were just written rather than re-running inference, so it costs nothing and
+    is guaranteed to describe exactly the numbers reported above it.
+
+    Fitted on val and only ever applied to test. Fitting on the split being reported would
+    not be choosing an operating point, it would be fitting the metric.
+    """
+    from evaluation.uq.records import read_records
+    from evaluation.uq.threshold import (
+        apply_to_records, fit_from_records, save_fit,
+    )
+
+    val_path, test_path = uq_artifacts.get('val'), uq_artifacts.get('test')
+    if not val_path:
+        print("\n--- Decision Threshold ---")
+        print("  Skipped: --tune-threshold needs val records. Add 'val' to "
+              "--uq-records-splits.")
+        return None
+
+    try:
+        val_frame = read_records(val_path, verify=False)
+        fit = fit_from_records(
+            val_frame, objective=getattr(args, 'threshold_objective', 'balanced_accuracy'),
+        )
+    except Exception as error:  # noqa: BLE001 - reporting must not fail the run
+        print(f"\n--- Decision Threshold ---\n  Could not fit: "
+              f"{type(error).__name__}: {error}")
+        return None
+
+    print("\n--- Decision Threshold ---")
+    print(f"  objective       : {fit.objective} (fitted on {fit.n_val} val samples)")
+    if not fit.applicable:
+        print(f"  NOT APPLICABLE  : {fit.reason}")
+        return fit
+    print(f"  threshold       : {fit.threshold:.6f} (default 0.5)")
+    if fit.collapsed_at_default:
+        print("  NOTE            : at 0.5 the model predicted a single class for every "
+              "val sample, so its accuracy there was the class prior")
+    print(f"  val balanced acc: {fit.balanced_accuracy_at_default:.4f} -> "
+          f"{fit.balanced_accuracy_at_threshold:.4f}")
+    print(f"  val accuracy    : {fit.accuracy_at_default:.4f} -> "
+          f"{fit.accuracy_at_threshold:.4f}")
+
+    save_fit(fit, str(uq_dir / 'threshold_fit.json'))
+
+    # And what it does on test -- the number that matters, at a threshold test never saw.
+    if test_path:
+        try:
+            test_frame = read_records(test_path, verify=False)
+            retimed = apply_to_records(test_frame, fit)
+            labels = retimed['label'].to_numpy(int)
+            for name, predictions in (
+                ("@0.5", test_frame['pred'].to_numpy(int)),
+                (f"@{fit.threshold:.4f}", retimed['pred'].to_numpy(int)),
+            ):
+                positive, negative = labels == 1, labels == 0
+                balanced = 0.5 * (
+                    (predictions[positive] == 1).mean() + (predictions[negative] == 0).mean()
+                )
+                print(f"  test {name:<12}: accuracy {(predictions == labels).mean():.4f}  "
+                      f"balanced accuracy {balanced:.4f}")
+        except Exception as error:  # noqa: BLE001
+            print(f"  Could not apply to test: {type(error).__name__}: {error}")
+    return fit
+
+
+def _trained_nothing(train_metrics):
+    """Whether an epoch processed no training samples at all.
+
+    `BasicTrainingCapability` returns `_get_empty_metrics()` -- every field zero -- both
+    when the traversal yields no batches and when it raises. Either way no gradient step
+    ran. Detected as "the epoch reports a sample count of zero, or reports an exactly-zero
+    loss", because a genuine epoch cannot reach a loss of exactly 0.0 on this task.
+    """
+    if not isinstance(train_metrics, dict):
+        return False
+    for key in ('nodes_processed', 'samples', 'n', 'total_nodes'):
+        if key in train_metrics:
+            return not train_metrics[key]
+    losses = [
+        train_metrics[key] for key in ('avg_loss', 'train_loss', 'loss')
+        if key in train_metrics and train_metrics[key] is not None
+    ]
+    return bool(losses) and all(float(value) == 0.0 for value in losses)
+
+
+def _selection_score(val_metrics, metric):
+    """The validation number that decides the best epoch.
+
+    Falls back to accuracy when the requested metric is absent or NaN, which happens when
+    the validation subsample contains a single class -- AUROC and balanced accuracy are
+    both undefined there, and refusing to checkpoint at all would be worse than
+    checkpointing on the one metric that still exists.
+    """
+    import math
+
+    value = val_metrics.get(metric)
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        if metric != 'accuracy':
+            print(f"  NOTE: validation {metric} is unavailable this epoch "
+                  f"(single-class subsample?); falling back to accuracy for checkpoint "
+                  f"selection")
+        return float(val_metrics.get('accuracy', 0.0))
+    return float(value)
+
+
+def _jsonable_keys(value):
+    """Recursively coerce dict keys to str where json would refuse them.
+
+    The demographic attribute values are numpy integers -- the dataset produces them that
+    way deliberately -- and any of them used as a dict key makes `json.dumps` raise
+    ``keys must be str, int, float, bool or None, not int64``. `default=` does not help:
+    it is consulted for values, never for keys.
+    """
+    if isinstance(value, dict):
+        return {
+            (key if isinstance(key, (str, int, float, bool, type(None))) else str(key)):
+                _jsonable_keys(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_keys(item) for item in value]
+    return value
+
+
+def attach_i_value_predictor(graph_manager, trainer):
+    """Give a performance-based graph manager the DQN that predicts I-values.
+
+    ``PerformanceGraphManager.update_graph`` refuses to rewire without one, and it is
+    right to: ``CapabilityManager.get_i_value`` falls back to a random draw when no DQN
+    capability is enabled, so rewiring would be reacting to noise. Returns True when a
+    predictor was attached.
+    """
+    if not hasattr(graph_manager, 'set_i_value_predictor'):
+        return False
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    dqns = getattr(capability, 'dqns', None) if capability is not None else None
+    if not dqns:
+        print("  Graph updater: no DQN capability, so no I-value predictor is available. "
+              "The graph will stay static -- use an i-value traversal to enable rewiring.")
+        return False
+    graph_manager.set_i_value_predictor(dqns[0])
+    print("  Graph updater: I-value predictor attached from the DQN capability.")
+    return True
+
+
+def track_graph_performance(graph_manager, trainer, sample_size):
+    """Feed a sample of the training graph's I-values to the graph manager.
+
+    Nothing called ``track_performance`` before, so every node sat at the neutral
+    default and no node was ever classified weak or strong. Sampled rather than
+    exhaustive because each I-value is a DQN forward pass, and a per-epoch pass over a
+    five-thousand-node graph costs more than the rewiring it informs. The sample is
+    drawn from a dedicated RNG stream, so it does not shift any other random decision.
+    """
+    if not hasattr(graph_manager, 'track_performance'):
+        return 0
+    nodes = list(graph_manager.graph.get_nodes())
+    if not nodes:
+        return 0
+    if 0 < sample_size < len(nodes):
+        rng = rng_for("graph.performance_sample")
+        nodes = rng.sample(nodes, sample_size)
+    tracked = 0
+    for node in nodes:
+        try:
+            graph_manager.track_performance(node, trainer.get_i_value(node, 0))
+            tracked += 1
+        except Exception as error:
+            print(f"  Warning: could not track performance for node "
+                  f"{getattr(node, 'node_id', '?')}: {error}")
+    return tracked
+
+
+def main(argv=None):
+    """Run the training/evaluation pipeline.
+
+    ``argv=None`` reads ``sys.argv``, which is how the CLI and every queue-launched
+    subprocess invoke it. Passing a list lets a driver run a configuration in-process.
+    """
+    args = parse_args(argv) # Parse args first
 
     if getattr(args, 'list_holdouts', False):
         from evaluation.uq.holdouts import summarize_available
@@ -974,16 +1170,29 @@ def main():
     # for graph construction below.
 
     # Determine cache filename suffix based on whether balanced nodes were used for graph construction
-    train_suffix = "balanced" if args.fair_train else "full"
-    val_suffix = "balanced" if args.fair_test else "full"
-    test_suffix = "balanced" if args.fair_test else "full"
+    # The label-balancing mode joins the balancing suffix so a balanced and an unbalanced
+    # run are legible as different caches. Correctness does not depend on it -- the key
+    # already carries `node_set_hash(nodes)`, which differs the moment the node set does --
+    # but a filename that says which population it came from is worth the characters.
+    label_mode = getattr(args, 'balance_labels', 'none')
+    label_part = "" if label_mode == 'none' else f"-lab{label_mode}"
+    train_suffix = ("balanced" if args.fair_train else "full") + label_part
+    # Val and test are only label-balanced under `all`.
+    eval_label_part = label_part if label_mode == 'all' else ""
+    val_suffix = ("balanced" if args.fair_test else "full") + eval_label_part
+    test_suffix = ("balanced" if args.fair_test else "full") + eval_label_part
 
     q_thresh_str = f"{args.quality_threshold:.3f}"
     s_thresh_str = f"{args.symmetry_threshold:.3f}"
     e_thresh_str = f"{args.embedding_threshold:.3f}"
 
-    # Select dataloader based on graph type
-    if args.graph_type == 'nonclustered':
+    # Select dataloader based on graph type. `startswith`, not `==`: the four choices are
+    # {clustered, nonclustered} x {plain, _subclustered}, and subclustering is an extra
+    # Louvain pass *on top of* the chosen construction. Testing equality against
+    # 'nonclustered' sent `nonclustered_subclustered` down the clustered branch, so that
+    # option built a race-gender-clustered graph while claiming to be non-clustered --
+    # and its results were consequently identical to `clustered_subclustered`.
+    if args.graph_type.startswith('nonclustered'):
         print(f"Using UnclusteredDeepfakeDataloader for non-clustered graph construction")
         dataloader_class = UnclusteredDeepfakeDataloader
         graph_type_str = 'nonclustered'
@@ -1121,7 +1330,19 @@ def main():
             else:
                  graph = graph_build_result
             
-            # --- Save Edges to Cache (streaming CSV preferred) --- 
+            # Canonicalize before the graph is used *or* cached. Both CSV load paths
+            # canonicalize on the way in (HyperGraph.load_edges_from_csv), and the build
+            # path did not -- so a freshly built graph and the same graph reloaded from
+            # its own cache presented each node's adjacency in a different order. That
+            # changes traversal neighbor order and the float reduction order in
+            # graph-distance uncertainty, which made the *first* run of a configuration
+            # disagree with every later one: identical code, seed, and data, different
+            # numbers, depending only on whether the cache happened to be warm. Silent,
+            # and fatal to any baseline comparison.
+            if graph and hasattr(graph, 'canonicalize_edge_order'):
+                graph.canonicalize_edge_order()
+
+            # --- Save Edges to Cache (streaming CSV preferred) ---
             if graph: # Only save if graph build was successful
                 try:
                     print(f"Saving edges for {split_name} graph to streaming cache: {edges_csv_filename}")
@@ -1134,7 +1355,37 @@ def main():
             else:
                 print(f"Skipping cache save for {split_name} due to build failure.")
 
-        # --- Store Graph --- 
+        # --- Subclustering ---
+        # Placed here because both branches above converge on `graph`: the cache-load path
+        # built a bare `HyperGraph(nodes)` and the build path called
+        # `_build_graph_standard`, and *neither* assigned subclusters. The two dataloaders
+        # do assign them, but only inside their clustered/unclustered builders, which the
+        # live path never calls -- and the Hierarchical one gates on an
+        # `assign_subclusters` hyperparameter that nothing ever set to True.
+        #
+        # Net effect before this: `--graph-type clustered_subclustered` and
+        # `nonclustered_subclustered` were silently identical to their plain counterparts,
+        # every subcluster traversal fell back to its no-subcluster path, and the missing
+        # `python-louvain` package was never even reached.
+        #
+        # Assignment mutates node attributes only, not edges, so it is deliberately *after*
+        # the edge cache is written -- the two subclustered graph types legitimately share
+        # an edge cache with their plain counterparts.
+        if graph and args.graph_type.endswith('_subclustered'):
+            if not _LOUVAIN_AVAILABLE:
+                raise RuntimeError(
+                    f"--graph-type {args.graph_type} requires python-louvain, which is "
+                    f"not installed. HyperGraph.assign_louvain_subclusters would be a "
+                    f"no-op, so the run would silently behave as "
+                    f"{args.graph_type.replace('_subclustered', '')} while reporting "
+                    f"otherwise. Install python-louvain, or choose a plain graph type."
+                )
+            print(f"Assigning Louvain subclusters for {split_name} graph...")
+            graph.assign_louvain_subclusters()
+            assigned = getattr(graph, 'subclusters', None)
+            print(f"  Assigned {len(assigned) if assigned is not None else 0} subcluster(s)")
+
+        # --- Store Graph ---
         # This part assumes 'graph' holds the final HyperGraph object, either loaded or built
         if graph:
              print(f"[Debug] Type of graph object for {split_name} before assignment: {type(graph)}")
@@ -1199,8 +1450,25 @@ def main():
     with capture_output(logfile) as logpath:
         print(f"Starting test run, logging to: {logfile}")
     
-        # Create graph managers for each split
-        train_manager = NoGraphManager(train_graph)
+        # Create graph managers for each split. Only the training graph can be updated:
+        # rewiring val or test would change what the reported numbers are measured on.
+        graph_manager_kind = getattr(args, 'graph_manager', 'none')
+        if graph_manager_kind == 'performance':
+            train_manager = PerformanceGraphManager(
+                train_graph,
+                weak_quantile=args.weak_quantile,
+                strong_quantile=args.strong_quantile,
+                removal_fraction=args.removal_fraction,
+                updates_per_epoch=args.graph_updates_per_epoch,
+                remove_target=args.graph_remove_target,
+            )
+            print(f"Graph updater: PerformanceGraphManager("
+                  f"quantiles=[{args.strong_quantile}, {args.weak_quantile}], "
+                  f"removal_fraction={args.removal_fraction}, "
+                  f"updates_per_epoch={args.graph_updates_per_epoch}, "
+                  f"remove_target={args.graph_remove_target!r})")
+        else:
+            train_manager = NoGraphManager(train_graph)
         val_manager = NoGraphManager(val_graph)
         test_manager = NoGraphManager(test_graph)
 
@@ -1266,7 +1534,28 @@ def main():
                         'traversal': traversal_config['single_traversal'],
                         'description': f"{arch}_{traversal_config['single_traversal']}"
                     })
-        
+
+        # Graph reduction/restoration is read off these per-configuration dicts further
+        # down. Nothing populated the keys, so `config.get('reduction_enabled', False)`
+        # was always False and the whole feature was dead from every entry point --
+        # including the web UI, which sends reduction_* keys that the queue's argument
+        # table then dropped. Merged once here rather than into each literal above so a
+        # new test_configs branch cannot forget them.
+        reduction_settings = {
+            'reduction_enabled': getattr(args, 'reduction_enabled', False),
+            'reduction_strategy': getattr(args, 'reduction_strategy', 'none'),
+            'reduction_percentage': getattr(args, 'reduction_percentage', 0.0),
+            'reduction_top_percentage': getattr(args, 'reduction_top_percentage', 0.0),
+            'reduction_bottom_percentage': getattr(args, 'reduction_bottom_percentage', 0.0),
+            'reduction_interval': getattr(args, 'reduction_interval', 'end_of_epoch'),
+            'reduction_interval_steps': getattr(args, 'reduction_interval_steps', 100),
+            'restoration_strategy': getattr(args, 'restoration_strategy', 'none'),
+            'restoration_percentage': getattr(args, 'restoration_percentage', 50.0),
+            'restoration_trigger_threshold': getattr(args, 'restoration_trigger_threshold', 0.0),
+        }
+        for entry in test_configs:
+            entry.update(reduction_settings)
+
         # Calculate graph sizes and training steps
         train_size = len(train_manager.graph.get_nodes())
         val_size = len(val_manager.graph.get_nodes())
@@ -1419,6 +1708,10 @@ def main():
                 
                 # Training setup
                 best_val_accuracy = 0.0
+                # Separate high-water mark for --checkpoint-metric. -inf, not 0.0: AUROC
+                # below 0.5 is a real (if bad) score, and starting at 0.0 would be fine,
+                # but a future metric could legitimately be negative.
+                best_selection_score = float('-inf')
                 best_epoch = 0
                 
                 # Initialize Graph Reduction Manager if enabled
@@ -1492,6 +1785,12 @@ def main():
                 print(f"Val: {val_steps} steps with 1 pointer") 
                 print(f"Test: All nodes")
                 
+                # Attach the I-value predictor now that a traversal has been set: the
+                # DQN capability is created lazily by configure_for_traversal, so it
+                # does not exist until then.
+                if graph_manager_kind != 'none':
+                    attach_i_value_predictor(train_manager, trainer)
+
                 # Training loop
                 print(f"\nTraining {config['description']}...")
                 for epoch in range(args.num_epochs):
@@ -1567,6 +1866,7 @@ def main():
                             print(f"[Disconnected Switching] Main detection model has been reset.")
                             # Reset best checkpoint/vars
                             best_val_accuracy = 0.0
+                            best_selection_score = float('-inf')
                             best_epoch = 0
                             if os.path.exists(best_model_checkpoint_path):
                                 os.remove(best_model_checkpoint_path)
@@ -1585,6 +1885,28 @@ def main():
                     else:
                         train_metrics = train_result
                         train_distribution = None
+
+                    # An epoch that saw no training samples is never legitimate, and it is
+                    # invisible downstream: the traversal warns, the capability returns
+                    # zeroed metrics, the run continues, validation still scores the
+                    # *untrained* model at roughly the class prior, and the configuration
+                    # is written out as complete. Two cells did exactly that -- three
+                    # epochs of `avg_loss: 0.0` reported as an 85.8%-accurate result, with
+                    # a validation AUROC bit-identical across every epoch because no weight
+                    # ever changed. Raising here routes it through the per-configuration
+                    # handler, so `complete` is never set and the sweep counts it as the
+                    # hard failure it is.
+                    if _trained_nothing(train_metrics):
+                        raise RuntimeError(
+                            f"epoch {epoch + 1} trained on zero nodes: traversal "
+                            f"{config.get('traversal', config.get('mode'))!r} returned no "
+                            f"batches, so the model was never updated. Metrics reported "
+                            f"for it would describe an untrained network at roughly the "
+                            f"class prior. Check the traversal's compatibility with "
+                            f"--graph-type {args.graph_type} and whether it needs a "
+                            f"capability the CapabilityManager did not enable "
+                            f"(train metrics: {train_metrics})."
+                        )
 
                     for trainer_model in getattr(trainer, 'models', []) or []:
                         if hasattr(trainer_model, 'on_epoch_end'):
@@ -1627,10 +1949,18 @@ def main():
                             if hop_history:
                                 viz_tracker.bias_hop_history.extend(hop_history)
                     
-                    # Print training distribution if available
+                    # Print training distribution if available. `default=str` is not
+                    # enough: the attribute *values* are numpy ints, so they end up as
+                    # dict keys, and json refuses a non-primitive key outright rather
+                    # than falling back to `default`. Unconverted, this raised
+                    # TypeError, the per-configuration handler swallowed it, and the run
+                    # exited 0 having trained but written no results -- a silent failure
+                    # that looked like success from the outside.
                     if train_distribution:
                         print("  Training Attribute Distribution for this Epoch:")
-                        print(json.dumps(train_distribution, indent=4))
+                        print(json.dumps(
+                            _jsonable_keys(train_distribution), indent=4, default=str
+                        ))
                     
                     # Evaluate training bias metrics periodically
                     train_metrics_full = None
@@ -1716,7 +2046,14 @@ def main():
                                 )
                         
                         current_val_accuracy = val_metrics.get('accuracy', 0.0)
-                        
+                        # The value that actually decides the best epoch. Kept separate from
+                        # `current_val_accuracy`, which the restoration and rollback
+                        # triggers below still read as accuracy.
+                        checkpoint_metric = getattr(args, 'checkpoint_metric', 'auroc')
+                        current_selection_score = _selection_score(
+                            val_metrics, checkpoint_metric
+                        )
+
                         # Check for restoration trigger
                         if reduction_manager and reduction_manager.restoration_enabled():
                             if reduction_manager.check_restoration_trigger(current_val_accuracy, best_val_accuracy):
@@ -1738,19 +2075,47 @@ def main():
                                     trainer.load_capability_checkpoints(best_model_checkpoint_path)
                                     print(f"  Rolled back to best model from epoch {best_epoch}")
                         
-                        # Save best model
-                        if current_val_accuracy > best_val_accuracy:
+                        # Save best model, judged on --checkpoint-metric.
+                        if current_selection_score > best_selection_score:
+                            best_selection_score = current_selection_score
                             best_val_accuracy = current_val_accuracy
                             best_epoch = epoch + 1
                             model_to_eval.save_checkpoint(best_model_checkpoint_path)
-                            
+
                             # Save additional checkpoints for AdaptiveTrainer capabilities
                             trainer.save_capability_checkpoints(best_model_checkpoint_path)
-                            
-                            print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
+
+                            print(f"New best validation {checkpoint_metric}: "
+                                  f"{best_selection_score:.4f} at epoch {best_epoch} "
+                                  f"(accuracy {current_val_accuracy:.4f})")
                         else:
-                            print(f"Validation accuracy: {current_val_accuracy:.4f} (best: {best_val_accuracy:.4f} at epoch {best_epoch})")
+                            print(f"Validation {checkpoint_metric}: "
+                                  f"{current_selection_score:.4f} (best: "
+                                  f"{best_selection_score:.4f} at epoch {best_epoch}); "
+                                  f"accuracy {current_val_accuracy:.4f}")
                     
+                    # End of epoch: let the graph updater rewire. A no-op under
+                    # NoGraphManager, which is the default, so the untouched path stays
+                    # bit-identical. Ordered before reduction so a rewired graph is what
+                    # reduction then sees, matching the legacy Trainer.run ordering.
+                    if graph_manager_kind != 'none':
+                        # Several updates per epoch, not one. Ticking once per epoch meant
+                        # only the epochs after the best checkpoint could matter, and with
+                        # the best epoch frozen at 1 that was none of them.
+                        extra = getattr(args, 'graph_manager_sample_nodes', 0)
+                        for tick in range(train_manager.updates_per_epoch):
+                            if extra:
+                                tracked = track_graph_performance(
+                                    train_manager, trainer, extra
+                                )
+                                print(f"  Graph updater: sampled {tracked} extra node(s)")
+                            train_manager.update_graph()
+                        stats = train_manager.get_stats()
+                        print(f"  Graph updater: {stats['updates']} update(s) so far, "
+                              f"{stats['tracked_nodes']} node(s) measured, "
+                              f"{stats['removed_total']} withdrawn of "
+                              f"{stats['initial_node_count']}")
+
                     # End of epoch: perform reduction if interval is end_of_epoch
                     if reduction_manager and reduction_manager.reduction_interval == 'end_of_epoch':
                         if reduction_manager.reduction_enabled():
@@ -1870,6 +2235,22 @@ def main():
                                 uq_artifacts['val'] = _save_uq_records(
                                     val_collector, uq_dir, 'val', uq_manifest
                                 )
+                            # Decision threshold, fitted on val and applied to test.
+                            # Separate from temperature scaling and not a substitute for
+                            # it: dividing a logit by T preserves its sign, so scaling
+                            # cannot move a single prediction across the boundary. Only a
+                            # threshold can, and on an imbalanced split that is the
+                            # difference between reporting the class prior and reporting
+                            # what the model actually discriminates.
+                            if getattr(args, 'tune_threshold', False):
+                                threshold_fit = _fit_decision_threshold(
+                                    uq_artifacts, uq_dir, args
+                                )
+                                if threshold_fit is not None:
+                                    uq_artifacts['threshold_fit'] = str(
+                                        uq_dir / 'threshold_fit.json'
+                                    )
+
                             # A small, greppable marker so the web UI's log scraper can
                             # link the artifacts without the 400k-row table ever
                             # entering the metrics JSON it parses.
@@ -1894,6 +2275,11 @@ def main():
                                     "mc_dropout_samples": args.mc_dropout_samples,
                                     "best_epoch": best_epoch,
                                     "best_val_accuracy": best_val_accuracy,
+                                    # Which criterion chose this checkpoint, and its score.
+                                    # Two runs selected on different metrics are not
+                                    # comparable, so it has to travel with the result.
+                                    "checkpoint_metric": getattr(args, 'checkpoint_metric', 'auroc'),
+                                    "best_selection_score": best_selection_score,
                                     "checkpoint": best_model_checkpoint_path,
                                     "test_accuracy": test_metrics.get('accuracy'),
                                     "records": uq_artifacts,

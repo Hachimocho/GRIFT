@@ -54,10 +54,8 @@ COMPONENTS = frozenset({
     "traversal.RandomNoReturnTraversal",
     "traversal.RandomNoReturnWarpTraversal",
     "traversal.ComprehensiveTraversal",
+    # One class now; the three retired subclasses had their own streams.
     "traversal.IValueTraversal",
-    "traversal.IValueTraversalSubcluster",
-    "traversal.IValueTraversalClusterHop",
-    "traversal.IValueTraversalClusterHopSubcluster",
     # i-value / DQN
     "ivalue.fallback",
     "dqn.replay",
@@ -70,6 +68,10 @@ COMPONENTS = frozenset({
     # graph mutation
     "reduction.remove",
     "reduction.restore",
+    # Node selection under the performance updater is deterministic now -- worst-first by
+    # I-value with node_id as the tie-break -- so it needs no RNG stream of its own. Only
+    # the optional extra-sampling pass draws.
+    "graph.performance_sample",
     # visualization
     "viz.node_sample",
     "viz.graph_layout",
@@ -447,11 +449,13 @@ def run_fingerprint(extra=None):
             "num_threads": torch.get_num_threads(),
             "float32_matmul_precision": torch.get_float32_matmul_precision(),
         },
-        "device": {
-            "cuda_available": torch.cuda.is_available(),
-            "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        },
+        # `device_count` rather than `is_available` gates the name lookup. The two can
+        # disagree: once CUDA has been initialized, `is_available()` stays True while
+        # `CUDA_VISIBLE_DEVICES=""` takes the count to zero, and `get_device_name(0)`
+        # then raises "Invalid device id". This runs at startup, so an exception here
+        # kills the run before any training -- the fingerprint must degrade to `None`
+        # instead.
+        "device": _device_state(),
         "git": _git_state(),
     }
     if extra:
@@ -509,6 +513,21 @@ def write_run_fingerprint(path, **extra):
         json.dump(merged, handle, indent=2, sort_keys=True, default=str)
     os.replace(temporary, path)
     return merged
+
+
+def _device_state():
+    """What CUDA reports, with the name lookup guarded by the actual device count."""
+    available = torch.cuda.is_available()
+    count = torch.cuda.device_count() if available else 0
+    name = None
+    if count > 0:
+        try:
+            name = torch.cuda.get_device_name(0)
+        except (AssertionError, RuntimeError):
+            # A driver or visibility change between the count and the lookup. The
+            # fingerprint is diagnostic; losing the model name is not worth a crash.
+            name = None
+    return {"cuda_available": available, "device_count": count, "device_name": name}
 
 
 def _git_state():

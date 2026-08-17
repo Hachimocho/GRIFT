@@ -188,7 +188,7 @@ def get_traversal_classes(include_base=False):
 
     The upstream branch hardcoded a four-name allowlist, which silently skipped
     RandomWarpTraversal, RandomNoReturnTraversal, RandomNoReturnWarpTraversal,
-    IValueTraversalClusterHop, and IValueTraversalClusterHopSubcluster.
+    and the single IValueTraversal (which picks its own walk from the graph).
     """
     import traversals as traversals_pkg
     from traversals.Traversal import Traversal

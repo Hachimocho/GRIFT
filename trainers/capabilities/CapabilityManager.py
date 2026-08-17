@@ -1,4 +1,6 @@
 import random
+
+from test_helpers.args_utils import IVALUE_TRAVERSAL_ALIASES
 from trainers.capabilities.DQNCapability import DQNCapability
 from trainers.capabilities.BiasCapability import BiasCapability
 from trainers.capabilities.BasicTrainingCapability import BasicTrainingCapability
@@ -29,7 +31,7 @@ class CapabilityManager:
     def set_traversal_sequence(self, sequence):
         """Set the full traversal sequence to enable DQN warm-up if needed."""
         self.traversal_sequence = sequence
-        self.requires_dqn_warmup = any(t in ["i-value", "i-value-cluster-hop"] for t in sequence)
+        self.requires_dqn_warmup = any(t in IVALUE_TRAVERSAL_ALIASES for t in sequence)
         
         if self.requires_dqn_warmup:
             print(f"CapabilityManager: I-value traversal detected in sequence {sequence}")
@@ -42,7 +44,12 @@ class CapabilityManager:
         """Enable capabilities needed for specific traversal type."""
         print(f"CapabilityManager: Configuring for traversal type '{traversal_type}'")
         
-        if traversal_type in ["i-value", "i-value-cluster-hop"]:
+        # Membership test against the alias set rather than a hand-kept list. The list
+        # named only two of the four I-value traversals that existed, so the two
+        # `*-subcluster` variants silently got basic capabilities: no DQN, and
+        # `get_i_value` falling through to a random draw. They were named "i-value" and
+        # ran on random numbers.
+        if traversal_type in IVALUE_TRAVERSAL_ALIASES:
             self._enable_dqn_capability()
             self._enable_bias_capability()
         else:

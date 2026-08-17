@@ -63,7 +63,10 @@ def test_vistransformdf_has_no_usable_dropout():
     assert profile.status == SUPPORTED
     assert profile.dropout_sites_head_none == 0
     assert Capability.STOCHASTIC_DROPOUT not in profile.static_capabilities
-    assert profile.requires_download is False
+    # It *does* download now. This asserted False while `pretrained` was accepted and
+    # ignored, which is precisely the bug that had it training a 91M-parameter ViT from
+    # scratch and scoring at chance.
+    assert profile.requires_download is True
 
 
 def test_frozen_backbone_detectors_are_flagged():

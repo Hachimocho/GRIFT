@@ -42,6 +42,150 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+#: Run-config key -> `test_hierarchical.py` CLI flag. This table is the authoritative
+#: schema of a run config: `_build_command_args` **silently drops anything not listed
+#: here**, which is how `--cache-file` and `--determinism` came to be missing from every
+#: queue-launched run. Module level rather than a local so callers that build configs
+#: programmatically can check their keys against it *before* launching -- see
+#: `validate_config_keys`.
+ARG_MAPPING = {
+    "test": "--test",
+    "visualize": "--visualize",
+    "show": "--show",
+    "search": "--search",
+    "search_split": "--search-split",
+    "quality_steps": "--quality-steps",
+    "symmetry_steps": "--symmetry-steps",
+    "embedding_steps": "--embedding-steps",
+    "search_results": "--search-results",
+    "traversal_type": "--traversal-type",
+    "enable_traversal_switching": "--enable-traversal-switching",
+    "traversal_sequence": "--traversal-sequence",
+    "switch_epochs": "--switch-epochs",
+    "test_all_traversals": "--test-all-traversals",
+    "architectures": "--architectures",
+    "num_epochs": "--num-epochs",
+    "batch_size": "--batch-size",
+    "bias_hop_period": "--bias_hop_period",
+    "seed": "--seed",
+    "quality_threshold": "--quality-threshold",
+    "symmetry_threshold": "--symmetry-threshold",
+    "embedding_threshold": "--embedding-threshold",
+    "data_root": "--data-root",
+    "cached_nodes": "--use-cached",
+    "cache_nodes": "--cache-nodes",
+    "cached_nodes_count": "--cached-nodes",
+    # Without this, --cache-file was dropped and every queue-launched run fell
+    # back to the default path -- so pointing a sweep at a purpose-built cache
+    # silently had no effect.
+    "cache_file": "--cache-file",
+    "dynamic_cache_detection": "--dynamic-cache-detection",
+    "fair_train": "--fair-train",
+    "fair_test": "--fair-test",
+    "balance_labels": "--balance-labels",
+    "enable_ivalue_viz": "--enable-ivalue-viz",
+    "viz_track_nodes": "--viz-track-nodes",
+    "viz_sample_size": "--viz-sample-size",
+    "viz_save_dir": "--viz-save-dir",
+    "bias_loss_weight": "--bias_loss_weight",
+    "num_workers": "--num-workers",
+    "val_num_workers": "--val-num-workers",
+    "dqn_model": "--dqn-model",
+    "graph_type": "--graph-type",
+    # GPU override passthrough
+    "gpu_override": "--gpu-override",
+    "gpu_id": "--gpu-id",
+    # Cache full / use full cache
+    "cache_full": "--cache-full",
+    "use_full_cache": "--use-full-cache",
+    # Traversal steps configuration
+    "train_steps": "--train-steps",
+    "val_steps": "--val-steps",
+    "train_steps_equal_nodes": "--train-steps-equal-nodes",
+    "val_steps_equal_nodes": "--val-steps-equal-nodes",
+    # Uncertainty configuration
+    "uncertainty_head": "--uncertainty-head",
+    "mc_dropout_samples": "--mc-dropout-samples",
+    "batchensemble_members": "--batchensemble-members",
+    "sngp_hidden_dim": "--sngp-hidden-dim",
+    "sngp_rff_dim": "--sngp-rff-dim",
+    "uncertainty_dropout_rate": "--uncertainty-dropout-rate",
+    "uncertainty_train_frequency": "--uncertainty-train-frequency",
+    "graph_uncertainty_methods": "--graph-uncertainty-methods",
+    "graph_degree_penalty_weight": "--graph-degree-penalty-weight",
+    "sngp_precision_policy": "--sngp-precision-policy",
+    # Reproducibility. Absent from this table, --determinism was silently
+    # dropped from every UI- and ensemble-launched run, so those runs were
+    # non-strict no matter what was requested.
+    "determinism": "--determinism",
+    "lr_schedule": "--lr-schedule",
+    # Model construction
+    "finetune": "--finetune",
+    # Benchmark artifacts and deep ensembles
+    "uq_records": "--uq-records",
+    "uq_records_splits": "--uq-records-splits",
+    "tune_threshold": "--tune-threshold",
+    "threshold_objective": "--threshold-objective",
+    "ensemble_member": "--ensemble-member",
+    "ensemble_id": "--ensemble-id",
+    # Distribution shift
+    "holdout": "--holdout",
+    "corruption": "--corruption",
+    "corruption_severity": "--corruption-severity",
+    # Graph updaters. The manager was hardcoded to NoGraphManager and the reduction
+    # keys were read from a dict nothing populated, so neither component was reachable
+    # from any entry point until these were routed.
+    "graph_manager": "--graph-manager",
+    "weak_quantile": "--weak-quantile",
+    "strong_quantile": "--strong-quantile",
+    "removal_fraction": "--removal-fraction",
+    "graph_updates_per_epoch": "--graph-updates-per-epoch",
+    "graph_remove_target": "--graph-remove-target",
+    "graph_manager_sample_nodes": "--graph-manager-sample-nodes",
+    "reduction_enabled": "--reduction-enabled",
+    "reduction_strategy": "--reduction-strategy",
+    "reduction_percentage": "--reduction-percentage",
+    "reduction_top_percentage": "--reduction-top-percentage",
+    "reduction_bottom_percentage": "--reduction-bottom-percentage",
+    "reduction_interval": "--reduction-interval",
+    "reduction_interval_steps": "--reduction-interval-steps",
+    "restoration_strategy": "--restoration-strategy",
+    "restoration_percentage": "--restoration-percentage",
+    "restoration_trigger_threshold": "--restoration-trigger-threshold",
+    # Remaining CLI flags that had no route through the queue at all.
+    "enable_train_bias_inference": "--enable-train-bias-inference",
+    "enable_val_bias_inference": "--enable-val-bias-inference",
+    "load_last_checkpoint": "--load-last-checkpoint",
+    "checkpoint_metric": "--checkpoint-metric",
+    "export_csv_per_run": "--export-csv-per-run",
+    "disconnected_switching": "--disconnected-switching",
+    "viz_step_frequency": "--viz-step-frequency",
+}
+
+#: Config keys for flags that default to *on*, so only the negation is ever emitted.
+#: These cannot live in `ARG_MAPPING`: a False value there emits nothing at all, which
+#: would silently leave the default in place. Handled explicitly in
+#: `_build_command_args`, and listed here so `validate_config_keys` does not report them
+#: as unroutable.
+DEFAULT_ON_KEYS = frozenset({"build_val_test_edges", "graph_distance_robust_stats"})
+
+#: Keys the queue consumes itself rather than forwarding to the CLI.
+QUEUE_ONLY_KEYS = frozenset({"run_id"})
+
+
+def validate_config_keys(config: Dict[str, Any]) -> List[str]:
+    """Config keys that would be silently dropped on the way to the CLI.
+
+    Returns them sorted. An empty list means every key in `config` reaches
+    `test_hierarchical.py`. Programmatic callers should refuse to launch on a non-empty
+    result: a dropped key does not fail, it just makes the run quietly different from
+    the one that was asked for, and the resulting numbers look real.
+    """
+    routable = set(ARG_MAPPING) | DEFAULT_ON_KEYS | QUEUE_ONLY_KEYS
+    return sorted(key for key in config if key not in routable)
+
+
 class GPUQueueManager:
     """Manages GPU allocation and queueing for test runs."""
     
@@ -603,97 +747,11 @@ class GPUQueueManager:
         # Use the current Python interpreter, enable unbuffered and faulthandler for early crash diagnostics
         args = [sys.executable, "-u", "-X", "faulthandler", "test_hierarchical.py"]
         
-        # Define argument mapping
-        arg_mapping = {
-            "test": "--test",
-            "visualize": "--visualize",
-            "show": "--show",
-            "search": "--search",
-            "search_split": "--search-split",
-            "quality_steps": "--quality-steps",
-            "symmetry_steps": "--symmetry-steps",
-            "embedding_steps": "--embedding-steps",
-            "search_results": "--search-results",
-            "traversal_type": "--traversal-type",
-            "enable_traversal_switching": "--enable-traversal-switching",
-            "traversal_sequence": "--traversal-sequence",
-            "switch_epochs": "--switch-epochs",
-            "test_all_traversals": "--test-all-traversals",
-            "architectures": "--architectures",
-            "num_epochs": "--num-epochs",
-            "batch_size": "--batch-size",
-            "bias_hop_period": "--bias_hop_period",
-            "seed": "--seed",
-            "quality_threshold": "--quality-threshold",
-            "symmetry_threshold": "--symmetry-threshold",
-            "embedding_threshold": "--embedding-threshold",
-            "data_root": "--data-root",
-            "cached_nodes": "--use-cached",
-            "cache_nodes": "--cache-nodes",
-            "cached_nodes_count": "--cached-nodes",
-            # Without this, --cache-file was dropped and every queue-launched run fell
-            # back to the default path -- so pointing a sweep at a purpose-built cache
-            # silently had no effect.
-            "cache_file": "--cache-file",
-            "dynamic_cache_detection": "--dynamic-cache-detection",
-            "fair_train": "--fair-train",
-            "fair_test": "--fair-test",
-            "enable_ivalue_viz": "--enable-ivalue-viz",
-            "viz_track_nodes": "--viz-track-nodes",
-            "viz_sample_size": "--viz-sample-size",
-            "viz_save_dir": "--viz-save-dir",
-            "bias_loss_weight": "--bias_loss_weight",
-            "num_workers": "--num-workers",
-            "val_num_workers": "--val-num-workers",
-            "dqn_model": "--dqn-model",
-            "graph_type": "--graph-type",
-            # GPU override passthrough
-            "gpu_override": "--gpu-override",
-            "gpu_id": "--gpu-id",
-            # Cache full / use full cache
-            "cache_full": "--cache-full",
-            "use_full_cache": "--use-full-cache",
-            # Traversal steps configuration
-            "train_steps": "--train-steps",
-            "val_steps": "--val-steps",
-            "train_steps_equal_nodes": "--train-steps-equal-nodes",
-            "val_steps_equal_nodes": "--val-steps-equal-nodes",
-            # Uncertainty configuration
-            "uncertainty_head": "--uncertainty-head",
-            "mc_dropout_samples": "--mc-dropout-samples",
-            "batchensemble_members": "--batchensemble-members",
-            "sngp_hidden_dim": "--sngp-hidden-dim",
-            "sngp_rff_dim": "--sngp-rff-dim",
-            "uncertainty_dropout_rate": "--uncertainty-dropout-rate",
-            "uncertainty_train_frequency": "--uncertainty-train-frequency",
-            "graph_uncertainty_methods": "--graph-uncertainty-methods",
-            "graph_degree_penalty_weight": "--graph-degree-penalty-weight",
-            "sngp_precision_policy": "--sngp-precision-policy",
-            # Reproducibility. Absent from this table, --determinism was silently
-            # dropped from every UI- and ensemble-launched run, so those runs were
-            # non-strict no matter what was requested.
-            "determinism": "--determinism",
-            "lr_schedule": "--lr-schedule",
-            # Model construction
-            "finetune": "--finetune",
-            # Benchmark artifacts and deep ensembles
-            "uq_records": "--uq-records",
-            "uq_records_splits": "--uq-records-splits",
-            "ensemble_member": "--ensemble-member",
-            "ensemble_id": "--ensemble-id",
-            # Distribution shift
-            "holdout": "--holdout",
-            "corruption": "--corruption",
-            "corruption_severity": "--corruption-severity",
-            # Remaining CLI flags that had no route through the queue at all.
-            "enable_train_bias_inference": "--enable-train-bias-inference",
-            "enable_val_bias_inference": "--enable-val-bias-inference",
-            "load_last_checkpoint": "--load-last-checkpoint",
-            "export_csv_per_run": "--export-csv-per-run",
-            "disconnected_switching": "--disconnected-switching",
-            "viz_step_frequency": "--viz-step-frequency",
-        }
-        
+        # The argument mapping lives at module level (`ARG_MAPPING`) so callers that
+        # build configs programmatically can validate their keys against it before
+        # launching, instead of discovering a dropped flag in the results.
+        arg_mapping = ARG_MAPPING
+
         # Add arguments based on configuration
         for config_key, arg_name in arg_mapping.items():
             if config_key in config:

@@ -318,7 +318,7 @@ class ConfigManager:
                     if len(epochs) != len(traversals) - 1:
                         errors.append("Number of switch epochs must be one less than traversal sequence length")
                     
-                    valid_traversals = ["comprehensive", "random", "i-value", "i-value-cluster-hop"]
+                    valid_traversals = ["comprehensive", "random", "i-value"]
                     for traversal in traversals:
                         if traversal not in valid_traversals:
                             errors.append(f"Invalid traversal type: {traversal}")

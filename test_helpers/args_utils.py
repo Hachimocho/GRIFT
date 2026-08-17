@@ -1,6 +1,59 @@
 import argparse
 
-def parse_args():
+#: Traversal names the CLI accepts today.
+TRAVERSAL_TYPES = ('comprehensive', 'random', 'i-value')
+
+#: Retired names, and what they resolve to.
+#:
+#: `i-value-cluster-hop` is a pure rename: hopping is now selected from the graph, because a
+#: clustered graph is built from disjoint race-gender groups that a pointer cannot walk
+#: between, so it was never an independent strategy -- the old name and `--graph-type
+#: clustered` always had to be set together.
+#:
+#: The two `*-subcluster` names are a **behavior change**, not a rename. Louvain-community
+#: area selection is gone. It never ran as designed: its outlier filter excluded every node
+#: whenever the variance was zero, `CapabilityManager` never enabled a DQN for it so its
+#: I-values were random draws, and it yielded one node per step against ~17 for the other
+#: walks. A run that asked for it gets plain `i-value` and a notice saying so.
+DEPRECATED_TRAVERSAL_TYPES = {
+    'i-value-cluster-hop': 'i-value',
+    'i-value-subcluster': 'i-value',
+    'i-value-cluster-hop-subcluster': 'i-value',
+}
+
+#: Every spelling that maps onto the single I-value traversal.
+IVALUE_TRAVERSAL_ALIASES = frozenset(
+    {'i-value'} | set(DEPRECATED_TRAVERSAL_TYPES)
+)
+
+
+def canonical_traversal_type(traversal_type, quiet=False):
+    """Resolve a traversal name, announcing a retired one. Returns the canonical name."""
+    replacement = DEPRECATED_TRAVERSAL_TYPES.get(traversal_type)
+    if replacement is None:
+        return traversal_type
+    if not quiet:
+        print(f"NOTE: traversal type {traversal_type!r} has been retired; using "
+              f"{replacement!r}.")
+        if 'subcluster' in traversal_type:
+            print("      Louvain-community area selection was removed -- it selected on "
+                  "random I-values, its outlier filter excluded every node at zero "
+                  "variance, and it yielded 1 node per step against ~17. This run is NOT "
+                  "equivalent to the old one.")
+        else:
+            print("      Cluster hopping is now chosen from --graph-type, so behavior is "
+                  "unchanged for a clustered graph.")
+    return replacement
+
+
+def parse_args(argv=None):
+    """Parse the training CLI.
+
+    ``argv=None`` reads ``sys.argv`` exactly as before. Passing a list makes the whole
+    training path callable in-process, which is what the sweep driver's synthetic tier
+    and the functional tests need -- otherwise every programmatic caller has to mutate
+    ``sys.argv`` around the call.
+    """
     parser = argparse.ArgumentParser(description='Test the hierarchical graph construction approach')
     parser.add_argument('--test', action='store_true', help='Run in test mode with limited nodes')
     parser.add_argument('--visualize', action='store_true', help='Generate graph visualizations')
@@ -57,21 +110,53 @@ def parse_args():
                         help='Period for bias hop (default: 100)')
     parser.add_argument('--load-last-checkpoint', action='store_true',
                         help='Load the last best checkpoint if validation accuracy decreases.')
+    parser.add_argument('--checkpoint-metric', type=str, default='auroc',
+                        choices=['accuracy', 'balanced_accuracy', 'auroc'],
+                        help='Validation metric that decides the best epoch. '
+                             'accuracy was the original behavior and is a poor choice on '
+                             'an imbalanced split: a model that predicts one class for '
+                             'every sample scores the majority-class prior (~87%% here) at '
+                             'epoch 1 and can never strictly beat it, so the best epoch '
+                             'freezes at 1 and everything afterwards -- later training, '
+                             'graph rewiring, node reduction -- is computed and then '
+                             'discarded. balanced_accuracy is prevalence-free but pins to '
+                             'exactly 0.5 for such a model, so it ties instead of '
+                             'improving and freezes too. auroc (default) is threshold-free '
+                             'and moves whenever the ranking improves, which is why it is '
+                             'the default')
     parser.add_argument('--log_dir', type=str, default='logs',
                         help='Directory to save logs (default: logs)')
-    parser.add_argument('--fair-train', action='store_true', help='Use subgroup-balanced training set for graph construction')
-    parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced validation/test sets for graph construction')
+    parser.add_argument('--fair-train', action='store_true', help='Use subgroup-balanced (race x gender) training set for graph construction. Does NOT touch the real/fake class balance -- see --balance-labels for that')
+    parser.add_argument('--fair-test', action='store_true', help='Use subgroup-balanced (race x gender) validation/test sets for graph construction. Does NOT touch the real/fake class balance')
+    parser.add_argument('--balance-labels', type=str, default='none',
+                        choices=['none', 'train', 'all'],
+                        help='Equalize the real/fake class counts. The corrected AI-Face '
+                             'split is ~87%% fake, and at that prior BCE is minimized '
+                             'substantially by raising the output bias, so models emit one '
+                             'class for every sample: accuracy equals the prior and '
+                             'balanced accuracy pins at 0.5. train balances only the '
+                             'training set, leaving val/test on the real distribution; all '
+                             'balances every split, which makes a 0.5 threshold directly '
+                             'interpretable but stops measuring the deployed distribution. '
+                             'Only ~13%% of the corpus is real, so balancing discards most '
+                             'fakes (default: none)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility') # Add seed argument
 
     # Traversal configuration options
     parser.add_argument('--traversal-type', type=str, default='comprehensive',
-                        choices=['comprehensive', 'random', 'i-value', 'i-value-cluster-hop', 'i-value-subcluster', 'i-value-cluster-hop-subcluster'],
-                        help='Single traversal type to use throughout training (default: comprehensive)')
+                        choices=list(TRAVERSAL_TYPES) + list(DEPRECATED_TRAVERSAL_TYPES),
+                        help='Single traversal type to use throughout training. i-value '
+                             'picks its walk from --graph-type: a clustered graph is built '
+                             'from disjoint groups so its pointers hop between clusters, an '
+                             'unclustered one is connected so they do not. '
+                             'i-value-cluster-hop is a retired spelling of i-value; the two '
+                             '*-subcluster names are retired and now resolve to i-value '
+                             'with a behavior change (default: comprehensive)')
     
     # Switch traversal mode options  
     parser.add_argument('--enable-traversal-switching', action='store_true',
                         help='Enable dynamic traversal switching during training')
-    parser.add_argument('--traversal-sequence', type=str, default='comprehensive,i-value-cluster-hop',
+    parser.add_argument('--traversal-sequence', type=str, default='comprehensive,i-value',
                         help='Comma-separated sequence of traversals for switching mode (default: comprehensive,i-value-cluster-hop)')
     parser.add_argument('--switch-epochs', type=str, default='10',
                         help='Comma-separated epochs at which to switch traversals (default: 10)')
@@ -106,6 +191,79 @@ def parse_args():
     # New argument for disconnected traversal switching
     parser.add_argument('--disconnected-switching', action='store_true',
                         help='If set, resets the main detection model after traversal switching (I-value model is NOT reset). Only relevant if traversal switching is enabled.')
+
+    # Graph updaters. The manager was hardcoded to NoGraphManager, so
+    # PerformanceGraphManager was imported and never constructed; the reduction settings
+    # were read from a per-configuration dict that nothing ever populated. Both defaults
+    # below reproduce the previous behavior exactly.
+    parser.add_argument('--graph-manager', type=str, default='none',
+                        choices=['none', 'performance'],
+                        help='Graph updater applied to the training graph between epochs. '
+                             'none (default) leaves the graph static, matching the '
+                             'behavior before this flag existed. performance rewires by '
+                             'predicted I-value and therefore requires an I-value '
+                             'traversal, which is what supplies the predictor')
+    parser.add_argument('--weak-quantile', type=float, default=0.9,
+                        help='I-value quantile above which a node counts as weak -- the '
+                             'model expects to keep learning from it. A quantile, not an '
+                             'absolute value: the previous absolute 0.8/0.2 pair did not '
+                             'bracket the DQN output at all, so no node was ever classified '
+                             'strong and the updater changed nothing (default: 0.9)')
+    parser.add_argument('--strong-quantile', type=float, default=0.1,
+                        help='Quantile below which a node counts as strong -- already '
+                             'learned (default: 0.1)')
+    parser.add_argument('--removal-fraction', type=float, default=0.02,
+                        help='Share of the training graph withdrawn per update, capped at '
+                             '0.05 and never below half the starting size (default: 0.02)')
+    parser.add_argument('--graph-updates-per-epoch', type=int, default=4,
+                        help='How many times per epoch the graph updater runs. It used to '
+                             'tick once per epoch against a step-counted interval, so only '
+                             'the epochs after the best checkpoint could matter '
+                             '(default: 4)')
+    parser.add_argument('--graph-manager-sample-nodes', type=int, default=0,
+                        help='Extra nodes sampled per update to measure I-values, on top of '
+                             'the ones training already visits. 0 (default) means no extra '
+                             'sampling: every node the traversal touches is recorded anyway '
+                             'at O(1) memory each, so coverage grows with training instead '
+                             'of costing a separate pass of DQN forward passes. Set it '
+                             'positive only to seed the quantiles faster at the start of a '
+                             'run')
+    parser.add_argument('--graph-remove-target', type=str, default='strong',
+                        choices=['strong', 'weak'],
+                        help='Which end to withdraw. strong prunes already-learned nodes '
+                             '(curriculum); weak prunes the ones the model keeps failing on '
+                             '(noise). Both are defensible, hence a knob (default: strong)')
+    # Graph reduction / restoration. Fully implemented in the epoch loop and previously
+    # unreachable: the keys were read off the internal per-configuration dict, which is
+    # built from these args and never carried them.
+    parser.add_argument('--reduction-enabled', action='store_true',
+                        help='Enable graph reduction during training (default: disabled)')
+    parser.add_argument('--reduction-strategy', type=str, default='none',
+                        choices=['none', 'max_ival', 'min_ival', 'mix_max_ival', 'random'],
+                        help='Which nodes to remove. The *_ival strategies read '
+                             'trainer.get_i_value and so require an I-value traversal; '
+                             'random works with any (default: none)')
+    parser.add_argument('--reduction-percentage', type=float, default=0.0,
+                        help='Percentage of nodes to remove per reduction, 0-100 (default: 0.0)')
+    parser.add_argument('--reduction-top-percentage', type=float, default=0.0,
+                        help='Top percentage for the mix_max_ival strategy, 0-100 (default: 0.0)')
+    parser.add_argument('--reduction-bottom-percentage', type=float, default=0.0,
+                        help='Bottom percentage for the mix_max_ival strategy, 0-100 (default: 0.0)')
+    parser.add_argument('--reduction-interval', type=str, default='end_of_epoch',
+                        choices=['end_of_epoch', 'every_n_steps'],
+                        help='When to reduce (default: end_of_epoch)')
+    parser.add_argument('--reduction-interval-steps', type=int, default=100,
+                        help='Steps between reductions when --reduction-interval is '
+                             'every_n_steps (default: 100)')
+    parser.add_argument('--restoration-strategy', type=str, default='none',
+                        choices=['none', 'random_pool', 'targeted', 'reversion'],
+                        help='How to restore removed nodes when validation accuracy '
+                             'drops (default: none)')
+    parser.add_argument('--restoration-percentage', type=float, default=50.0,
+                        help='Percentage of the removed pool to restore, 0-100 (default: 50.0)')
+    parser.add_argument('--restoration-trigger-threshold', type=float, default=0.0,
+                        help='Minimum validation-accuracy drop that triggers restoration '
+                             '(default: 0.0)')
 
     # Graph construction type
     parser.add_argument('--graph-type', type=str, default='clustered',
@@ -204,6 +362,22 @@ def parse_args():
                              'This is the benchmark\'s only input: the metrics dict printed to '
                              'stdout carries batch means on incomparable scales, which cannot '
                              'answer which uncertainty method is better')
+    parser.add_argument('--tune-threshold', action='store_true',
+                        help='Fit the decision threshold on the val records and report '
+                             'test at both 0.5 and the fitted point. Needs val in '
+                             '--uq-records-splits. Temperature scaling cannot do this: '
+                             'dividing a logit by T preserves its sign, so no prediction '
+                             'moves across the boundary. Writes threshold_fit.json beside '
+                             'the records; the record table itself is unchanged, since a '
+                             'threshold is a decision rule and every ranking metric is '
+                             'invariant to it')
+    parser.add_argument('--threshold-objective', type=str, default='balanced_accuracy',
+                        choices=['balanced_accuracy', 'youden_j', 'accuracy'],
+                        help='What the fitted threshold maximizes on val. Do not use '
+                             'accuracy on an imbalanced split: maximizing accuracy at ~87%% '
+                             'prevalence pushes the threshold back toward predicting one '
+                             'class, which is the behavior this flag exists to correct '
+                             '(default: balanced_accuracy)')
     parser.add_argument('--uq-records-splits', type=str, default='test',
                         help='Comma-separated splits to record when --uq-records is set. '
                              'Temperature scaling has to be fitted on val and applied to test, '
@@ -255,4 +429,4 @@ def parse_args():
                              'in val loss can flip an LR drop; cosine is a pure function of the '
                              'epoch index and therefore immune (default: plateau)')
 
-    return parser.parse_args()
+    return parser.parse_args(argv)

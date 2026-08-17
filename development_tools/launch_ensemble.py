@@ -37,6 +37,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from development_tools.queue_runs import (
+    TERMINAL_STATUSES,
+    QueueTimeout,
+    queue_all,
+)
+from development_tools.queue_runs import wait_for as _wait_for_runs
 from evaluation.uq.ensemble import (
     EnsembleCompatibilityError,
     aggregate_members,
@@ -44,8 +50,9 @@ from evaluation.uq.ensemble import (
     save_ensemble,
 )
 
-#: Statuses `GPUQueueManager` uses for a run that will not progress further.
-TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "error", "crashed"})
+# Re-exported from queue_runs, which sweep.py shares, so existing importers of
+# `launch_ensemble.TERMINAL_STATUSES` keep working.
+__all__ = ["TERMINAL_STATUSES", "member_config", "launch", "wait_for", "aggregate", "main"]
 
 
 def parse_args(argv=None):
@@ -145,70 +152,44 @@ def member_config(args, member_index):
 
 def launch(args):
     """Queue every member. Returns the list of run ids."""
-    from web_ui.gpu_queue_manager import GPUQueueManager
+    from development_tools.queue_runs import open_manager
 
     # One manager only: reconcile_existing_runs() rewrites in-flight metadata, so a
-    # second instance would clobber the first's bookkeeping.
-    manager = GPUQueueManager()
-    run_ids = []
-    try:
-        for member_index in range(args.members):
-            config = member_config(args, member_index)
-            run_id = manager.queue_run(
-                config_name=f"{args.ensemble_id}_m{member_index}",
-                config=config,
-                # Descending priority so members start in index order, which makes the
-                # logs readable. It does not affect the result.
-                priority=args.members - member_index,
-            )
-            run_ids.append(run_id)
-            print(f"  queued member {member_index}: {run_id}")
-
-        if args.launch_only:
-            return run_ids, manager
-        wait_for(manager, run_ids, args)
+    # second instance would clobber the first's bookkeeping. `--launch-only` leaves the
+    # queue running, because the caller wants the members to proceed after this process
+    # returns.
+    with open_manager(shutdown=not args.launch_only) as manager:
+        configs = [
+            (f"{args.ensemble_id}_m{index}", member_config(args, index))
+            for index in range(args.members)
+        ]
+        run_ids = queue_all(manager, configs)
+        if not args.launch_only:
+            wait_for(manager, run_ids, args)
         return run_ids, manager
-    finally:
-        if args.launch_only:
-            # Leave the queue running: the caller wants the members to proceed after
-            # this process exits.
-            pass
-        else:
-            manager.shutdown()
 
 
 def wait_for(manager, run_ids, args):
     """Block until every run reaches a terminal status, or the timeout elapses."""
-    deadline = time.time() + args.timeout_hours * 3600.0
-    reported = {}
-    while time.time() < deadline:
-        statuses = {}
-        for run_id in run_ids:
-            metadata = manager.get_run(run_id) or {}
-            statuses[run_id] = metadata.get("status", "unknown")
+    try:
+        statuses = _wait_for_runs(
+            manager, run_ids,
+            poll_seconds=args.poll_seconds, timeout_hours=args.timeout_hours,
+        )
+    except QueueTimeout as timeout:
+        raise SystemExit(
+            f"{timeout} Re-run with --aggregate-only --ensemble-id {args.ensemble_id} "
+            f"once they finish."
+        ) from timeout
 
-        for run_id, status in statuses.items():
-            if reported.get(run_id) != status:
-                print(f"  {run_id}: {status}")
-                reported[run_id] = status
-
-        if all(status in TERMINAL_STATUSES for status in statuses.values()):
-            failed = {
-                run_id: status for run_id, status in statuses.items()
-                if status != "completed"
-            }
-            if failed:
-                print(f"\nWARNING: {len(failed)} member(s) did not complete: {failed}")
-                print("Aggregation will refuse to proceed unless enough members wrote "
-                      "records; check web_ui/runs/<run_id> for the logs.")
-            return statuses
-        time.sleep(args.poll_seconds)
-
-    raise SystemExit(
-        f"Timed out after {args.timeout_hours}h waiting for members. The runs are "
-        f"still going; re-run with --aggregate-only --ensemble-id {args.ensemble_id} "
-        f"once they finish."
-    )
+    failed = {
+        run_id: status for run_id, status in statuses.items() if status != "completed"
+    }
+    if failed:
+        print(f"\nWARNING: {len(failed)} member(s) did not complete: {failed}")
+        print("Aggregation will refuse to proceed unless enough members wrote "
+              "records; check web_ui/runs/<run_id> for the logs.")
+    return statuses
 
 
 def aggregate(args):

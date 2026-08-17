@@ -1,6 +1,5 @@
-from distutils.command.config import config
 import torch.nn as nn
-from torch.hub import load
+import torch.hub
 import torch
 import pickle
 import logging
@@ -24,7 +23,12 @@ class ModelOut(nn.Module):
         ):
         super(ModelOut, self).__init__()
         try:
-            efficientnet_base = load('NVIDIA/DeepLearningExamples:torchhub', 'nvidia_efficientnet_b4', pretrained=pretrained)
+            # `torch.hub.load` resolved at call time, not bound at import. `from torch.hub
+            # import load` captured whatever the attribute was when this module was first
+            # imported -- so the test tier's network block either leaked in permanently (if
+            # the module was imported while it was active) or was bypassed entirely (if it
+            # was imported before), depending only on import order.
+            efficientnet_base = torch.hub.load('NVIDIA/DeepLearningExamples:torchhub', 'nvidia_efficientnet_b4', pretrained=pretrained)
             logger.info(f"Successfully loaded EfficientNet model")
         except Exception as e:
             logger.error(f"Error loading EfficientNet model: {e}")
@@ -48,8 +52,22 @@ class ModelOut(nn.Module):
         # classifier.fc Linear(in_features=1792, out_features=1000, bias=True)
         '''
 
-        # self.model.classifier.pooling = GlobalAvgPool2d()
-        self.model.classifier.pooling = nn.AdaptiveMaxPool2d(1) # this fixed the network surprisingly
+        # The backbone's native pooling is AdaptiveAvgPool2d(1), and it is left in place.
+        #
+        # This line used to unconditionally replace it with AdaptiveMaxPool2d(1), commented
+        # "this fixed the network surprisingly". Measured on the pretrained b4's real
+        # 1792x8x8 feature map, max pooling inflates the activation scale by **42.7x**
+        # (mean 0.088 -> 3.756, std 0.099 -> 1.833). That output feeds a freshly initialized
+        # Linear(1792, 1024) whose default init assumes roughly unit-scale inputs, so the
+        # pre-activations saturate and the gradients vanish -- which is consistent with
+        # effnetdf scoring AUROC 0.50 and 0.50 in two consecutive sweeps, at chance, while
+        # detectors sharing the same head shape reached 0.71-0.84.
+        #
+        # Kept reachable, because the original comment suggests it helped in some earlier
+        # configuration and this has not been A/B'd on the real dataset -- but off by
+        # default, since it is inconsistent with how the pretrained weights were trained.
+        if configuration == 'maxpool':
+            self.model.classifier.pooling = nn.AdaptiveMaxPool2d(1)
 
         if exclude_top:
             self.model.fc = Identity()

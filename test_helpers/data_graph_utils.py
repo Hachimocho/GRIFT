@@ -111,6 +111,110 @@ def resolve_ai_face_data_root(explicit_path=None):
     )
 
 
+def _apply_label_balancing(args, train_nodes, val_nodes, test_nodes):
+    """Apply `--balance-labels` to the splits it names. Returns the three lists.
+
+    ``train`` balances only the training set: the model then learns from a 50/50 prior
+    while validation and test keep the population's real distribution, which is usually
+    what you want -- the reported numbers stay on the data as it is.
+
+    ``all`` balances validation and test as well. That makes accuracy at a 0.5 threshold
+    directly interpretable, at the cost of no longer measuring the deployed distribution,
+    and it changes which samples are scored -- so a baseline built with it cannot be
+    compared against one built without.
+    """
+    mode = getattr(args, 'balance_labels', 'none')
+    if mode == 'none':
+        return train_nodes, val_nodes, test_nodes
+
+    # `cached_nodes` is the per-split size budget the rest of the pipeline uses.
+    target = getattr(args, 'cached_nodes', None)
+
+    print(f"Applying label balancing (--balance-labels {mode})...")
+    print("  train:")
+    train_nodes = balance_nodes_by_label(train_nodes, target_num_nodes=target)
+    if mode == 'all':
+        print("  val:")
+        val_nodes = balance_nodes_by_label(val_nodes, target_num_nodes=target)
+        print("  test:")
+        test_nodes = balance_nodes_by_label(test_nodes, target_num_nodes=target)
+    return train_nodes, val_nodes, test_nodes
+
+
+def balance_nodes_by_label(nodes, target_num_nodes=None):
+    """Balance a node list across the real/fake label. Returns the balanced list.
+
+    Distinct from `balance_nodes_by_subgroup`, which equalizes *demographic* subgroups
+    (race x gender) and leaves the class prior untouched. The corrected AI-Face split is
+    about 87% fake, and at that prior a model minimizes BCE substantially by pushing its
+    output bias up: it ends up emitting one class for every sample, scoring the prior as
+    its accuracy, with balanced accuracy pinned at exactly 0.5. Equalizing the label is
+    the direct fix -- the prior log-odds a sample has to overcome drops from about +1.95
+    to 0, so a 0.5 decision threshold becomes meaningful again.
+
+    The cost is data: only ~13% of the corpus is real, so a label-balanced list is roughly
+    twice the real count and most fakes are dropped. That is a deliberate trade, which is
+    why it is opt-in.
+
+    `target_num_nodes` caps the result; without it the list is as large as perfect balance
+    allows. Either way each class contributes the same count.
+
+    The seed is content-addressed from the node ids, matching `balance_nodes_by_subgroup`:
+    the selection then depends only on *which* nodes were offered, never on how much
+    randomness anything upstream happened to consume.
+    """
+    import hashlib
+    import random as rand_module
+
+    if not nodes:
+        print("Warning: cannot label-balance an empty node list. Returning empty list.")
+        return []
+
+    by_label = defaultdict(list)
+    for node in nodes:
+        try:
+            by_label[int(node.get_label())].append(node)
+        except Exception as error:
+            print(f"Warning: could not read label for node "
+                  f"{getattr(node, 'node_id', 'N/A')}: {error}. Excluding it.")
+
+    if len(by_label) < 2:
+        present = sorted(by_label)
+        raise ValueError(
+            f"cannot label-balance: only class {present} is present among "
+            f"{len(nodes)} node(s). A single-class split cannot be balanced, and "
+            f"training on it would be meaningless."
+        )
+
+    node_ids = sorted(node.node_id for node in nodes)
+    balance_seed = int(
+        hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8], 16
+    ) % (2 ** 32)
+    balance_rng = rand_module.Random(balance_seed)
+
+    smallest = min(len(group) for group in by_label.values())
+    per_class = smallest
+    if target_num_nodes:
+        per_class = min(per_class, max(1, int(target_num_nodes) // len(by_label)))
+
+    balanced = []
+    for label in sorted(by_label):
+        group = sorted(by_label[label], key=lambda node: node.node_id)
+        balanced.extend(balance_rng.sample(group, per_class))
+
+    # Shuffled so the two classes are interleaved. Left in label order, any consumer that
+    # takes a prefix -- a step-limited traversal, a truncated cache -- would see one class.
+    balance_rng.shuffle(balanced)
+
+    counts = {label: len(group) for label, group in sorted(by_label.items())}
+    print(f"Label balancing: {counts} -> {per_class} per class "
+          f"({len(balanced)} total, from {len(nodes)})")
+    if target_num_nodes and len(balanced) < int(target_num_nodes):
+        print(f"  NOTE: {len(balanced)} < requested {int(target_num_nodes)}; the minority "
+              f"class has only {smallest} node(s), which caps perfect balance.")
+    return balanced
+
+
 def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['race', 'gender']):
     """Balances a list of nodes to achieve a target number, ensuring representation
     across specified subgroups.
@@ -655,6 +759,17 @@ def load_and_prepare_data_splits(args, data_root):
             val_nodes_full = val_nodes   # Placeholder
             test_nodes_full = test_nodes  # Placeholder
 
+            # Label balancing on the cached branch too. `--use-cached` is how the sweep and
+            # the benchmark actually run, so applying it only on the direct-load path below
+            # would mean the flag silently did nothing for every real run -- the same shape
+            # of bug as the holdout filtering above.
+            train_nodes, val_nodes, test_nodes = _apply_label_balancing(
+                args, train_nodes, val_nodes, test_nodes
+            )
+            train_nodes_full, val_nodes_full, test_nodes_full = (
+                train_nodes, val_nodes, test_nodes
+            )
+
             # Return early when cache loading succeeds to prevent unnecessary cache regeneration
             node_loading_time = time.time() - node_loading_start
             print(f"Node loading/preparation (from cache) time: {node_loading_time:.2f} seconds")
@@ -692,6 +807,10 @@ def load_and_prepare_data_splits(args, data_root):
         val_nodes = balance_nodes_by_subgroup(val_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else list(val_nodes_full)   # Ensure list copy
         test_nodes = balance_nodes_by_subgroup(test_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else list(test_nodes_full) # Ensure list copy
         
+        train_nodes, val_nodes, test_nodes = _apply_label_balancing(
+            args, train_nodes, val_nodes, test_nodes
+        )
+
         print(f"  Final Train Nodes used for graph: {len(train_nodes)} ({'Balanced' if args.fair_train else 'Full from source'}) ({'Copy' if not args.fair_train else 'Balanced'}) ")
         print(f"  Final Val Nodes used for graph: {len(val_nodes)} ({'Balanced' if args.fair_test else 'Full from source'}) ({'Copy' if not args.fair_test else 'Balanced'}) ")
         print(f"  Final Test Nodes used for graph: {len(test_nodes)} ({'Balanced' if args.fair_test else 'Full from source'}) ({'Copy' if not args.fair_test else 'Balanced'}) ")

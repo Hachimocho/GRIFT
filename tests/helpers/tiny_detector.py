@@ -94,27 +94,83 @@ class _TinyModelOutNoLinear(nn.Module):
         return self.model(x)
 
 
-def _install(module_name, model_out_class):
+def _install(module_name, model_out_class, profile_factory):
     module = types.ModuleType(module_name)
     module.ModelOut = model_out_class
     module.__all__ = ["ModelOut"]
     sys.modules[module_name] = module
-    return module_name.rsplit(".", 1)[-1]
+
+    # A capability profile too, so the tiny detector survives the *real* validation
+    # path. `validate_architectures` rejects any name absent from DETECTOR_PROFILES, and
+    # `test_hierarchical.main` calls it at startup and exits 1 -- so without this, a test
+    # can construct a CNNModel on the tiny detector but cannot drive the entrypoint.
+    from models.uncertainty import capabilities
+
+    name = module_name.rsplit(".", 1)[-1]
+    capabilities.DETECTOR_PROFILES[name] = profile_factory(name)
+    return name
+
+
+def _graftable_profile(name):
+    from models.uncertainty.capabilities import (
+        SUPPORTED, Capability, DetectorProfile,
+    )
+
+    return DetectorProfile(
+        name=name, status=SUPPORTED,
+        static_capabilities=frozenset({
+            Capability.LOGITS, Capability.PROBABILITIES,
+            Capability.PENULTIMATE_FEATURES, Capability.LAST_LINEAR_GRAFT,
+            Capability.STOCHASTIC_DROPOUT,
+        }),
+        last_linear_path="model.6", last_linear_in_features=TINY_FEATURE_DIM * 2,
+        # Its own space: a synthetic 16-d head must never be pooled with a real
+        # detector's 1024-d one by `comparable_detector_groups`.
+        penultimate_space=f"{name}_head{TINY_FEATURE_DIM * 2}_postdrop",
+        backbone_embedding_dim=TINY_FEATURE_DIM,
+        dropout_sites_head_none=1, requires_download=False,
+        notes="Synthetic test detector. Mirrors the effnetdf/resnestdf head shape "
+              "(Linear -> Dropout -> Linear) so head grafting takes the same path.",
+    )
+
+
+def _no_linear_profile(name):
+    from models.uncertainty.capabilities import (
+        LOGIT_ONLY, Capability, DetectorProfile,
+    )
+
+    return DetectorProfile(
+        name=name, status=LOGIT_ONLY,
+        static_capabilities=frozenset({
+            Capability.LOGITS, Capability.PROBABILITIES,
+            Capability.STOCHASTIC_DROPOUT,
+        }),
+        last_linear_path=None, last_linear_in_features=None,
+        penultimate_space=None, backbone_embedding_dim=TINY_FEATURE_DIM,
+        dropout_sites_head_none=1, requires_download=False,
+        notes="Synthetic test detector with no nn.Linear anywhere, reproducing "
+              "squeezenetdf: head grafting is impossible, logit methods still work.",
+    )
 
 
 def register_tiny_detector():
     """Install the graftable tiny detector; returns its ``--architectures`` name."""
-    return _install(TINY_MODULE, _TinyModelOut)
+    return _install(TINY_MODULE, _TinyModelOut, _graftable_profile)
 
 
 def register_tiny_detector_no_linear():
     """Install the Linear-free tiny detector; returns its name."""
-    return _install(TINY_NO_LINEAR_MODULE, _TinyModelOutNoLinear)
+    return _install(
+        TINY_NO_LINEAR_MODULE, _TinyModelOutNoLinear, _no_linear_profile
+    )
 
 
 def unregister_tiny_detectors():
+    from models.uncertainty import capabilities
+
     for module_name in (TINY_MODULE, TINY_NO_LINEAR_MODULE):
         sys.modules.pop(module_name, None)
+        capabilities.DETECTOR_PROFILES.pop(module_name.rsplit(".", 1)[-1], None)
 
 
 def tiny_batch(batch_size=4, size=16, seed=0):

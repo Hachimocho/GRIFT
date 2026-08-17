@@ -104,11 +104,18 @@ DETECTOR_PROFILES = {
         name="effnetdf", status=SUPPORTED, static_capabilities=_GRAFTABLE,
         last_linear_path="classifier.fc.2", last_linear_in_features=1024,
         penultimate_space="head1024_postdrop", backbone_embedding_dim=1792,
-        dropout_sites_head_none=1, freezes_backbone_when_finetune=True,
+        # Two, measured: the backbone's own `classifier.dropout` plus the grafted head's
+        # Dropout(0.4). Recorded as 1 before, which understated MC dropout's viability
+        # here -- `registry.py` quotes this number when explaining a gate decision.
+        dropout_sites_head_none=2, freezes_backbone_when_finetune=True,
         notes="NVIDIA EfficientNet-B4 via torch.hub. Head is "
               "Sequential(Linear(1792,1024), Dropout(0.4), Linear(1024,1)), so grafting "
               "on the last Linear puts the uncertainty head on a post-dropout "
-              "activation rather than the backbone embedding.",
+              "activation rather than the backbone embedding. The backbone's native "
+              "AdaptiveAvgPool2d is retained: it was previously replaced with "
+              "AdaptiveMaxPool2d, which inflates the activation scale 42.7x into a "
+              "freshly initialized Linear(1792, 1024) and saturates it. Pass "
+              "configuration='maxpool' to restore that behavior.",
     ),
     "resnestdf": DetectorProfile(
         name="resnestdf", status=SUPPORTED, static_capabilities=_GRAFTABLE,
@@ -130,11 +137,18 @@ DETECTOR_PROFILES = {
         name="vistransformdf", status=SUPPORTED, static_capabilities=_GRAFTABLE,
         last_linear_path="heads.head", last_linear_in_features=768,
         penultimate_space="vit_cls768", backbone_embedding_dim=768,
-        dropout_sites_head_none=0, requires_download=False,
-        notes="torchvision VisionTransformer, randomly initialized -- `pretrained` is "
-              "ignored, so no download. All 37 nn.Dropout modules are p=0.0, so MC "
-              "dropout yields identically zero variance unless a head supplies "
-              "dropout. This is the CLI default architecture.",
+        dropout_sites_head_none=0, requires_download=True,
+        freezes_backbone_when_finetune=True,
+        notes="torchvision vit_b_16 with IMAGENET1K_V1 weights. It previously built a "
+              "hand-configured VisionTransformer at 255/51, where `pretrained` and "
+              "`finetune` were both accepted and silently ignored -- two models built with "
+              "opposite flags came out bit-identical, and all 91M parameters trained from "
+              "scratch, which is why it scored at chance (AUROC 0.50-0.56) in both sweeps. "
+              "The pipeline resizes to 255x255 and ViT asserts its exact image_size, so the "
+              "detector interpolates to 224 in forward. Graft point, 768-d penultimate "
+              "space and zero p>0 dropout sites are unchanged, so MC dropout still yields "
+              "identically zero variance unless a head supplies dropout. This is the CLI "
+              "default architecture.",
     ),
     "squeezenetdf": DetectorProfile(
         name="squeezenetdf", status=LOGIT_ONLY,

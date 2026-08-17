@@ -9,6 +9,12 @@ means of each raw uncertainty signal, and those live on incomparable scales, so 
 cannot answer "which method is better". Everything below reads the per-sample record
 tables instead.
 
+For the *development* loop -- run a matrix across every detector, traversal, graph type,
+head, and updater, then diff it against a committed baseline -- see
+[dev_sweep.md](dev_sweep.md). It drives the same four stages below through one CLI and adds
+the per-demographic breakdown and the run-to-run comparison that this document does not
+cover.
+
 ---
 
 ## 1. Build a node cache

@@ -42,6 +42,11 @@ EPSILON = 1e-7
 # Status flags. Any of these means "do not read the number as a measurement".
 SINGLE_CLASS_LABELS = "single_class_labels"
 SINGLE_CLASS_ERROR = "single_class_error"
+#: The model emitted one class for every sample, so its accuracy *is* the majority-class
+#: prior. Distinct from SINGLE_CLASS_LABELS (the evaluation set has one class) and from
+#: DEGENERATE_CONSTANT_SCORE (the uncertainty score is constant): here the labels are both
+#: present and the scores vary, so neither of those fires, and the accuracy looks fine.
+SINGLE_CLASS_PREDICTIONS = "single_class_predictions"
 DEGENERATE_CONSTANT_SCORE = "degenerate_constant_score"
 DEGENERATE_SINGLE_BIN = "degenerate_single_bin"
 INSUFFICIENT_SAMPLES = "insufficient_samples"
@@ -267,8 +272,15 @@ def negative_log_likelihood(y_true, probabilities, eps=EPSILON):
 # Discrimination
 # --------------------------------------------------------------------------- #
 
-def discrimination_metrics(y_true, probabilities):
-    """Accuracy, balanced accuracy, AUROC, average precision, and EER."""
+def discrimination_metrics(y_true, probabilities, threshold=0.5):
+    """Accuracy, balanced accuracy, AUROC, average precision, and EER.
+
+    `threshold` is the decision boundary the thresholded metrics (accuracy, balanced
+    accuracy) are taken at; AUROC, AUPRC, and EER are threshold-free and unaffected.
+    Defaults to 0.5, so an omitted argument reproduces the previous numbers exactly. A
+    fitted value comes from `evaluation/uq/threshold.py` and must have been fitted on
+    validation data.
+    """
     y_true, probabilities = _as_arrays(y_true, probabilities)
     labels = y_true.astype(int)
     n = int(labels.size)
@@ -280,7 +292,8 @@ def discrimination_metrics(y_true, probabilities):
     if n == 0:
         return result, (INSUFFICIENT_SAMPLES,)
 
-    predictions = (probabilities > 0.5).astype(int)
+    predictions = (probabilities > threshold).astype(int)
+    result["threshold"] = float(threshold)
     result["accuracy"] = float((predictions == labels).mean())
 
     if len(np.unique(labels)) < 2:
@@ -290,6 +303,17 @@ def discrimination_metrics(y_true, probabilities):
     result["balanced_accuracy"] = float(
         0.5 * ((predictions[positive] == 1).mean() + (predictions[~positive] == 0).mean())
     )
+
+    flags = ()
+    # A model that emits one class for every sample scores exactly the majority-class
+    # prior, which on this dataset is a respectable-looking 0.87 and says nothing at all.
+    # Labels are two-class here and the scores vary, so neither SINGLE_CLASS_LABELS nor
+    # DEGENERATE_CONSTANT_SCORE fires -- the row came back `ok` with no flag, which is how
+    # a collapsed classifier gets promoted as a baseline. Balanced accuracy is pinned to
+    # 0.5 whenever this happens, but only if someone reads that column.
+    if len(np.unique(predictions)) < 2:
+        flags = (SINGLE_CLASS_PREDICTIONS,)
+
     if _SKLEARN_AVAILABLE:
         false_positive, true_positive, _ = sk_metrics.roc_curve(labels, probabilities)
         result["auroc"] = float(sk_metrics.auc(false_positive, true_positive))
@@ -298,19 +322,26 @@ def discrimination_metrics(y_true, probabilities):
         result["eer"] = float(
             false_positive[np.nanargmin(np.abs(false_negative - false_positive))]
         )
-    return result, ()
+    return result, flags
 
 
 # --------------------------------------------------------------------------- #
 # Selective prediction / ranking
 # --------------------------------------------------------------------------- #
 
-def _error_labels(y_true, probabilities):
-    predictions = (probabilities > 0.5).astype(int)
+def _error_labels(y_true, probabilities, threshold=0.5):
+    """Which samples the model got wrong, at the given decision threshold.
+
+    Threaded rather than hardcoded because "error" is defined by the operating point: once
+    a threshold is fitted, selective prediction and uncertainty-error ranking have to be
+    measured against the mistakes the model actually makes. Defaults to 0.5, so every
+    existing number is unchanged unless a threshold is passed explicitly.
+    """
+    predictions = (probabilities > threshold).astype(int)
     return (predictions != y_true.astype(int)).astype(int)
 
 
-def uncertainty_error_auroc(y_true, probabilities, uncertainty):
+def uncertainty_error_auroc(y_true, probabilities, uncertainty, threshold=0.5):
     """AUROC of uncertainty as a detector of the model's own mistakes.
 
     Rank-based, so invariant to any monotone rescaling of ``uncertainty`` -- which is
@@ -326,7 +357,7 @@ def uncertainty_error_auroc(y_true, probabilities, uncertainty):
     if n < 2:
         return ScoreResult(float("nan"), n, tuple(flags + [INSUFFICIENT_SAMPLES]), False)
 
-    errors = _error_labels(y_true, probabilities)
+    errors = _error_labels(y_true, probabilities, threshold=threshold)
     if len(np.unique(errors)) < 2:
         # All correct or all wrong: nothing to discriminate.
         return ScoreResult(
@@ -346,7 +377,7 @@ def uncertainty_error_auroc(y_true, probabilities, uncertainty):
     )
 
 
-def aupr_error(y_true, probabilities, uncertainty):
+def aupr_error(y_true, probabilities, uncertainty, threshold=0.5):
     """Average precision for detecting errors, with the base rate as the baseline."""
     y_true, probabilities, uncertainty = _as_arrays(y_true, probabilities, uncertainty)
     uncertainty, y_true, probabilities, dropped = _drop_nan_scores(
@@ -357,7 +388,7 @@ def aupr_error(y_true, probabilities, uncertainty):
     if n < 2:
         return ScoreResult(float("nan"), n, tuple(flags + [INSUFFICIENT_SAMPLES]), False)
 
-    errors = _error_labels(y_true, probabilities)
+    errors = _error_labels(y_true, probabilities, threshold=threshold)
     baseline = float(errors.mean())
     if len(np.unique(errors)) < 2:
         return ScoreResult(
@@ -370,7 +401,7 @@ def aupr_error(y_true, probabilities, uncertainty):
     )
 
 
-def risk_coverage_curve(y_true, probabilities, uncertainty):
+def risk_coverage_curve(y_true, probabilities, uncertainty, threshold=0.5):
     """Risk as a function of coverage, plus AURC and E-AURC.
 
     Samples are abstained on in decreasing order of uncertainty. ``eaurc`` is
@@ -393,7 +424,7 @@ def risk_coverage_curve(y_true, probabilities, uncertainty):
             tuple(flags + [INSUFFICIENT_SAMPLES]), applicable=False,
         )
 
-    errors = _error_labels(y_true, probabilities)
+    errors = _error_labels(y_true, probabilities, threshold=threshold)
     if np.ptp(uncertainty) == 0:
         flags.append(DEGENERATE_CONSTANT_SCORE)
 
@@ -415,6 +446,7 @@ def risk_coverage_curve(y_true, probabilities, uncertainty):
 
 def accuracy_at_coverage(
     y_true, probabilities, uncertainty, coverages=(0.5, 0.7, 0.8, 0.9, 0.95, 1.0),
+    threshold=0.5,
 ):
     """Accuracy on the most-confident fraction of the data, per coverage level."""
     y_true, probabilities, uncertainty = _as_arrays(y_true, probabilities, uncertainty)
@@ -425,7 +457,7 @@ def accuracy_at_coverage(
     if n == 0:
         return {f"accuracy_at_{level:g}": float("nan") for level in coverages}
 
-    errors = _error_labels(y_true, probabilities)
+    errors = _error_labels(y_true, probabilities, threshold=threshold)
     order = np.lexsort((np.arange(n), uncertainty))
     ordered_errors = errors[order]
 

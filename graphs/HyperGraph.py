@@ -169,6 +169,38 @@ class HyperGraph():
             raise Exception("Invalid index for remove_node.")
         self.nodes.pop(index)
         
+    def remove_nodes(self, nodes):
+        """Remove many nodes and their incident edges in one pass. Returns the count.
+
+        Two reasons this exists rather than looping `remove_node`:
+
+        * **`remove_node` takes an index and leaves `_node_data_map` stale.** A node removed
+          through it stays in the id map, so `add_node` later refuses to re-add it as a
+          duplicate -- which silently breaks any restore-after-pruning scheme.
+        * **Cost.** Callers only have node objects, so removing k of them one at a time
+          means k linear scans for their indices: O(N*k). At a million nodes, withdrawing 2%
+          would be 2e10 comparisons. This is a single O(N + E_touched) pass.
+        """
+        doomed_ids = {node.node_id for node in nodes}
+        if not doomed_ids:
+            return 0
+
+        # Detach incident edges from the endpoints that survive, so the remaining graph holds
+        # no edge pointing at a removed node.
+        for node in nodes:
+            for edge in list(getattr(node, 'edges', []) or []):
+                first, second = edge.get_nodes()
+                for endpoint in (first, second):
+                    edges = getattr(endpoint, 'edges', None)
+                    if edges is not None and edge in edges:
+                        edges.remove(edge)
+
+        before = len(self.nodes)
+        self.nodes = [node for node in self.nodes if node.node_id not in doomed_ids]
+        for node_id in doomed_ids:
+            self._node_data_map.pop(node_id, None)
+        return before - len(self.nodes)
+
     def add_node(self, node):
         """
         Add a node to the hypergraph.
