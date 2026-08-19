@@ -79,6 +79,8 @@ class HierarchicalDeepfakeDataloader(Dataloader):
         "sparse_subgroup_threshold": 5000,
         # Disable heavy Louvain by default on huge graphs
         "assign_subclusters": False,
+        "edge_construction": "knn",  # see dataloaders/knn_edges.py
+        "knn_neighbors": 50,
         # Build val/test edges the same way as train. Needed by graph-based
         # uncertainty, which has no signal on an edgeless graph.
         "build_val_test_edges": True,
@@ -947,7 +949,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                             
                             if len(chunk_indices) > 1:
                                 # Generate edges within this chunk
-                                chunk_edges = list(combinations(chunk_indices, 2))
+                                chunk_edges = self._candidate_edges(nodes, chunk_indices)
                                 
                                 # Apply filtering to chunk edges - PASS THE MAP
                                 chunk_edges = self._apply_attribute_filtering(nodes, chunk_edges, 
@@ -957,7 +959,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                     else:
                         # Small enough to process directly
                         if subgroup_size > 1:
-                            subgroup_edges = list(combinations(subgroup, 2))
+                            subgroup_edges = self._candidate_edges(nodes, subgroup)
                             # Apply filtering - PASS THE MAP
                             subgroup_edges = self._apply_attribute_filtering(nodes, subgroup_edges, 
                                                                            f"{race}-{gender} subgroup {subgroup_idx}",
@@ -966,7 +968,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
             else:
                 # Small enough group to process directly
                 if group_size > 1:
-                    group_edges = list(combinations(group_indices, 2))
+                    group_edges = self._candidate_edges(nodes, group_indices)
                     # Apply filtering - PASS THE MAP
                     group_edges = self._apply_attribute_filtering(nodes, group_edges, f"{race}-{gender}",
                                                                node_index_to_subgroup_id)
@@ -1241,6 +1243,24 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                 logger.warning(f"Louvain subcluster assignment failed: {e}")
         return graph
         
+    def _candidate_edges(self, nodes, indices):
+        """Candidate edges within one race-gender group or chunk.
+
+        Was `list(combinations(indices, 2))` at three sites here -- O(N^2) per group in
+        memory, before any similarity filtering. This dataloader already contained a k-NN
+        implementation, but only inside `_build_graph_clustered`, which the live path never
+        calls, and gated behind a 5,000-node subgroup threshold. See
+        dataloaders/knn_edges.py for the measured costs.
+        """
+        from dataloaders.knn_edges import DEFAULT_KNN_NEIGHBOURS, candidate_edges
+
+        return candidate_edges(
+            nodes,
+            mode=self.hyperparameters.get("edge_construction", "knn"),
+            k=self.hyperparameters.get("knn_neighbors", DEFAULT_KNN_NEIGHBOURS),
+            indices=indices,
+        )
+
     def _build_graph_standard(self, nodes, split_name):
         """
         Build a graph for a specific split using hierarchical construction (standard approach)
@@ -1360,7 +1380,7 @@ class HierarchicalDeepfakeDataloader(Dataloader):
                 logger.info(f"Generating sparse k-NN edges for subgroup {subgroup_id} (size {n_sub})")
                 subgroup_edges = _generate_knn_edges_for_subgroup(nodes_in_subgroup)
             else:
-                subgroup_edges = list(combinations(nodes_in_subgroup, 2))
+                subgroup_edges = self._candidate_edges(nodes, nodes_in_subgroup)
             all_edges.extend(subgroup_edges)
 
         logger.info(f"Created {len(all_edges)} initial candidate edges across {len(nodes_by_subgroup)} subgroups (sparse_mode={sparse_mode}).")

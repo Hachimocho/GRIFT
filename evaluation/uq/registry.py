@@ -39,6 +39,7 @@ FAMILY_SAMPLING = "sampling"
 FAMILY_HEAD = "head"
 FAMILY_ENSEMBLE = "ensemble"
 FAMILY_GRAPH = "graph"
+FAMILY_IVALUE = "ivalue"
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,40 @@ UQ_METHODS = {
         notes="Ablation control. The distance methods aggregate over a node's "
               "neighbors, so without this you cannot separate 'attributes differ from "
               "neighbors' from 'this node has few neighbors'.",
+    ),
+    "ivalue": UQMethodSpec(
+        method_id="ivalue", display_name="Predicted I-value (DQN)",
+        family=FAMILY_IVALUE,
+        # Needs the DQN, which only an i-value traversal instantiates. Without one
+        # `CapabilityManager.get_i_value` returns a random draw, so the column would be
+        # noise wearing a method's name -- exactly the failure the subcluster traversals had.
+        requires=frozenset({Capability.NODE_ATTRIBUTES, Capability.NODE_EMBEDDING}),
+        uncertainty_columns=("u_ivalue", "u_ivalue_rank"), primary_column="u_ivalue",
+        produces_probabilities=False, model_agnostic=True,
+        cost_forward_passes=0, cost_training_runs=0,
+        notes="The DQN's predicted I-value, i.e. the expected learning gain from a "
+              "sample. High means the model does not know it yet, so it reads as high "
+              "uncertainty. Distinct from the graph_* methods, which are distance "
+              "statistics over a node's neighbourhood and use no DQN at all. Note for "
+              "interpretation: this is a *learned* confidence estimator trained during the "
+              "run, so it is closer to a trained error-predictor than to max-probability, "
+              "and should be reported against baseline_maxprob explicitly rather than "
+              "against the graph methods.",
+    ),
+    "ivalue_rank": UQMethodSpec(
+        method_id="ivalue_rank", display_name="Predicted I-value (rank-normalised)",
+        family=FAMILY_IVALUE,
+        requires=frozenset({Capability.NODE_ATTRIBUTES, Capability.NODE_EMBEDDING}),
+        uncertainty_columns=("u_ivalue_rank",), primary_column="u_ivalue_rank",
+        produces_probabilities=False, model_agnostic=True,
+        cost_forward_passes=0, cost_training_runs=0,
+        # Every cross-method metric here is rank-based, so a monotone rescaling cannot
+        # change one. Declared rank-equivalent so the report collapses the duplicate
+        # columns rather than inviting the reader to infer a difference that cannot exist.
+        rank_equivalent_to="ivalue",
+        notes="Per-run rank normalisation of u_ivalue onto [0, 1]. Identical to `ivalue` on "
+              "every ranking metric by construction; it exists so raw score distributions "
+              "are comparable in magnitude across runs and heads when plotted.",
     ),
 }
 

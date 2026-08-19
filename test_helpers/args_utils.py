@@ -229,10 +229,13 @@ def parse_args(argv=None):
                              'positive only to seed the quantiles faster at the start of a '
                              'run')
     parser.add_argument('--graph-remove-target', type=str, default='strong',
-                        choices=['strong', 'weak'],
+                        choices=['strong', 'weak', 'random'],
                         help='Which end to withdraw. strong prunes already-learned nodes '
                              '(curriculum); weak prunes the ones the model keeps failing on '
-                             '(noise). Both are defensible, hence a knob (default: strong)')
+                             '(noise); random is the control -- same budget and schedule, '
+                             'chosen without reference to I-values, which is what makes the '
+                             'other two attributable to the I-value signal rather than to '
+                             'pruning as such (default: strong)')
     # Graph reduction / restoration. Fully implemented in the epoch loop and previously
     # unreachable: the keys were read off the internal per-configuration dict, which is
     # built from these args and never carried them.
@@ -270,6 +273,22 @@ def parse_args(argv=None):
                         choices=['clustered', 'clustered_subclustered', 'nonclustered', 'nonclustered_subclustered'],
                         help='Type of graph construction: clustered (race-gender groups), nonclustered (all nodes), and/or with subclustering (Louvain) (default: clustered)')
 
+    parser.add_argument('--edge-construction', type=str, default='knn',
+                        choices=['knn', 'all_pairs'],
+                        help='How candidate edges are generated before similarity '
+                             'filtering. all_pairs was the original behavior and is O(N^2) '
+                             'in memory *before* filtering -- ~76 TiB of RAM at the full '
+                             '1.6M-node corpus, and the surviving graph was 97%% dense '
+                             '(average degree 1264 on a measured 1304-node split). knn '
+                             '(default) keeps each node\'s --knn-neighbors nearest '
+                             'neighbours by cosine distance over the face embedding, which '
+                             'is O(k*N) and sparse by construction. Similarity filtering is '
+                             'unchanged; there are simply no longer N^2 chances to pass it. '
+                             'all_pairs is refused above 30,000 nodes')
+    parser.add_argument('--knn-neighbors', type=int, default=50,
+                        help='Neighbours per node under --edge-construction knn. Realised '
+                             'degree can exceed this because the graph is symmetrised '
+                             '(default: 50)')
     parser.add_argument('--export-csv-per-run', dest='export_csv_per_run', action='store_true',
                         help='Export node/edge CSVs with subcluster info for each run (default: True)')
     parser.add_argument('--no-export-csv-per-run', dest='export_csv_per_run', action='store_false',

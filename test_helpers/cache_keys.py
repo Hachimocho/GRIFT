@@ -31,7 +31,7 @@ ordered and missing roughly half their edges.
 import hashlib
 
 #: Bump when edge construction or serialization changes semantics.
-EDGE_BUILD_VERSION = 2
+EDGE_BUILD_VERSION = 3
 
 #: Dataloader hyperparameters that change the graph and therefore belong in the key.
 GRAPH_SHAPING_HYPERPARAMETERS = (
@@ -40,6 +40,10 @@ GRAPH_SHAPING_HYPERPARAMETERS = (
     "sparse_subgroup_threshold",
     "assign_subclusters",
     "age_split_threshold",
+    # Candidate-edge generation. A knn graph and an all_pairs graph over the same nodes are
+    # completely different graphs, so they must not share a cache entry.
+    "edge_construction",
+    "knn_neighbors",
 )
 
 

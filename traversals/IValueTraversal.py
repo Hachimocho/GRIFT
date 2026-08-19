@@ -348,10 +348,14 @@ class IValueTraversal(Traversal):
                     batch_nodes = batch_nodes[:batch_size]
                     break
 
-            # If we still don't have enough nodes for a minimal batch, skip this traversal
-            if len(batch_nodes) < 8:  # Minimum batch size threshold
-                return []
-
+            # Return whatever was found, however little. Discarding a short batch was not
+            # merely wasteful: `[]` is how `BasicTrainingCapability` and
+            # `DQNCapability.train_with_dqn` are told the traversal is *exhausted*, so they
+            # stop collecting on the first one. On a graph small enough that a step yields
+            # fewer than eight nodes, the very first call returned `[]` and the epoch trained
+            # on nothing -- which is why `--traversal-type i-value` was unusable on a small
+            # graph while working fine on the 5000-node splits, where a step always fills
+            # the batch. A three-node batch is a valid training batch.
             self.current_batch_nodes = batch_nodes
             return batch_nodes
 

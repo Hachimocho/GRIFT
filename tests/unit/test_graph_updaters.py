@@ -452,3 +452,61 @@ def test_track_graph_performance_ignores_a_static_manager(ring_graph):
     assert test_hierarchical.track_graph_performance(
         NoGraphManager(graph), object(), sample_size=10
     ) == 0
+
+
+# -- the tracking hook ---------------------------------------------------------- #
+#
+# `PerformanceGraphManager` documents training's own I-value computations as its input, and
+# for one whole sweep nothing called `track_performance`: it logged "0 node(s) measured",
+# never reached the quantile minimum, pruned nothing, and three cells came back with
+# byte-identical record tables. The hook lives on `AdaptiveTrainer.get_i_value` because that
+# is the single funnel every predicted I-value passes through.
+
+def test_the_trainer_records_i_values_into_the_graph_manager(many_node_graph):
+    from trainers.AdaptiveTrainer import AdaptiveTrainer
+
+    graph, nodes = many_node_graph
+    manager = PerformanceGraphManager(graph)
+
+    trainer = AdaptiveTrainer.__new__(AdaptiveTrainer)
+    trainer.graphmanager = manager
+    trainer.capabilities = type("Caps", (), {
+        "get_i_value": staticmethod(lambda node, model_idx=0: 0.25)
+    })()
+
+    for node in nodes:
+        assert trainer.get_i_value(node) == 0.25
+    assert manager.tracked_count() == len(nodes), (
+        "every I-value the pipeline computes must reach the manager"
+    )
+    assert manager.quantiles() is not None, "and that must be enough for quantiles"
+
+
+def test_the_hook_is_inert_for_a_manager_that_does_not_track(ring_graph):
+    from trainers.AdaptiveTrainer import AdaptiveTrainer
+
+    graph, nodes, _edges = ring_graph
+    trainer = AdaptiveTrainer.__new__(AdaptiveTrainer)
+    trainer.graphmanager = NoGraphManager(graph)
+    trainer.capabilities = type("Caps", (), {
+        "get_i_value": staticmethod(lambda node, model_idx=0: 0.5)
+    })()
+    assert trainer.get_i_value(nodes[0]) == 0.5
+
+
+def test_a_failing_tracker_does_not_break_training(many_node_graph, capsys):
+    from trainers.AdaptiveTrainer import AdaptiveTrainer
+
+    graph, nodes = many_node_graph
+
+    class Exploding:
+        def track_performance(self, node, value):
+            raise RuntimeError("boom")
+
+    trainer = AdaptiveTrainer.__new__(AdaptiveTrainer)
+    trainer.graphmanager = Exploding()
+    trainer.capabilities = type("Caps", (), {
+        "get_i_value": staticmethod(lambda node, model_idx=0: 0.75)
+    })()
+    assert trainer.get_i_value(nodes[0]) == 0.75
+    assert "could not record I-value" in capsys.readouterr().out

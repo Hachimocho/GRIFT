@@ -26,8 +26,14 @@ def _iter_classes(package_name):
     import importlib
     package = importlib.import_module(package_name)
     for name, obj in inspect.getmembers(package, inspect.isclass):
-        if getattr(obj, "__module__", "").startswith(package_name + "."):
-            yield name, obj
+        if not getattr(obj, "__module__", "").startswith(package_name + "."):
+            continue
+        # Exceptions are not components. These packages define error types alongside their
+        # classes, and demanding `tags`/`hyperparameters` of an error would be meaningless --
+        # there is nothing to tag and nothing to sweep.
+        if issubclass(obj, BaseException):
+            continue
+        yield name, obj
 
 
 # Abstract bases declare `tags = ["none"]` as a "do not use directly" marker but

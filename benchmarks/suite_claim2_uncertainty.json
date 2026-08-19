@@ -1,0 +1,36 @@
+{
+  "claim2": {
+    "description": "Claim 2: is the DQN's predicted I-value a better uncertainty measure than traditional UQ methods? A within-run comparison -- every method scores the SAME record table, so the model and its predictions are identical and only the score differs. Every cell uses the i-value traversal, because without a DQN there is no u_ivalue column at all. Each cell adds the methods its head or sampling setting makes available; val records are recorded throughout so temperature scaling can be fitted off-test.",
+    "reference": {
+      "architectures": ["resnestdf"],
+      "traversal_type": "i-value",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "balance_labels": "none",
+      "edge_construction": "knn",
+      "knn_neighbors": 50,
+      "graph_uncertainty_methods": "attribute_distance,embedding_distance,hybrid_distance,degree_penalty",
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 30,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes.pkl",
+      "cached_nodes_count": 5000,
+      "train_steps": 5000,
+      "val_steps": 2500,
+      "num_workers": 4,
+      "val_num_workers": 4
+    },
+    "axes": ["scorer"],
+    "extra_axes": {
+      "scorer": {
+        "head_evidential": {"uncertainty_head": "evidential"},
+        "head_batchensemble": {"uncertainty_head": "batchensemble"},
+        "head_sngp": {"uncertainty_head": "sngp"},
+        "mc_dropout": {"mc_dropout_samples": 8, "uncertainty_dropout_rate": 0.2}
+      }
+    }
+  }
+}

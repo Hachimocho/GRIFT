@@ -53,6 +53,7 @@ CANDIDATE_METHODS = (
     "graph_attribute_distance", "graph_embedding_distance", "graph_hybrid_distance",
     "graph_degree_only",
     "mc_dropout", "evidential", "batchensemble", "sngp",
+    "ivalue", "ivalue_rank",
     "deep_ensemble", "temperature_scaling",
 )
 

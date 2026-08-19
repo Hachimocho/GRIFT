@@ -1,0 +1,61 @@
+{
+  "claim1": {
+    "description": "Claim 1: does I-value-based training beat non-I-value training on accuracy and balanced accuracy? Every treatment has a control differing in exactly one thing -- whether I-values drive the decision. Traversal and pruning are separate mechanisms, so each gets its own control, and the traversal is held at i-value throughout the pruning comparisons.",
+    "reference": {
+      "architectures": ["resnestdf"],
+      "traversal_type": "random",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "balance_labels": "none",
+      "edge_construction": "knn",
+      "knn_neighbors": 50,
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 30,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes.pkl",
+      "cached_nodes_count": 5000,
+      "train_steps": 5000,
+      "val_steps": 2500,
+      "num_workers": 4,
+      "val_num_workers": 4
+    },
+    "axes": ["arm"],
+    "extra_axes": {
+      "arm": {
+        "control_comprehensive": {"traversal_type": "comprehensive"},
+        "treat_traversal_ivalue": {"traversal_type": "i-value"},
+        "treat_traversal_ivalue_clustered": {"traversal_type": "i-value", "graph_type": "clustered"},
+
+        "control_reduce_random": {
+          "traversal_type": "i-value",
+          "reduction_enabled": true, "reduction_strategy": "random",
+          "reduction_percentage": 10.0, "reduction_interval": "end_of_epoch"
+        },
+        "treat_reduce_max_ival": {
+          "traversal_type": "i-value",
+          "reduction_enabled": true, "reduction_strategy": "max_ival",
+          "reduction_percentage": 10.0, "reduction_interval": "end_of_epoch"
+        },
+
+        "control_prune_random": {
+          "traversal_type": "i-value", "graph_manager": "performance",
+          "graph_remove_target": "random", "removal_fraction": 0.02,
+          "graph_updates_per_epoch": 4
+        },
+        "treat_prune_strong": {
+          "traversal_type": "i-value", "graph_manager": "performance",
+          "graph_remove_target": "strong", "removal_fraction": 0.02,
+          "graph_updates_per_epoch": 4
+        },
+        "treat_prune_weak": {
+          "traversal_type": "i-value", "graph_manager": "performance",
+          "graph_remove_target": "weak", "removal_fraction": 0.02,
+          "graph_updates_per_epoch": 4
+        }
+      }
+    }
+  }
+}

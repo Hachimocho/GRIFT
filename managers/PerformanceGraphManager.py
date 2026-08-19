@@ -91,8 +91,10 @@ class PerformanceGraphManager(GraphManager):
                 `MAX_REMOVAL_FRACTION`.
             updates_per_epoch: how many times per epoch the trainer should tick this.
             remove_target: `'strong'` withdraws already-learned nodes (curriculum pruning);
-                `'weak'` withdraws the ones the model keeps failing on (noise pruning). Both
-                are defensible research positions, which is why it is a knob.
+                `'weak'` withdraws the ones the model keeps failing on (noise pruning);
+                `'random'` is the **control** -- same removal budget, same schedule, chosen
+                without reference to I-values, which is what makes the other two
+                attributable to the I-value signal rather than to pruning as such.
             rewire_threshold / edge_removal_threshold / update_interval: the previous
                 absolute thresholds. Accepted and ignored, with a notice, because they are
                 not translatable -- they addressed edges, and this addresses nodes.
@@ -240,10 +242,15 @@ class PerformanceGraphManager(GraphManager):
                   f"({len(current)} <= {floor} nodes); skipping update.")
             return None
 
-        candidates = (
-            self.identify_strong_nodes() if self.remove_target == 'strong'
-            else self.identify_weak_nodes()
-        )
+        if self.remove_target == 'random':
+            # The control arm. Without it, "pruning by I-value helps" cannot be separated
+            # from "pruning helps": prune-strong versus prune-weak only establishes a
+            # *direction* within I-value selection, not that I-values beat chance.
+            candidates = list(current)
+        elif self.remove_target == 'weak':
+            candidates = self.identify_weak_nodes()
+        else:
+            candidates = self.identify_strong_nodes()
         budget = min(
             int(len(current) * min(self.removal_fraction, MAX_REMOVAL_FRACTION)),
             len(current) - floor,
@@ -252,11 +259,20 @@ class PerformanceGraphManager(GraphManager):
         # cases. Sorted by node_id as the tie-break: `get_nodes` order is not guaranteed
         # stable across processes, and an unstable tie-break would make the choice depend on
         # PYTHONHASHSEED.
-        candidates.sort(key=lambda node: (
-            self.get_node_avg_performance(node) if self.remove_target == 'strong'
-            else -self.get_node_avg_performance(node),
-            str(getattr(node, 'node_id', '')),
-        ))
+        if self.remove_target == 'random':
+            # Content-addressed, so the control's choice depends only on which nodes were
+            # offered -- not on how much randomness anything upstream consumed.
+            import hashlib
+
+            candidates.sort(key=lambda node: hashlib.blake2b(
+                f"{self.updates}|{getattr(node, 'node_id', '')}".encode(), digest_size=8,
+            ).digest())
+        else:
+            candidates.sort(key=lambda node: (
+                self.get_node_avg_performance(node) if self.remove_target == 'strong'
+                else -self.get_node_avg_performance(node),
+                str(getattr(node, 'node_id', '')),
+            ))
         doomed = candidates[:max(0, budget)]
 
         # One batch pass. Removing node-by-node would be a linear index scan each time --

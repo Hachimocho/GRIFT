@@ -135,6 +135,11 @@ AXES = {
             "graph_updates_per_epoch": 4, "removal_fraction": 0.02,
             "graph_remove_target": "strong",
         },
+        "performance_prune_random": {
+            "graph_manager": "performance", "traversal_type": "i-value",
+            "graph_updates_per_epoch": 4, "removal_fraction": 0.02,
+            "graph_remove_target": "random",
+        },
         "performance_prune_weak": {
             "graph_manager": "performance", "traversal_type": "i-value",
             "graph_updates_per_epoch": 4, "removal_fraction": 0.02,

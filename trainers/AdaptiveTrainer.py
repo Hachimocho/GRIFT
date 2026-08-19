@@ -193,8 +193,32 @@ class AdaptiveTrainer(Trainer):
             raise ValueError(f"Unknown traversal type: {traversal_type}")
 
     def get_i_value(self, node, model_idx=0):
-        """Get I-value using appropriate capability."""
-        return self.capabilities.get_i_value(node, model_idx)
+        """Get I-value using appropriate capability, recording it for the graph manager.
+
+        This is the single funnel every predicted I-value passes through -- the traversals,
+        the reduction manager, and the visualizers all call it -- so it is the one place a
+        graph updater can observe the values training already computes without paying for a
+        second DQN forward pass per node.
+
+        That matters because the alternative was a separate sampling pass, which at a
+        million nodes is a million forward passes *per update*. `PerformanceGraphManager`
+        documented this as its input, and until this hook existed nothing called
+        `track_performance` at all: it logged "0 node(s) measured", never reached the
+        minimum for a quantile, and pruned nothing -- so three sweep cells came back with
+        byte-identical record tables.
+
+        A manager with no `track_performance` (the default `NoGraphManager`) is untouched.
+        """
+        value = self.capabilities.get_i_value(node, model_idx)
+        tracker = getattr(self.graphmanager, 'track_performance', None)
+        if tracker is not None:
+            try:
+                tracker(node, value)
+            except Exception as error:
+                # Bookkeeping must never break training.
+                print(f"Warning: could not record I-value for "
+                      f"{getattr(node, 'node_id', '?')}: {error}")
+        return value
         
     def train(self, epoch=None):
         """Train using current traversal method."""

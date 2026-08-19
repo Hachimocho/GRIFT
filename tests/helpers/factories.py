@@ -163,6 +163,10 @@ def iter_package_classes(package, base=None):
     for name, obj in inspect.getmembers(package, inspect.isclass):
         if not getattr(obj, "__module__", "").startswith(package.__name__ + "."):
             continue
+        # Exceptions live in these packages too, and they are not components: the contract
+        # tests would demand `tags` and `hyperparameters` of an error type.
+        if issubclass(obj, BaseException):
+            continue
         if base is not None:
             try:
                 if not issubclass(obj, base):

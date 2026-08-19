@@ -277,12 +277,30 @@ class PredictionRecordCollector:
                 unique.append(column)
         return unique
 
+    #: Score columns that get a `_rank` companion: a per-run rank normalisation onto [0, 1].
+    #: Every cross-method metric in `metrics.py` is rank-based, so this cannot change a
+    #: ranking result -- it exists so raw score magnitudes are comparable across runs when
+    #: plotted, which they otherwise are not (a DQN's I-value scale is arbitrary).
+    RANK_NORMALISED_COLUMNS = ("u_ivalue",)
+
+    def _add_rank_normalised(self, frame):
+        """Add `<column>_rank` for each of RANK_NORMALISED_COLUMNS present in `frame`."""
+        for column in self.RANK_NORMALISED_COLUMNS:
+            if column not in frame.columns:
+                continue
+            ranked = frame[column].rank(method="average", pct=True, na_option="keep")
+            frame[f"{column}_rank"] = ranked.astype(float)
+            self.uncertainty_keys.add(f"{column}_rank")
+        return frame
+
     def to_frame(self):
         import pandas as pd
 
         frame = pd.DataFrame(self.rows)
         if frame.empty:
             return pd.DataFrame(columns=self.columns())
+        # Before `self.columns()` is consulted: the rank pass registers new uncertainty keys.
+        frame = self._add_rank_normalised(frame)
         for column in self.columns():
             if column not in frame.columns:
                 frame[column] = np.nan

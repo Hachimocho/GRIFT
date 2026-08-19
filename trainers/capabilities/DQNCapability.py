@@ -7,6 +7,9 @@ from tqdm.auto import tqdm
 from torch.cuda.amp import GradScaler
 import os
 
+#: Consecutive unpreprocessable batches before giving up rather than spinning silently.
+MAX_CONSECUTIVE_PREPROCESS_FAILURES = 5
+
 from trainers.capabilities.uncertainty_logging import (
     uncertainty_summary_for_logging as _uncertainty_summary_for_logging,
 )
@@ -293,6 +296,7 @@ class DQNCapability:
             correct = 0
             total = 0
             batch_count = 0
+            batches_failed = 0
             total_train_bias_loss = 0.0
             uncertainty_sums = defaultdict(float)
             uncertainty_counts = defaultdict(int)
@@ -318,10 +322,23 @@ class DQNCapability:
                     if not batch_nodes:
                         break
                         
-                    # Preprocess batch
+                    # Preprocess batch. A failure here does not advance `nodes_processed`,
+                    # so the loop would spin until the traversal exhausted its steps and then
+                    # report a perfectly successful epoch with `avg_loss: 0.0` -- which is
+                    # how a hardcoded `.cuda()` hid for as long as it did. Counted, and
+                    # raised on if nothing at all can be preprocessed.
                     images, batch_nodes_loaded = self._preprocess_batch(batch_nodes)
                     if images is None or not batch_nodes_loaded:
+                        batches_failed += 1
+                        if batches_failed >= MAX_CONSECUTIVE_PREPROCESS_FAILURES:
+                            raise RuntimeError(
+                                f"{batches_failed} consecutive batches could not be "
+                                f"preprocessed, so no training step has run. The first "
+                                f"error is printed above; a device mismatch or an "
+                                f"unreadable image is the usual cause."
+                            )
                         continue
+                    batches_failed = 0
                         
                     # Extract labels
                     batch_labels_loaded = [float(node.get_label()) for node in batch_nodes_loaded]
@@ -489,9 +506,13 @@ class DQNCapability:
             if not processed_batch:
                 return None, None
                 
-            # Stack tensors
+            # Stack tensors. `.to(self.device)`, not `.cuda()`: the hardcoded call made this
+            # whole training path GPU-only. On a CPU run it raised, the caller's `continue`
+            # swallowed it, and the epoch reported `avg_loss: 0.0` having trained on nothing
+            # -- so `--traversal-type i-value` silently did not train at all without a GPU,
+            # including under the strict determinism that pins CUDA_VISIBLE_DEVICES.
             try:
-                images = torch.stack(processed_batch).cuda()
+                images = torch.stack(processed_batch).to(self.device)
                 return images, valid_nodes
             except Exception as e:
                 print(f"Error stacking tensors: {str(e)}")

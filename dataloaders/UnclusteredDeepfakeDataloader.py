@@ -51,6 +51,8 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "embedding_threshold": 0.9,  # Similarity threshold for face embeddings
         "quality_threshold": 0.9,    # Similarity threshold for quality metrics
         "symmetry_threshold": 0.9,  # Similarity threshold for facial symmetry
+        "edge_construction": "knn",  # see dataloaders/knn_edges.py
+        "knn_neighbors": 50,
         "silent_mode": False,  # When True, disables internal progress bars
         # Build val/test edges the same way as train. Needed by graph-based
         # uncertainty, which has no signal on an edgeless graph.
@@ -810,7 +812,15 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         
         # Generate all possible edge pairs (unclustered approach)
         n_nodes = len(nodes)
-        all_edges = [(i, j) for i in range(n_nodes) for j in range(i + 1, n_nodes)]
+        # Candidate edges. Was an all-pairs list comprehension, which is O(N^2) in memory
+        # *before* any similarity filtering -- ~76 TiB at the full corpus's 1.6M nodes, and
+        # the surviving graph was 97% dense besides. See dataloaders/knn_edges.py.
+        from dataloaders.knn_edges import DEFAULT_KNN_NEIGHBOURS, candidate_edges
+        all_edges = candidate_edges(
+            nodes,
+            mode=self.hyperparameters.get("edge_construction", "knn"),
+            k=self.hyperparameters.get("knn_neighbors", DEFAULT_KNN_NEIGHBOURS),
+        )
         
         logger.info(f"Created {len(all_edges)} initial edges (all pairs)")
         initial_edge_count = len(all_edges)

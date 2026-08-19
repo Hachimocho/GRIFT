@@ -93,6 +93,8 @@ ARG_MAPPING = {
     "val_num_workers": "--val-num-workers",
     "dqn_model": "--dqn-model",
     "graph_type": "--graph-type",
+    "edge_construction": "--edge-construction",
+    "knn_neighbors": "--knn-neighbors",
     # GPU override passthrough
     "gpu_override": "--gpu-override",
     "gpu_id": "--gpu-id",

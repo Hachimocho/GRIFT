@@ -42,6 +42,7 @@ from datetime import datetime
 import dill
 import numpy as np
 import argparse
+import dataclasses
 import faulthandler
 import signal
 import resource
@@ -206,7 +207,7 @@ def _save_uq_records(collector, output_dir, split, extra_manifest=None):
     return records_path
 
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None, image_corruption=None):
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None, image_corruption=None, ivalue_provider=None):
     """Evaluates the model on the provided nodes, calculates standard metrics,
        and optionally calculates bias metrics based on categorical attributes.
 
@@ -412,10 +413,25 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             # Collected here because this is the only point where the prediction
             # bundle, the loaded nodes, and the labels are all simultaneously live.
             if record_collector is not None:
+                bundle_for_records = (
+                    prediction_bundle if prediction_bundle is not None
+                    else PredictionBundle(
+                        logits=outputs, probabilities=probabilities
+                    ).with_predictions()
+                )
+                # The DQN's predicted I-value, as an uncertainty score in its own right.
+                # It cannot come from the model -- the DQN lives on the trainer -- so it is
+                # merged into the bundle here, which is the one place the bundle, the loaded
+                # nodes and the labels are all live. Without this there is no I-value
+                # uncertainty column at all, and the question "are I-values a better
+                # uncertainty measure than the traditional methods" has no data behind it;
+                # the graph_* methods are neighbourhood *distance* statistics and use no DQN.
+                if ivalue_provider is not None:
+                    bundle_for_records = _with_ivalue_uncertainty(
+                        bundle_for_records, batch_nodes_loaded, ivalue_provider, desc,
+                    )
                 record_collector.add_batch(
-                    batch_nodes_loaded, batch_labels_tensor, prediction_bundle
-                    if prediction_bundle is not None
-                    else PredictionBundle(logits=outputs, probabilities=probabilities).with_predictions(),
+                    batch_nodes_loaded, batch_labels_tensor, bundle_for_records,
                     batch_index=i,
                 )
 
@@ -848,6 +864,47 @@ def _trained_nothing(train_metrics):
         if key in train_metrics and train_metrics[key] is not None
     ]
     return bool(losses) and all(float(value) == 0.0 for value in losses)
+
+
+def _ivalue_provider(trainer):
+    """A callable giving a node's predicted I-value, or None when there is no DQN.
+
+    None matters: without a DQN capability `CapabilityManager.get_i_value` falls through to a
+    *random draw*, so recording it would produce a `u_ivalue` column of noise carrying a
+    method's name. The registry gate would still list `ivalue` as available, and the
+    comparison would report a chance-level result as though it were a measurement. Returning
+    None instead leaves the column absent, and `uq_report`/`sweep.py` then skip the method
+    because its score column is not present -- an explained hole rather than a fake number.
+    """
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    if capability is None or not getattr(capability, 'dqns', None):
+        return None
+    return lambda node: trainer.get_i_value(node, 0)
+
+
+def _with_ivalue_uncertainty(bundle, nodes, ivalue_provider, desc):
+    """Return `bundle` with `ivalue` added to its uncertainty dict.
+
+    `ivalue_provider(node) -> float`. A failure degrades to NaN for that sample rather than
+    losing the batch: `records.py` already treats a NaN score as "not measured" and
+    `metrics.py` drops it with a `nan_scores_dropped` flag, so a partial column is reported
+    honestly instead of silently becoming zeros.
+    """
+    import numpy as np
+
+    values = np.empty(len(nodes), dtype=np.float32)
+    for index, node in enumerate(nodes):
+        try:
+            values[index] = float(ivalue_provider(node))
+        except Exception:
+            values[index] = np.nan
+
+    if np.isnan(values).all():
+        print(f"  WARNING ({desc}): every I-value lookup failed; u_ivalue will be empty.")
+
+    uncertainty = dict(bundle.uncertainty or {})
+    uncertainty["ivalue"] = values
+    return dataclasses.replace(bundle, uncertainty=uncertainty)
 
 
 def _selection_score(val_metrics, metric):
@@ -1315,6 +1372,11 @@ def main(argv=None):
                 symmetry_threshold=args.symmetry_threshold,
                 embedding_threshold=args.embedding_threshold,
                 build_val_test_edges=getattr(args, 'build_val_test_edges', True),
+                # Candidate-edge generation. Without these the dataloader falls back to its
+                # own defaults and --edge-construction / --knn-neighbors would be accepted
+                # and ignored.
+                edge_construction=getattr(args, 'edge_construction', 'knn'),
+                knn_neighbors=getattr(args, 'knn_neighbors', 50),
                 silent_mode=True  # Disable internal progress bars and logging during grid search
             )
             should_build_edges = split_name == 'train' or getattr(args, 'build_val_test_edges', True)
@@ -2200,6 +2262,7 @@ def main(argv=None):
                             attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None,
                             record_collector=test_collector,
                             image_corruption=None if test_corruption.is_identity else test_corruption,
+                            ivalue_provider=_ivalue_provider(trainer),
                         )
                         print("\n--- Final Test Results ---")
                         print(json.dumps(test_metrics, indent=2))
@@ -2231,6 +2294,7 @@ def main(argv=None):
                                     desc="UQ Val Records",
                                     num_workers=getattr(args, 'val_num_workers', 4),
                                     record_collector=val_collector,
+                                    ivalue_provider=_ivalue_provider(trainer),
                                 )
                                 uq_artifacts['val'] = _save_uq_records(
                                     val_collector, uq_dir, 'val', uq_manifest

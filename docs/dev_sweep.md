@@ -146,6 +146,53 @@ out in the log as `NOTE (Validation): single_class_predictions`.
 The criterion and its score are recorded in `determinism.json`; two runs selected on
 different metrics are not comparable.
 
+### Graph construction: why it is k-NN
+
+`--edge-construction` defaults to **`knn`** with `--knn-neighbors 50`. The original
+`all_pairs` mode is still selectable, and it cannot scale:
+
+```python
+all_edges = [(i, j) for i in range(n_nodes) for j in range(i + 1, n_nodes)]
+```
+
+That materialised every pair as a Python list *before* any similarity filtering, so raising
+the thresholds did not help. Measured:
+
+| nodes/split | candidate pairs | RAM for the list |
+|---|---|---|
+| 5,000 | 1.25e7 | 0.7 GiB |
+| 50,000 | 1.25e9 | 74.5 GiB |
+| **1,600,000** (full corpus) | **1.28e12** | **76,294 GiB** |
+
+A second, independent wall sat behind it: at the default thresholds the surviving graph was
+extremely dense. A measured 1,304-node split kept **823,814 edges — 97.0% of all possible
+pairs, average degree 1,264**, so every node was adjacent to ~97% of the graph. Even with
+lazy enumeration, 1.6M nodes would leave ~1.24e12 edges.
+
+k-NN removes both. Each node keeps its `k` nearest neighbours by cosine distance over the
+face embedding, so candidates are O(k·N) and the graph is sparse by construction: ~8e7 edges
+at the full corpus rather than 1.24e12, average degree 50 rather than 1,264. **Similarity
+filtering runs afterwards, unchanged** — an edge means exactly what it always meant, there
+are simply no longer N² chances to make one. On synthetic data the post-filter edge set was
+*identical* between the two modes, which is the property that makes the approximation sound:
+the edges that survive a similarity threshold are the most-similar pairs, and those are what
+k-NN retrieves.
+
+Sparsity also matters for the parts of this project that reason about topology. At degree
+1,264 the performance updater's rewiring was ~0.01% of the graph and the graph-distance
+uncertainty methods scored barely above their degree-only control; neither had room to mean
+anything.
+
+`all_pairs` is **refused above 30,000 nodes** with the cost quantified, rather than being
+OOM-killed part-way through a build. The mode and `k` are in the graph cache key, so a k-NN
+graph and an all-pairs graph over the same nodes can never share a cache entry, and
+`EDGE_BUILD_VERSION` is bumped so pre-existing caches are not reused.
+
+Implementation is `dataloaders/knn_edges.py`, shared by both dataloaders. A k-NN routine
+already existed in `HierarchicalDeepfakeDataloader._build_graph_clustered` — but that method
+is not the one the live path calls, and it was gated behind a 5,000-node subgroup threshold,
+so it had never run.
+
 ### Class imbalance: the two levers
 
 The corrected AI-Face split is about 87% fake, and at that prior BCE is minimized
