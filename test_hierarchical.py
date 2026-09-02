@@ -52,6 +52,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import utilities from the new helper module
 from test_helpers.logging_utils import NullHandler, capture_output, log_exception
+from trainers.capabilities.selection_diagnostic import SelectionDiagnostic
 from test_helpers.determinism import (
     assert_strict_invariants, configure_determinism, is_strict, rng_for,
     seed_model_init, swallow_or_raise, write_run_fingerprint,
@@ -171,6 +172,70 @@ def _uq_record_splits(args):
         name for name in (part.strip() for part in raw.split(','))
         if name in ('train', 'val', 'test')
     )
+
+
+def _parse_band(text):
+    """`"0.4,0.7"` -> `(0.4, 0.7)`. Raises rather than silently falling back to the default:
+    a mistyped band would otherwise run a differently-configured arm under the right name."""
+    try:
+        low, high = (float(part) for part in str(text).split(','))
+    except Exception as error:
+        raise ValueError(
+            f"--ivalue-band must be two comma-separated numbers, got {text!r}"
+        ) from error
+    return (low, high)
+
+
+def _write_selection_diagnostic(diagnostic, output_dir):
+    """Write `selection_diagnostic.csv.gz`: one row per training batch.
+
+    The column that matters is `batch_diversity` -- mean pairwise cosine distance between the
+    batch's face embeddings. A graph walk selects among k-NN neighbours, which are similar
+    faces by construction, so its batches should be measurably less diverse than i.i.d. ones.
+    """
+    rows = getattr(diagnostic, 'rows', None)
+    if not rows:
+        return None
+    try:
+        import pandas as pd
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / 'selection_diagnostic.csv.gz'
+        pd.DataFrame(rows).to_csv(path, index=False, compression='gzip')
+        print(f"Wrote selection diagnostic ({len(rows)} batches) to {path}")
+        return str(path)
+    except Exception as error:
+        print(f"Warning: could not write the selection diagnostic: {error}")
+        return None
+
+
+def _write_ivalue_diagnostic(trainer, output_dir):
+    """Write `ivalue_diagnostic.csv.gz`: predicted I-value against realised learning gain.
+
+    This is the evidence for whether the DQN estimates anything useful. Each row pairs the
+    I-value the traversal saw when it *chose* a node with the per-sample loss reduction that
+    training on it actually produced, so a positive rank correlation is the minimum bar the
+    method has to clear before a selection strategy built on it can be expected to help.
+
+    A no-op unless `--ivalue-diagnostic` was passed, and silent when the run used no DQN.
+    """
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    rows = getattr(capability, 'ivalue_diagnostic_rows', None) if capability else None
+    if not rows:
+        return None
+    try:
+        import pandas as pd
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / 'ivalue_diagnostic.csv.gz'
+        pd.DataFrame(rows).to_csv(path, index=False, compression='gzip')
+        print(f"Wrote I-value diagnostic ({len(rows)} rows) to {path}")
+        return str(path)
+    except Exception as error:
+        print(f"Warning: could not write the I-value diagnostic: {error}")
+        return None
 
 
 def _save_uq_records(collector, output_dir, split, extra_manifest=None):
@@ -680,12 +745,28 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
         # than from the traversal name: hopping exists because a clustered graph is built
         # from disjoint race-gender groups that a pointer cannot walk between, so it is a
         # property of the construction, not an independent strategy.
+        #
+        # candidate_pool/selection_mode/selection_band/group_targeting come off `trainer`
+        # rather than `kwargs`, mirroring `AdaptiveTrainer._create_traversal` exactly --
+        # that is the other factory that builds an IValueTraversal, used only for the
+        # traversal-*switching* feature, and it already reads these the same way. This one
+        # is what every single-traversal run (i.e. every non-switching run, which is most
+        # of them) actually calls, and it used to drop all four silently: `--ivalue-
+        # candidate-pool`, `--ivalue-selection`, `--ivalue-band`, and `--ivalue-group-
+        # targeting` all fell back to their `IValueTraversal.__init__` defaults
+        # (candidate_pool=0, selection_mode='max', group_targeting=None) no matter what was
+        # passed on the CLI, so three sweep arms meant to test three different selection
+        # mechanisms ran the identical one.
         return IValueTraversal(
             graph=graph,
             num_pointers=num_pointers,
             num_steps=num_steps,
             trainer=trainer,
             bias_hop_period=kwargs.get('bias_hop_period', 100),
+            candidate_pool=getattr(trainer, 'ivalue_candidate_pool', 0),
+            selection_mode=getattr(trainer, 'ivalue_selection_mode', None) or 'max',
+            selection_band=getattr(trainer, 'ivalue_selection_band', None) or (0.4, 0.7),
+            group_targeting=getattr(trainer, 'group_targeting', None),
         )
     else:
         raise ValueError(f"Unsupported traversal type: {traversal_type}")
@@ -717,7 +798,8 @@ def parse_traversal_config(args):
     
     return config
 
-def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args):
+def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args,
+                           selection_diagnostic=None):
     """Create and configure an AdaptiveTrainer instance."""
     trainer = AdaptiveTrainer(
         graphmanager=train_manager,
@@ -726,29 +808,43 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
         attribute_metadata=attribute_metadata,
         loss_fn=criterion,
         bias_loss_weight=args.bias_loss_weight,
-        dqn_model_type=getattr(args, 'dqn_model', 'basic')
+        dqn_model_type=getattr(args, 'dqn_model', 'basic'),
+        preprocess_workers=getattr(args, 'preprocess_workers', 8),
+        max_nodes_per_epoch=getattr(args, 'max_nodes_per_epoch', None),
+        ivalue_reward=getattr(args, 'ivalue_reward', 'confidence'),
+        ivalue_state_features=getattr(args, 'ivalue_state_features', False),
+        ivalue_candidate_pool=getattr(args, 'ivalue_candidate_pool', 0),
+        comprehensive_cumulative=getattr(args, 'comprehensive_cumulative', False),
+        collect_ivalue_diagnostic=getattr(args, 'ivalue_diagnostic', False),
+        dqn_fixes=getattr(args, 'dqn_fixes', False),
+        dqn_objective=getattr(args, 'dqn_objective', 'rank'),
+        dqn_buffer_size=getattr(args, 'dqn_buffer_size', 512),
+        ivalue_unseen_prior=getattr(args, 'ivalue_unseen_prior', 'neutral'),
+        selection_diagnostic=selection_diagnostic,
+        ivalue_selection_mode=getattr(args, 'ivalue_selection', 'max'),
+        ivalue_selection_band=_parse_band(getattr(args, 'ivalue_band', '0.4,0.7')),
+        ivalue_loss_weight=getattr(args, 'ivalue_loss_weight', 'none'),
+        ivalue_weight_clip=getattr(args, 'ivalue_weight_clip', 2.0),
+        ivalue_ban_negative_gain=getattr(args, 'ivalue_ban_negative_gain', 0),
+        ivalue_ban_max_fraction=getattr(args, 'ivalue_ban_max_fraction', 0.2),
+        ivalue_group_targeting=getattr(args, 'ivalue_group_targeting', False),
+        ivalue_group_top=getattr(args, 'ivalue_group_top', 3),
     )
     return trainer
 
 def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwargs):
-    """Create a DQN model instance based on type and parameters."""
-    if model_type == "basic":
-        from models.DQNModel import DQNModel
-        return DQNModel(feature_dim, device, embedding_dim=embedding_dim)
-    elif model_type == "residual":
-        from models.EnhancedDQNModels import ResidualDQNModel
-        return ResidualDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "attention":
-        from models.EnhancedDQNModels import AttentionDQNModel
-        return AttentionDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "conv_embedding":
-        from models.EnhancedDQNModels import ConvEmbeddingDQN
-        return ConvEmbeddingDQN(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "ensemble":
-        from models.EnhancedDQNModels import EnsembleDQNModel
-        return EnsembleDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    else:
-        raise ValueError(f"Unsupported DQN model type: {model_type}")
+    """Create an I-value estimator. Thin wrapper over the single factory.
+
+    `models.gain_estimator.build_estimator` owns the dispatch, so this function and
+    `DQNCapability._initialize_dqns` cannot drift apart -- they used to be two copies, which
+    is how a `--dqn-model gain_*` name could be accepted by the CLI and never be built.
+    """
+    from models.gain_estimator import build_estimator
+
+    return build_estimator(
+        model_type, feature_dim, device, embedding_dim=embedding_dim, **kwargs
+    )
+
 
 def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
     """Create either a CNN model or DQN model based on architecture."""
@@ -1737,7 +1833,15 @@ def main(argv=None):
                         )
 
                 # Create trainer (always use AdaptiveTrainer)
-                trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
+                # One collector per run, shared by both training paths so a switching run
+                # still produces a single comparable file.
+                selection_diagnostic = SelectionDiagnostic(
+                    enabled=getattr(args, 'selection_diagnostic', False)
+                )
+                trainer = create_adaptive_trainer(
+                    train_manager, model, device, attribute_metadata, criterion, args,
+                    selection_diagnostic=selection_diagnostic,
+                )
                 
                 # NEW: Set traversal sequence for DQN warm-up if using switching mode
                 if config['mode'] == 'switching':
@@ -2270,6 +2374,17 @@ def main(argv=None):
                         # After the eval, so n_applied is the real count rather than the
                         # zero it would be if snapshotted at construction.
                         uq_manifest["corruption"] = test_corruption.summary()
+
+                        # The I-value diagnostic is independent of --uq-records: it is
+                        # about the estimator, not the predictions, and the gate that decides
+                        # whether the estimator works at all must be runnable on a short job
+                        # that writes no record tables.
+                        _write_ivalue_diagnostic(
+                            trainer, run_output_dir / config['description']
+                        )
+                        _write_selection_diagnostic(
+                            selection_diagnostic, run_output_dir / config['description']
+                        )
 
                         if record_splits:
                             uq_dir = run_output_dir / config['description']

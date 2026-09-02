@@ -91,6 +91,27 @@ ARG_MAPPING = {
     "bias_loss_weight": "--bias_loss_weight",
     "num_workers": "--num-workers",
     "val_num_workers": "--val-num-workers",
+    "preprocess_workers": "--preprocess-workers",
+    "max_nodes_per_epoch": "--max-nodes-per-epoch",
+    "ivalue_reward": "--ivalue-reward",
+    "ivalue_state_features": "--ivalue-state-features",
+    "ivalue_candidate_pool": "--ivalue-candidate-pool",
+    "comprehensive_cumulative": "--comprehensive-cumulative",
+    "ivalue_diagnostic": "--ivalue-diagnostic",
+    "ivalue_unseen_prior": "--ivalue-unseen-prior",
+    "selection_diagnostic": "--selection-diagnostic",
+    "ivalue_selection": "--ivalue-selection",
+    "ivalue_band": "--ivalue-band",
+    "ivalue_loss_weight": "--ivalue-loss-weight",
+    "ivalue_weight_clip": "--ivalue-weight-clip",
+    "ivalue_ban_negative_gain": "--ivalue-ban-negative-gain",
+    "ivalue_ban_max_fraction": "--ivalue-ban-max-fraction",
+    "ivalue_group_targeting": "--ivalue-group-targeting",
+    "ivalue_group_top": "--ivalue-group-top",
+    "dqn_fixes": "--dqn-fixes",
+    "dqn_objective": "--dqn-objective",
+    "dqn_buffer_size": "--dqn-buffer-size",
+    "dqn_embedding_dim": "--dqn-embedding-dim",
     "dqn_model": "--dqn-model",
     "graph_type": "--graph-type",
     "edge_construction": "--edge-construction",
@@ -188,17 +209,78 @@ def validate_config_keys(config: Dict[str, Any]) -> List[str]:
     return sorted(key for key in config if key not in routable)
 
 
+#: Env var naming the GPU ids this process may use, e.g. "0,1". Unset means every GPU.
+#: A shared box is the normal case, and the memory check alone cannot express "someone
+#: else owns that card": another user training in 5 GB of a 46 GB L40S leaves it looking
+#: idle and available, so the only reliable way to stay off their GPU is an explicit
+#: allowlist.
+VISIBLE_GPUS_ENV = "GRIFT_VISIBLE_GPUS"
+
+
+def parse_visible_gpus(value):
+    """Parse a "0,1" GPU allowlist into a sorted set of ints, or None for "all".
+
+    Raises `ValueError` on anything unparseable rather than falling back to all GPUs --
+    a typo that silently widens the allowlist is how you end up on a colleague's card.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (set, frozenset, list, tuple)):
+        items = list(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        items = [part for part in text.replace(" ", ",").split(",") if part]
+    ids = set()
+    for item in items:
+        try:
+            ids.add(int(item))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"cannot parse {item!r} as a GPU id in {value!r}; "
+                f"expected a comma-separated list like 0,1"
+            )
+    if not ids:
+        return None
+    negative = sorted(i for i in ids if i < 0)
+    if negative:
+        raise ValueError(f"GPU ids must be non-negative, got {negative}")
+    return ids
+
+
 class GPUQueueManager:
     """Manages GPU allocation and queueing for test runs."""
     
-    def __init__(self, runs_dir: str = "web_ui/runs"):
+    def __init__(self, runs_dir: str = "web_ui/runs", visible_gpus=None, runs_per_gpu=1):
         self.runs_dir = Path(runs_dir)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Restrict every GPU view to this allowlist. Filtered in `get_gpu_info`, which is
+        # the single source `get_available_gpus`, the queue loop, and the status endpoint
+        # all read from, so one filter covers allocation, availability, and reporting.
+        if visible_gpus is None:
+            visible_gpus = os.environ.get(VISIBLE_GPUS_ENV)
+        self.visible_gpus = parse_visible_gpus(visible_gpus)
+        if self.visible_gpus is not None:
+            logger.info(
+                "GPU allowlist active: %s (others are ignored even when idle)",
+                ",".join(str(i) for i in sorted(self.visible_gpus)),
+            )
         
         # GPU management
-        self.gpu_allocations = {}  # {gpu_id: run_id}
-        self.gpu_processes = {}    # {gpu_id: process}
-        self.gpu_monitor_threads = {}  # {gpu_id: thread}
+        self.gpu_allocations = {}  # {gpu_id: most recent run_id, for display only}
+        #: Per-run state, keyed by run_id rather than by GPU.
+        #:
+        #: It used to be keyed by `gpu_id`, which silently made "one run per GPU" structural
+        #: rather than a policy: a second run on the same card would overwrite the first's
+        #: process handle, and the monitor -- which reaps `gpu_processes[gpu_id]` -- would
+        #: attribute the wrong exit code to the wrong run and release a GPU still in use.
+        #: Keyed by run_id, concurrency is just a number.
+        self.run_processes = {}    # {run_id: process}
+        self.run_gpus = {}         # {run_id: gpu_id}
+        self.run_monitor_threads = {}  # {run_id: thread}
+        self.gpu_run_ids = {}      # {gpu_id: set(run_id)}
         
         # Queue management
         self.run_queue = []  # List of (run_id, config_name, config, priority)
@@ -209,6 +291,15 @@ class GPUQueueManager:
         self.run_metadata = {}  # {run_id: full_metadata}
         
         # Configuration
+        #: How many runs may share one GPU.
+        #:
+        #: Measured on this box: a training process sits at ~1.5-2.5 GB of a 46 GB card and
+        #: 95.6% of a *single* core, with the GPU at ~14% utilisation -- the work is
+        #: single-threaded Python, not GPU compute. So the card is the wrong thing to
+        #: serialise on, and packing several runs onto it converts idle silicon into
+        #: throughput. Results are unaffected: strict determinism pins one visible device per
+        #: run and no result depends on what else shares the card.
+        self.runs_per_gpu = max(1, int(runs_per_gpu or 1))
         self.min_gpu_memory_gb = 2.0  # Minimum GPU memory required
         self.gpu_check_interval = 5.0  # Seconds between GPU availability checks
         self.queue_check_interval = 2.0  # Seconds between queue processing
@@ -254,7 +345,10 @@ class GPUQueueManager:
                         'temperature': gpu.temperature,
                         'load': gpu.load * 100 if gpu.load else 0,
                         'allocated_to': self.gpu_allocations.get(i),
-                        'status': 'allocated' if i in self.gpu_allocations else 'available'
+                        'runs_active': len(self.gpu_run_ids.get(i, ())),
+                        'status': ('allocated'
+                                   if len(self.gpu_run_ids.get(i, ())) >= self.runs_per_gpu
+                                   else 'available')
                     }
                     gpu_info.append(gpu_data)
             except Exception as e:
@@ -274,12 +368,18 @@ class GPUQueueManager:
                         'temperature': None,
                         'load': None,
                         'allocated_to': self.gpu_allocations.get(i),
-                        'status': 'allocated' if i in self.gpu_allocations else 'available'
+                        'runs_active': len(self.gpu_run_ids.get(i, ())),
+                        'status': ('allocated'
+                                   if len(self.gpu_run_ids.get(i, ())) >= self.runs_per_gpu
+                                   else 'available')
                     }
                     gpu_info.append(gpu_data)
             except Exception as e:
                 logger.error(f"Error getting GPU info with PyTorch: {e}")
-        
+
+        if self.visible_gpus is not None:
+            gpu_info = [gpu for gpu in gpu_info if gpu['id'] in self.visible_gpus]
+
         return gpu_info
     
     def get_available_gpus(self, min_memory_gb: float = None) -> List[int]:
@@ -429,9 +529,11 @@ class GPUQueueManager:
                     preexec_fn=os.setsid
                 )
             
-            # Track process and allocation
+            # Track process and allocation, per run.
             self.gpu_allocations[gpu_id] = run_id
-            self.gpu_processes[gpu_id] = process
+            self.run_processes[run_id] = process
+            self.run_gpus[run_id] = gpu_id
+            self.gpu_run_ids.setdefault(gpu_id, set()).add(run_id)
             self.active_runs[run_id] = metadata
             
             # Start monitoring thread
@@ -441,7 +543,7 @@ class GPUQueueManager:
             )
             monitor_thread.daemon = True
             monitor_thread.start()
-            self.gpu_monitor_threads[gpu_id] = monitor_thread
+            self.run_monitor_threads[run_id] = monitor_thread
             
             logger.info(f"Started run {run_id} on GPU {gpu_id} with PID {process.pid}")
             return True
@@ -453,19 +555,17 @@ class GPUQueueManager:
     def stop_run(self, run_id: str) -> bool:
         """Stop a running test."""
         try:
-            # Find which GPU this run is using
-            gpu_id = None
-            for gid, rid in self.gpu_allocations.items():
-                if rid == run_id:
-                    gpu_id = gid
-                    break
-            
+            # Which GPU this run is on. A direct lookup now: scanning `gpu_allocations`
+            # by value only ever found one run per GPU, so with several sharing a card it
+            # would stop whichever happened to be recorded last.
+            gpu_id = self.run_gpus.get(run_id)
+
             if gpu_id is None:
                 logger.warning(f"Run {run_id} not found in active runs")
                 return False
-            
+
             # Stop the process
-            process = self.gpu_processes.get(gpu_id)
+            process = self.run_processes.get(run_id)
             if process:
                 try:
                     # Send SIGTERM to the process group
@@ -660,19 +760,24 @@ class GPUQueueManager:
         
         while self.running:
             try:
-                # Check for completed processes
-                completed_gpus = []
-                for gpu_id, process in self.gpu_processes.items():
-                    if process.poll() is not None:
-                        completed_gpus.append(gpu_id)
-                
+                # Check for completed processes, per run. Iterating by GPU attributed a
+                # completed process to `gpu_allocations[gpu_id]` -- the *most recent* run on
+                # that card -- so with concurrency it would credit one run's exit code to
+                # another and free a GPU that was still busy.
+                completed = [
+                    run_id for run_id, process in list(self.run_processes.items())
+                    if process.poll() is not None
+                ]
+
                 # Handle completed runs
-                for gpu_id in completed_gpus:
-                    run_id = self.gpu_allocations.get(gpu_id)
-                    if run_id:
-                        exit_code = self.gpu_processes[gpu_id].returncode
-                        status = "completed" if exit_code == 0 else "failed"
-                        self._release_gpu(gpu_id, run_id, status, exit_code=exit_code)
+                for run_id in completed:
+                    process = self.run_processes.get(run_id)
+                    gpu_id = self.run_gpus.get(run_id)
+                    if process is None or gpu_id is None:
+                        continue
+                    exit_code = process.returncode
+                    status = "completed" if exit_code == 0 else "failed"
+                    self._release_gpu(gpu_id, run_id, status, exit_code=exit_code)
                 
                 # Periodically check for orphaned queued runs
                 orphaned_check_counter += 1
@@ -723,13 +828,18 @@ class GPUQueueManager:
                 
                 self._save_run_metadata(run_id, metadata)
             
-            # Clean up GPU allocation
-            if gpu_id in self.gpu_allocations:
-                del self.gpu_allocations[gpu_id]
-            if gpu_id in self.gpu_processes:
-                del self.gpu_processes[gpu_id]
-            if gpu_id in self.gpu_monitor_threads:
-                del self.gpu_monitor_threads[gpu_id]
+            # Clean up, per run. Only free the card once nothing is left on it.
+            self.run_processes.pop(run_id, None)
+            self.run_gpus.pop(run_id, None)
+            self.run_monitor_threads.pop(run_id, None)
+            remaining = self.gpu_run_ids.get(gpu_id)
+            if remaining is not None:
+                remaining.discard(run_id)
+                if not remaining:
+                    self.gpu_run_ids.pop(gpu_id, None)
+                    self.gpu_allocations.pop(gpu_id, None)
+                elif self.gpu_allocations.get(gpu_id) == run_id:
+                    self.gpu_allocations[gpu_id] = next(iter(remaining))
             if run_id in self.active_runs:
                 del self.active_runs[run_id]
             
@@ -875,11 +985,11 @@ class GPUQueueManager:
         self.running = False
         
         # Stop all running processes
-        for gpu_id, process in self.gpu_processes.items():
+        for run_id, process in list(self.run_processes.items()):
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             except Exception as e:
-                logger.error(f"Error stopping process on GPU {gpu_id}: {e}")
+                logger.error(f"Error stopping process for run {run_id}: {e}")
         
         logger.info("GPU Queue Manager shutdown complete")
     

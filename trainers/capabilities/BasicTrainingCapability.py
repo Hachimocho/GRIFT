@@ -1,6 +1,27 @@
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler
+
+from trainers.capabilities.loss_weighting import (
+    DEFAULT_WEIGHT_CLIP, LOSS_WEIGHT_MODES, LossWeighter,
+)
+
+#: Consecutive empty traversal batches tolerated before an epoch is declared exhausted.
+#:
+#: A walk returns an empty batch when it hits its own local dead end -- `RandomTraversal`
+#: gives up after 100 steps with no unvisited node -- which is *not* the same as having no
+#: nodes left to offer. Treating the first empty batch as end-of-epoch is what made the
+#: random arm train on as few as 264 nodes against a 10,000 budget, while the DQN arm hit
+#: its full 10,016: the very next `traverse()` call after an empty one returned 6,302
+#: nodes. Since the arms' realised sample counts are what a traversal comparison rests on,
+#: giving up early does not just waste budget, it silently confounds the experiment.
+MAX_CONSECUTIVE_EMPTY_BATCHES = 50
+
+# Loss weighting lives in `loss_weighting.py`, shared with DQNCapability:
+# `CapabilityManager.train_with_traversal` routes every traversal through the DQN path as soon
+# as a DQN exists, so an implementation only here is unreachable exactly when the I-value it
+# needs is available. Re-exported so existing importers keep working.
+
 from tqdm.auto import tqdm
 from collections import defaultdict
 import random
@@ -19,7 +40,18 @@ class BasicTrainingCapability:
         
         # Training settings
         self.batch_size = 32
-        self.max_nodes_per_epoch = 5000
+        # Nodes trained on per epoch. This is the run's real training budget -- NOT
+        # `--train-steps`, which only bounds how far the traversal walks. The default
+        # differed from DQNCapability's 10000, so an i-value arm trained on twice the
+        # samples of a random or comprehensive arm and any accuracy gap between them
+        # confounded sample selection with sample count. Override it to compare fairly.
+        self.max_nodes_per_epoch = int(
+            getattr(trainer, 'max_nodes_per_epoch', None) or 5000
+        )
+        self.weighter = LossWeighter(
+            mode=getattr(trainer, 'ivalue_loss_weight', None) or 'none',
+            clip=getattr(trainer, 'ivalue_weight_clip', None) or DEFAULT_WEIGHT_CLIP,
+        )
         self.scaler = GradScaler()
         
         # Setup CUDA optimizations
@@ -55,21 +87,32 @@ class BasicTrainingCapability:
             # Get nodes from traversal
             try:
                 nodes = []
-                while True:
+                empty_batches = 0
+                while len(nodes) < self.max_nodes_per_epoch:
                     batch = traversal.traverse()
                     if not batch:
-                        break
+                        # A local dead end, not necessarily an exhausted graph. Keep asking.
+                        empty_batches += 1
+                        if empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
+                            break
+                        continue
+                    empty_batches = 0
                     nodes.extend(batch)
-                    if len(nodes) >= self.max_nodes_per_epoch:
-                        break
+
+                if len(nodes) > self.max_nodes_per_epoch:
+                    # Exactly the budget, so every arm trains on the same number of nodes.
+                    nodes = nodes[:self.max_nodes_per_epoch]
                         
                 if not nodes:
                     print("Warning: No nodes returned from traversal")
                     return self._get_empty_metrics()
                     
-                # Limit number of nodes per epoch
-                nodes = nodes[:self.max_nodes_per_epoch]
-                print(f"Processing {len(nodes)} nodes for basic training")
+                print(f"Processing {len(nodes)} nodes for basic training "
+                      f"(budget {self.max_nodes_per_epoch})")
+                summary = self.weighter.summary_and_reset()
+                if summary:
+                    print(f"  loss weighting: mode={self.weighter.mode} "
+                          f"mean weight={summary[0]:.4f} over {summary[1]} sample(s)")
                 
                 # Print label distribution
                 for node in nodes:
@@ -167,6 +210,23 @@ class BasicTrainingCapability:
                                 else:
                                     chunk_outputs = model(chunk_tensor)
                                     loss = self.trainer.criterion(chunk_outputs, chunk_labels_tensor)
+
+                                # Re-weight by I-value, keeping i.i.d. sampling intact.
+                                # Restricted to the plain-criterion branch on purpose: the
+                                # evidential and batchensemble paths above replace or reshape
+                                # the loss, so a weight applied there would be silently
+                                # dropped or applied to the wrong number of rows.
+
+                                # Re-weight by I-value, gated on the head type rather than
+                                # on which branch produced the loss -- `CNNModel` always
+                                # defines `forward_with_uncertainty`, so the plain-criterion
+                                # branch is never taken and a hook there is dead code.
+                                head_type = getattr(model, 'uncertainty_head_type', None)
+                                if self.weighter.enabled and head_type in (None, 'none'):
+                                    loss = self._weighted_loss(
+                                        chunk_outputs, chunk_labels_tensor, chunk_nodes
+                                    )
+
                                 # Calculate bias loss if available
                                 bias_loss_val = 0.0
                                 bias_loss_fn = getattr(self.trainer.capabilities, 'get_bias_loss', None)
@@ -189,6 +249,46 @@ class BasicTrainingCapability:
                             self.scaler.step(self.trainer.models[0].optim)
                             self.scaler.update()
                             
+                            # Feed the DQN even though this is the non-I-value path.
+                            #
+                            # `_train_dqn_on_batch` is otherwise reachable only from
+                            # `train_with_dqn`, so in a `comprehensive -> i-value` sequence
+                            # the DQN would arrive at the switch having seen no experience at
+                            # all -- untrained at exactly the epoch its predictions start
+                            # steering sampling. Warming it here costs one DQN update per
+                            # chunk and makes the refinement schedule testable.
+                            dqn_capability = getattr(
+                                self.trainer.capabilities, 'dqn_capability', None
+                            )
+                            if dqn_capability is not None and getattr(dqn_capability, 'dqns', None):
+                                try:
+                                    dqn_capability._train_dqn_on_batch(
+                                        chunk_nodes,
+                                        chunk_outputs,
+                                        chunk_labels_tensor.detach().reshape(-1).tolist(),
+                                        images=chunk_tensor,
+                                        epoch=epoch or 0,
+                                    )
+                                except Exception as error:
+                                    print(f"Warning: DQN warm-up on this chunk failed: {error}")
+
+                            # Record what this batch contained, for the same reason the DQN
+                            # path does: nothing else captures the composition of what was
+                            # actually trained on, and two conclusions have already had to be
+                            # retracted for want of it.
+                            diagnostic = getattr(self.trainer, 'selection_diagnostic', None)
+                            if diagnostic is not None:
+                                with torch.no_grad():
+                                    per_sample = torch.nn.functional.binary_cross_entropy_with_logits(
+                                        chunk_outputs.detach().reshape(-1).float(),
+                                        chunk_labels_tensor.detach().reshape(-1).float(),
+                                        reduction='none',
+                                    )
+                                diagnostic.record(
+                                    chunk_nodes, epoch=epoch or 0,
+                                    losses=per_sample.cpu().tolist(), selector='basic',
+                                )
+
                             # Update metrics
                             running_loss += loss.item()
                             predicted = (torch.sigmoid(chunk_outputs) > 0.5).float()
@@ -247,6 +347,22 @@ class BasicTrainingCapability:
             print(f"Error in basic training: {str(e)}")
             return self._get_empty_metrics()
     
+    def _weighted_loss(self, outputs, labels, nodes):
+        """Per-sample BCE scaled by each node's I-value, via the shared weighter."""
+        per_sample = torch.nn.functional.binary_cross_entropy_with_logits(
+            outputs.reshape(-1).float(), labels.reshape(-1).float(), reduction='none'
+        )
+        getter = getattr(self.trainer, 'get_i_value', None)
+        if getter is None:
+            return per_sample.mean()
+        values = []
+        for node in nodes:
+            try:
+                values.append(float(getter(node, 0)))
+            except Exception:
+                values.append(float('nan'))
+        return self.weighter.apply(per_sample, values)
+
     def _get_empty_metrics(self):
         """Return empty metrics structure for when no valid data is processed."""
         empty_metrics = {

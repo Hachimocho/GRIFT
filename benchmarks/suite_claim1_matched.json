@@ -1,6 +1,6 @@
 {
   "claim1": {
-    "description": "Claim 1: does I-value-based training beat non-I-value training on accuracy and balanced accuracy? Every treatment has a control differing in exactly one thing -- whether I-values drive the decision. Traversal and pruning are separate mechanisms, so each gets its own control, and the traversal is held at i-value throughout the pruning comparisons. Run on the full AI-Face node cache (562,214 train / 240,333 val / 286,969 test). train_steps is a per-epoch sample budget well below full graph coverage on purpose: sample selection can only matter under a budget, so an equal-budget comparison is the premise of the claim rather than a compromise.",
+    "description": "Claim 1 at MATCHED TRAINING BUDGET: every arm trains on exactly max_nodes_per_epoch=10000 nodes per epoch, verified from the logs after the run. The previous sweep could not answer the traversal question because the per-epoch budget was a hardcoded constant that differed by capability -- 5000 basic vs 10000 DQN -- so i-value arms saw 2.0x comprehensive and 2.9x random and any gap confounded sample selection with sample count. train_steps is set far above what binds because it counts walk steps for RandomTraversal and traverse() calls for IValueTraversal. does I-value-based training beat non-I-value training on accuracy and balanced accuracy? Every treatment has a control differing in exactly one thing -- whether I-values drive the decision. Traversal and pruning are separate mechanisms, so each gets its own control, and the traversal is held at i-value throughout the pruning comparisons. ",
     "reference": {
       "architectures": [
         "resnestdf"
@@ -19,10 +19,11 @@
       "cached_nodes": true,
       "cache_file": "node_cache/cached_nodes_full.pkl",
       "cached_nodes_count": 240333,
-      "train_steps": 20000,
+      "train_steps": 4000000,
       "val_steps": 10000,
       "num_workers": 10,
-      "val_num_workers": 10
+      "val_num_workers": 10,
+      "max_nodes_per_epoch": 10000
     },
     "axes": [
       "arm"

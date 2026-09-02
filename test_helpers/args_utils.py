@@ -181,8 +181,42 @@ def parse_args(argv=None):
     
     # DQN model selection
     parser.add_argument('--dqn-model', type=str, default='basic',
-                      choices=['basic', 'residual', 'attention', 'conv_embedding', 'ensemble'],
-                      help='Type of DQN model to use for I-value prediction (default: basic)')
+                      choices=['basic', 'residual', 'attention', 'conv_embedding', 'ensemble',
+                               'loss_ewma', 'gain_linear', 'gain_residual', 'gain_ensemble'],
+                      help="I-value estimator. The five original names are DEPRECATED: "
+                           "measured against realised learning gain they rank at Spearman "
+                           "+0.01 where a sample's current loss ranks at +0.33. "
+                           "'loss_ewma' is the unlearned control -- it ranks candidates by "
+                           "the loss each last incurred, a dictionary lookup. "
+                           "'gain_linear' IS that same signal but trainable, "
+                           "everything else must beat; 'gain_residual' adds a gated learned "
+                           "residual on top of it; 'gain_ensemble' averages several heads. "
+                           "Pass --dqn-fixes to run a legacy architecture inside the fixed "
+                           "base instead. (default: basic)")
+    parser.add_argument('--dqn-fixes', action='store_true', default=False,
+                      help="Run the selected legacy --dqn-model as the learned residual "
+                           "inside the fixed base: direct path for the model-state features, "
+                           "a small recency-weighted buffer, raw output and a rank/huber "
+                           "objective. No effect on the gain_* models, which are already "
+                           "fixed.")
+    parser.add_argument('--dqn-objective', type=str, default='rank',
+                      choices=['rank', 'huber'],
+                      help="Training objective for the fixed estimators. 'rank' is a "
+                           "pairwise logistic loss on which of two samples taught more -- "
+                           "it matches how the value is consumed (argmax over candidates) "
+                           "and is invariant to the target's heavy tail (skew +4.0, kurtosis "
+                           "+45). 'huber' regresses signed-log1p(gain) instead, keeping a "
+                           "calibrated magnitude. (default: rank)")
+    parser.add_argument('--dqn-buffer-size', type=int, default=512,
+                      help="Transitions the fixed estimators retain. The old 10,000 held a "
+                           "full epoch, but a reward is only valid for the model that "
+                           "produced it -- the same node's gain self-correlates only +0.24 "
+                           "across two epochs. (default: 512)")
+    parser.add_argument('--dqn-embedding-dim', type=int, default=512,
+                      help="Face-embedding width fed to the estimator; 0 removes the "
+                           "embedding pathway entirely. It was 67%% of the old input while "
+                           "the model-state features were 6.3%%, and it is a static property "
+                           "of the image that says nothing about what the model now knows.")
 
     # Run ID for output organization
     parser.add_argument('--run-id', type=str, default=None,
@@ -318,6 +352,98 @@ def parse_args(argv=None):
                         help='Enable validation bias inference (disabled by default)')
     
     # Performance optimization options
+    parser.add_argument('--ivalue-reward', choices=('confidence', 'learning_gain'),
+                        default='confidence',
+                        help="What the DQN's reward -- and so an I-value -- means. "
+                             "'confidence': +/-confidence by correctness, so a high Q is "
+                             "'already mastered' and predict_i_value's 1-sigmoid(Q) turns it "
+                             "into 'the model does poorly here'. 'learning_gain': the "
+                             "sample's measured loss reduction across its own update, where "
+                             "a high Q already means informative and the inversion is undone.")
+    parser.add_argument('--ivalue-state-features', action='store_true', default=False,
+                        help="Append model-state features (current probability, loss, "
+                             "times-seen, staleness) to the DQN input. Without them the "
+                             "I-value is a static function of node attributes and cannot "
+                             "notice that the model has since learned a sample.")
+    parser.add_argument('--ivalue-candidate-pool', type=int, default=0,
+                        help="Extra uniformly drawn nodes considered alongside the current "
+                             "node's neighbours when picking the next one. 0 keeps the walk "
+                             "purely local, where the argmax ranges over ~8 similarity-linked "
+                             "and therefore correlated neighbours.")
+    parser.add_argument('--comprehensive-cumulative', action='store_true', default=False,
+                        help="Let the comprehensive traversal's visited set persist across "
+                             "epochs, making it a real exhaustive curriculum. Without this it "
+                             "resamples every epoch and can never run out of data.")
+    parser.add_argument('--ivalue-selection', choices=('max', 'band', 'min'), default='max',
+                        help="How a candidate is chosen. 'max' takes the most informative, "
+                             "the historical premise. 'band' draws from a quantile RANGE "
+                             "(--ivalue-band), on the hypothesis that the very hardest "
+                             "samples are outliers and mislabels on an 87.55%%-imbalanced "
+                             "corpus. 'min' is the deliberate opposite, kept as a control. "
+                             "'band' needs --ivalue-candidate-pool to mean anything: a "
+                             "quantile over ~8 neighbours is noise.")
+    parser.add_argument('--ivalue-band', default='0.4,0.7',
+                        help="Quantile range for --ivalue-selection band, as low,high.")
+    parser.add_argument('--ivalue-loss-weight', choices=('none', 'linear', 'rank'),
+                        default='none',
+                        help="Scale each sample's loss by its I-value instead of selecting "
+                             "with it, keeping i.i.d. sampling and therefore its batch "
+                             "diversity. 'rank' is invariant to the estimator's output scale. "
+                             "Applies to the basic training path and only with "
+                             "--uncertainty-head none.")
+    parser.add_argument('--ivalue-weight-clip', type=float, default=2.0,
+                        help="Loss weights are bounded to [1/clip, clip], geometric about 1.")
+    parser.add_argument('--ivalue-ban-negative-gain', type=int, default=0,
+                        help="Withdraw a node once its mean MEASURED gain has stayed negative "
+                             "over this many visits (0 disables). 38%% of trained samples "
+                             "currently show a negative gain. Requires --ivalue-reward "
+                             "learning_gain, which is what measures it.")
+    parser.add_argument('--ivalue-ban-max-fraction', type=float, default=0.2,
+                        help="Ceiling on the fraction of the graph banning may withdraw, so "
+                             "the arm keeps measuring 'train on data that helps' rather than "
+                             "'train on less data'.")
+    parser.add_argument('--ivalue-group-targeting', action='store_true', default=False,
+                        help="Rank demographic groups by mean I-value and draw candidates only "
+                             "from the weakest ones, sampling UNIFORMLY within them. Group "
+                             "means cancel the per-sample label noise that instance-level "
+                             "selection amplifies, and uniform sampling inside a group keeps "
+                             "the batch diversity that selection destroys.")
+    parser.add_argument('--ivalue-group-top', type=int, default=3,
+                        help="How many groups --ivalue-group-targeting keeps.")
+    parser.add_argument('--ivalue-unseen-prior',
+                        choices=('neutral', 'optimistic', 'pessimistic'), default='neutral',
+                        help="How an UNVISITED node's loss placeholder ranks against visited "
+                             "ones. This silently decided the meaning of an experiment: the "
+                             "neutral placeholder is 0.139 while a trained node's real loss "
+                             "has a median of 0.0008, so 'select the highest I-value' became "
+                             "'prefer whatever you have not seen'. 'optimistic' makes that "
+                             "explicit, 'pessimistic' makes the estimator earn a visit, "
+                             "'neutral' reproduces the historical behaviour.")
+    parser.add_argument('--selection-diagnostic', action='store_true', default=False,
+                        help="Write selection_diagnostic.csv.gz: per training batch, the mean "
+                             "pairwise cosine distance between face embeddings plus label and "
+                             "demographic composition. Measures whether a graph walk's batches "
+                             "are less diverse than i.i.d. ones, which is the leading "
+                             "explanation for i-value training losing to i.i.d. sampling.")
+    parser.add_argument('--ivalue-diagnostic', action='store_true', default=False,
+                        help="Write ivalue_diagnostic.csv.gz: predicted I-value against the "
+                             "measured per-sample loss reduction, for checking whether the "
+                             "estimator tracks learning gain at all. Costs one extra DQN "
+                             "forward pass per trained sample.")
+    parser.add_argument('--max-nodes-per-epoch', type=int, default=None,
+                        help="Nodes trained on per epoch -- the run's real training "
+                             "budget. --train-steps only bounds how far the traversal "
+                             "walks. Defaults differ per capability (5000 basic, 10000 "
+                             "DQN), so comparing an i-value arm against a random one "
+                             "without setting this confounds sample selection with "
+                             "sample count. Set it equal across arms.")
+    parser.add_argument('--preprocess-workers', type=int, default=8,
+                        help="Threads used to load and transform each DQN batch's images. "
+                             "Only affects I-value traversals, which are the ones that "
+                             "spend ~28%% of training in serial image loading at 6%% GPU "
+                             "utilisation. Results are collected in submission order, so "
+                             "this changes speed and not numbers; 1 forces the old serial "
+                             "path.")
     parser.add_argument('--val-num-workers', type=int, default=4,
                         help='Number of parallel workers for validation image loading (default: 4)')
 

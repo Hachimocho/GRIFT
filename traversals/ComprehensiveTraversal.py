@@ -34,7 +34,7 @@ class ComprehensiveTraversal(Traversal):
     tags = ["any"]
     hyperparameters: dict | None = None
 
-    def __init__(self, graph, num_pointers, num_steps=None):
+    def __init__(self, graph, num_pointers, num_steps=None, cumulative=False):
         """
         Initialize a ComprehensiveTraversal object.
 
@@ -52,6 +52,14 @@ class ComprehensiveTraversal(Traversal):
         else:
             self.test_mode = True
         self.steps_taken = 0
+        # When cumulative, `visited` survives `reset_pointers`, so coverage accumulates
+        # across epochs and the pool genuinely runs out. Without it this traversal draws a
+        # fresh uniform sample every epoch -- i.i.d. sampling without replacement *within*
+        # an epoch, which on a 562,214-node graph at 10,000 nodes/epoch can never exhaust
+        # anything. That is a fine control, but it is not the "comprehensive" curriculum the
+        # name suggests, and the difference decides whether a data-limited regime exists at
+        # all. Default False keeps existing runs comparable.
+        self.cumulative = bool(cumulative)
         self.reset_pointers()
     
     def __len__(self):
@@ -62,8 +70,17 @@ class ComprehensiveTraversal(Traversal):
         return self.pointers
     
     def reset_pointers(self):
-        """Reset traversal state, including pointers, visited sets, and steps counter."""
-        self.pointers = [{'current_node': self.graph.get_random_node(rng=self.rng), 'visited': set()} for _ in range(self.num_pointers)]
+        """Reset traversal state. Keeps `visited` when cumulative -- see `__init__`."""
+        carried = []
+        if getattr(self, 'cumulative', False) and getattr(self, 'pointers', None):
+            carried = [pointer.get('visited', set()) for pointer in self.pointers]
+        self.pointers = [
+            {
+                'current_node': self.graph.get_random_node(rng=self.rng),
+                'visited': carried[i] if i < len(carried) else set(),
+            }
+            for i in range(self.num_pointers)
+        ]
         self.steps_taken = 0  # Reset steps counter
     
     def traverse(self, batch_size=32):

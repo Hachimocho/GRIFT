@@ -173,6 +173,20 @@ def parse_args(argv=None):
                      help="Overrides the suite's epoch count.")
     run.add_argument("--poll-seconds", type=float, default=30.0)
     run.add_argument("--timeout-hours", type=float, default=12.0)
+    run.add_argument("--runs-per-gpu", type=int, default=1, metavar="N",
+                     help="Run N cells concurrently on each GPU. Measured on this box, a "
+                          "cell uses ~2.5 GB of a 46 GB card and 95%% of a single core with "
+                          "the GPU at ~14%% -- the work is single-threaded Python, so the "
+                          "card is the wrong thing to serialise on. Results are unchanged: "
+                          "strict determinism pins one visible device per run and no result "
+                          "depends on what else shares the card. Raise gradually and check "
+                          "that per-cell duration has not degraded.")
+    run.add_argument("--gpus", default=None, metavar="IDS",
+                     help="Restrict the queue to these GPU ids, e.g. 0,1. Defaults to "
+                          "$GRIFT_VISIBLE_GPUS, then every GPU. Use it on a shared box: "
+                          "a colleague training in 5 GB of a 46 GB card leaves it "
+                          "looking idle, so the memory check will not keep the sweep "
+                          "off their GPU.")
     run.add_argument("--launch-only", action="store_true",
                      help="Queue the cells and exit without waiting or scoring. Resume "
                           "with --sweep-id once they finish.")
@@ -498,7 +512,11 @@ def _launch(pending, sweep_id, manifest_path, manifest, args):
     print(f"\nLaunching {len(pending)} cell(s)...")
     configs = [(f"{sweep_id}_{cell.cell_id}", cell.config) for cell in pending]
 
-    with open_manager(shutdown=not args.launch_only, runs_dir=RUNS_DIR) as manager:
+    with open_manager(
+        shutdown=not args.launch_only, runs_dir=RUNS_DIR,
+        visible_gpus=getattr(args, "gpus", None),
+        runs_per_gpu=getattr(args, "runs_per_gpu", 1),
+    ) as manager:
         run_ids = queue_all(manager, configs)
         for cell, run_id in zip(pending, run_ids):
             entry = manifest["cells"][cell.cell_id]

@@ -25,11 +25,16 @@ leave the cluster it started in and needs to hop; an unclustered graph is connec
 hopping would only discard the locality the I-value signal is meant to exploit. Passing
 ``cluster_hop`` overrides the detection.
 
-Neither mode pre-warms I-values any more. The connected walk used to call
+Neither mode pre-warms I-values. The connected walk used to call
 ``trainer.get_i_value`` for every node in the graph, for every pointer, inside
 ``reset_pointers`` -- and again on every ``predictor_update_period``. That is one DQN forward
 pass per node, so it was O(N x pointers) per refresh and simply not runnable on a large
 graph. Both modes now fetch lazily through ``_get_i_value`` and cache what they touch.
+
+The ``reset_pointers`` half of that was removed first and the periodic half was missed, so
+the sweep survived on a timer: measured on the 562,214-node graph it cost ~6 min per
+refresh and fired 6 times an epoch, which was 93% of the epoch. The timer now *clears* the
+cache instead of refilling it, so staleness is still bounded but the cost is O(1).
 """
 
 import random
@@ -37,6 +42,9 @@ from collections import defaultdict, deque
 
 from nodes.atrnode import AttributeNode
 from traversals.Traversal import Traversal
+
+#: How `IValueTraversal` picks a candidate from the pool.
+SELECTION_MODES = ("max", "band", "min")
 
 #: Graph types whose clusters are disjoint, so a pointer cannot walk between them.
 CLUSTERED_GRAPH_PREFIX = "clustered"
@@ -61,7 +69,9 @@ class IValueTraversal(Traversal):
 
     def __init__(self, graph, num_pointers, num_steps, trainer=None, return_delay=10,
                  warp_chance=0.005, predictor_update_period=50, bias_hop_period=100,
-                 pessimistic_i_value=1.0, neutral_i_value=0.5, cluster_hop=None):
+                 pessimistic_i_value=1.0, neutral_i_value=0.5, cluster_hop=None,
+                 candidate_pool=0, selection_mode="max", selection_band=(0.4, 0.7),
+                 group_targeting=None):
         """
         Args:
             cluster_hop: force the cluster-hopping walk on (True) or off (False). ``None``
@@ -79,6 +89,39 @@ class IValueTraversal(Traversal):
         self.return_delay = return_delay
         self.t = 0
         self.warp_chance = warp_chance
+        # Extra nodes drawn uniformly and considered alongside the current node's
+        # neighbours. The argmax otherwise ranges over ~8 graph neighbours, which on a
+        # measured average degree of 8.35 with `warp_chance=0.005` is a very weak selection
+        # pressure -- and because neighbours are joined *by similarity* their I-values are
+        # correlated, so the effective choice is narrower still. 0 keeps the old behaviour.
+        self.candidate_pool = max(0, int(candidate_pool or 0))
+        # How a candidate is picked from the pool.
+        #
+        # `max` is the historical behaviour and the premise of the whole method: take the
+        # most informative candidate. `band` takes one from a quantile *range* instead --
+        # the hypothesis being that the very hardest samples are outliers and label noise
+        # on a 87.55%-imbalanced corpus, so the useful signal sits somewhere in the middle.
+        # `min` is the deliberate opposite, kept as a control: if `min` also beats i.i.d.
+        # then the ranking is not what is doing the work.
+        #
+        # A quantile over the ~8 k-NN neighbours a bare walk sees is noise, so `band` is
+        # only meaningful with `candidate_pool` set -- Phase 0 measured those neighbours at
+        # 2.3x less batch diversity than i.i.d., which is why the pool exists.
+        if selection_mode not in SELECTION_MODES:
+            raise ValueError(
+                f"unknown selection_mode {selection_mode!r}; choose from "
+                f"{', '.join(SELECTION_MODES)}"
+            )
+        self.selection_mode = selection_mode
+        low, high = (float(selection_band[0]), float(selection_band[1]))
+        if not 0.0 <= low <= high <= 1.0:
+            raise ValueError(
+                f"selection_band must be 0 <= low <= high <= 1, got {selection_band}"
+            )
+        self.selection_band = (low, high)
+        # Restricts the drawn pool to demographic groups the model is weakest on,
+        # while still drawing uniformly *within* them -- see group_targeting.py.
+        self.group_targeting = group_targeting
         self.predictor_update_period = predictor_update_period
         self.trainer = trainer
         self.current_batch_nodes = []
@@ -151,11 +194,56 @@ class IValueTraversal(Traversal):
                 'steps': 0,
             })
 
-    def update_i_values(self, pointer_idx):
-        """Refresh cached I-values for one pointer, using the active mode's semantics."""
-        if self.cluster_hop:
-            return self._update_i_values_hop(pointer_idx)
-        return self._update_i_values_connected(pointer_idx)
+    def _candidates(self, valid_neighbors, visited_this_batch):
+        """The pool the I-value argmax ranges over.
+
+        Draws from the traversal's own seeded `self.rng`, so widening the pool stays
+        reproducible. Duplicates are filtered by node id rather than by object, because a
+        drawn node may be the same graph node as a neighbour.
+        """
+        if not self.candidate_pool:
+            return valid_neighbors
+
+        seen = {n.node_id for n in valid_neighbors}
+        extra = []
+        for _ in range(self.candidate_pool):
+            node = self.graph.get_random_node(rng=self.rng)
+            if not isinstance(node, AttributeNode):
+                continue
+            if node.node_id in seen or node in visited_this_batch:
+                continue
+            targeting = self.group_targeting
+            if targeting is not None and not targeting.is_targeted(node):
+                continue
+            seen.add(node.node_id)
+            extra.append(node)
+        return valid_neighbors + extra
+
+    def _pick(self, candidates, i_values):
+        """Choose one candidate according to `selection_mode`.
+
+        `band` selects uniformly among the candidates whose I-value falls in the requested
+        quantile range, so it is a *rank* criterion and unaffected by the I-value's scale --
+        which matters because different estimators output wildly different ranges (the legacy
+        family sits in a 0.02-wide band around 0.31; the fixed ones are unbounded).
+        """
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+
+        if self.selection_mode == "max":
+            return candidates[i_values.index(max(i_values))]
+        if self.selection_mode == "min":
+            return candidates[i_values.index(min(i_values))]
+
+        # band: rank the candidates, keep the requested slice, draw from it.
+        order = sorted(range(len(candidates)), key=lambda index: i_values[index])
+        low, high = self.selection_band
+        start = int(low * (len(order) - 1))
+        end = int(high * (len(order) - 1))
+        window = order[start:end + 1] or order
+        return candidates[self.rng.choice(window)]
 
     def traverse(self, batch_size=32):
         """Collect a batch of nodes with the walk this graph calls for."""
@@ -227,25 +315,6 @@ class IValueTraversal(Traversal):
                     #print(f"Using pessimistic I-value {self.pessimistic_i_value} for node {node.node_id} (not cached, use_din=False)")
                     return default
 
-    def _update_i_values_connected(self, pointer_idx):
-            """Update I-values using trainer's DQN predictions."""
-            if not self.trainer:
-                return
-
-            pointer = self.pointers[pointer_idx]
-            for node in self.graph.get_nodes():
-                pointer['i_values'][node] = self.trainer.get_i_value(node, 0)
-
-    def _update_i_values_hop(self, pointer_idx):
-            """Update I-values for all nodes using the trainer's prediction."""
-            if not self.trainer:
-                return
-
-            pointer = self.pointers[pointer_idx]
-            for node in self.graph.get_nodes():
-                # Use the safe getter which handles trainer errors and stores the value
-                self._get_i_value(pointer, node, use_din=True)
-
     def _traverse_connected(self, batch_size=32):
             """Move pointers based on I-values and constraints."""
             if self.t >= self.num_steps:
@@ -255,10 +324,18 @@ class IValueTraversal(Traversal):
             batch_nodes = []
             visited_this_batch = set()
 
-            # Update I-values periodically using trainer's predictions
+            # Periodically drop cached I-values so later lookups re-ask the DQN, which has
+            # trained since. This used to *repopulate* the cache for every node in the
+            # graph, for every pointer -- one DQN forward pass each, so O(N x pointers) per
+            # refresh. On the 562,214-node graph that was 6 min of wall clock per refresh
+            # and, at 313 batches an epoch with period 50, it fired 6 times: ~36 min of a
+            # 38.6 min epoch, with the GPU at 6%. Training ran in ~16 s bursts between
+            # these sweeps. Clearing is O(1) and gets the same freshness, because
+            # `_get_i_value(fetch_on_miss=True)` re-fetches whatever the walk actually
+            # looks at -- which is a handful of neighbours, not half a million nodes.
             if self.trainer and self.t % self.predictor_update_period == 0:
-                for pointer_idx in range(len(self.pointers)):
-                    self.update_i_values(pointer_idx)
+                for pointer in self.pointers:
+                    pointer['i_values'].clear()
 
             # Keep collecting nodes until we have enough or can't find more
             while len(batch_nodes) < batch_size:
@@ -302,14 +379,15 @@ class IValueTraversal(Traversal):
                             continue
 
                         # Choose next node based on I-values
+                        candidates = self._candidates(valid_neighbors, visited_this_batch)
                         i_values = [
                             self._get_i_value(
                                 pointer, n, default=self.neutral_i_value,
                                 fetch_on_miss=True,
                             )
-                            for n in valid_neighbors
+                            for n in candidates
                         ]
-                        next_node = valid_neighbors[i_values.index(max(i_values))]
+                        next_node = self._pick(candidates, i_values)
 
                         # Update visited time and move pointer
                         pointer['last_visited'][next_node] = current_time
@@ -472,10 +550,18 @@ class IValueTraversal(Traversal):
                 self.current_bias_hop_pointer_index += 1 # Move to the next pointer for the next hop cycle
             # --- End Bias Hop Logic --- 
 
-            # Update I-values periodically using trainer's predictions
+            # Periodically drop cached I-values so later lookups re-ask the DQN, which has
+            # trained since. This used to *repopulate* the cache for every node in the
+            # graph, for every pointer -- one DQN forward pass each, so O(N x pointers) per
+            # refresh. On the 562,214-node graph that was 6 min of wall clock per refresh
+            # and, at 313 batches an epoch with period 50, it fired 6 times: ~36 min of a
+            # 38.6 min epoch, with the GPU at 6%. Training ran in ~16 s bursts between
+            # these sweeps. Clearing is O(1) and gets the same freshness, because
+            # `_get_i_value(fetch_on_miss=True)` re-fetches whatever the walk actually
+            # looks at -- which is a handful of neighbours, not half a million nodes.
             if self.trainer and self.t % self.predictor_update_period == 0:
-                for pointer_idx in range(len(self.pointers)):
-                    self.update_i_values(pointer_idx)
+                for pointer in self.pointers:
+                    pointer['i_values'].clear()
 
             # Keep collecting nodes until we have enough or can't find more
             while len(batch_nodes) < batch_size:
@@ -521,14 +607,15 @@ class IValueTraversal(Traversal):
                         # Choose next node based on I-values
                         # Use the safe getter for I-values
                         #print("Updating I-values for valid neighbors...")
-                        i_values = [self._get_i_value(pointer, n, use_din=True) for n in valid_neighbors]
+                        candidates = self._candidates(valid_neighbors, visited_this_batch)
+                        i_values = [self._get_i_value(pointer, n, use_din=True) for n in candidates]
                         # Old: i_values = [pointer['i_values'].get(n, self.pessimistic_i_value) for n in valid_neighbors] # Use pessimistic if not found
 
                         if not i_values: # Should not happen if valid_neighbors is not empty, but check
                             print(f"Warning: No I-values for valid neighbors of node {pointer['current_node'].id}")
                             continue
 
-                        next_node = valid_neighbors[i_values.index(max(i_values))]
+                        next_node = self._pick(candidates, i_values)
 
                         # Update visited time and move pointer
                         pointer['last_visited'][next_node] = current_time

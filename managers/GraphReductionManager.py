@@ -195,7 +195,19 @@ class GraphReductionManager:
         return removed_nodes, stats
     
     def _reduce_max_ival(self, graph, trainer) -> List:
-        """Remove top X% nodes by I-value."""
+        """Remove the top X% of nodes by I-value -- i.e. the ones the model does *worst* on.
+
+        Read the direction carefully before using this. `DQNModel.predict_i_value` returns
+        `1 - sigmoid(Q)` under the confidence reward, so a **high I-value means the detector
+        performs poorly on that node**: it is the most informative data, not the least. This
+        strategy therefore discards the hardest examples, and measured on the full AI-Face
+        graph it was the worst arm of the sweep by a clear margin -- test AUROC 0.9456
+        against 0.9699 for removing the same number of nodes at random.
+
+        Kept because a labelled negative control is useful, not because it is a sensible
+        curriculum. `_reduce_min_ival` withdraws already-learned nodes, which is the
+        direction that corresponds to curriculum pruning.
+        """
         if not hasattr(trainer, 'get_i_value'):
             raise ValueError("Trainer does not have get_i_value method. Cannot use I-value reduction without I-value capability.")
         
@@ -211,8 +223,13 @@ class GraphReductionManager:
                 node_ivalues.append((node, i_val))
             except Exception as e:
                 print(f"Warning: Could not get I-value for node {node.node_id}: {e}")
-                # Use a default high I-value to prioritize removal
-                node_ivalues.append((node, 1.0))
+                # Skip, rather than substituting a default. A default of 1.0 put every
+                # unmeasurable node at the *front* of the descending sort, so the nodes whose
+                # I-value could not be computed were the first ones deleted -- silently
+                # discarding exactly the data that was already anomalous. `_reduce_min_ival`
+                # had the mirror-image bug with a default of 0.0 and a comment claiming it
+                # avoided removal. A node with no usable I-value is not a candidate.
+                continue
         
         # Sort by I-value descending (highest first)
         node_ivalues.sort(key=lambda x: x[1], reverse=True)
@@ -246,8 +263,9 @@ class GraphReductionManager:
                 node_ivalues.append((node, i_val))
             except Exception as e:
                 print(f"Warning: Could not get I-value for node {node.node_id}: {e}")
-                # Use a default low I-value to avoid removal
-                node_ivalues.append((node, 0.0))
+                # Skip: a default of 0.0 sat at the front of this ascending sort, so it
+                # prioritised removal rather than avoiding it as the old comment claimed.
+                continue
         
         # Sort by I-value ascending (lowest first)
         node_ivalues.sort(key=lambda x: x[1])

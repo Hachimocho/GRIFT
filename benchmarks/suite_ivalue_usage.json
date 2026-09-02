@@ -1,0 +1,86 @@
+{
+  "ivalue_usage": {
+    "description": "Phase 1: seven ways of USING an I-value, against the i.i.d. sampler that beats all of them so far. Selecting by predicted I-value has lost three independent comparisons, and Phase 0 found the likely reason: an i-value walk's batches are 2.3x less diverse than i.i.d. ones (mean pairwise embedding distance 0.0385 vs 0.0872, p10 0.0121 vs 0.0623), because its argmax ranges over the current node's k-NN neighbours -- similar faces by construction. So treat_pool_only is the headline arm: it keeps the estimator and the selection rule and changes only the locality. The rest test mechanisms that are not 'pick the argmax': weighting instead of selecting (keeps i.i.d. coverage), banning nodes whose measured gain stays negative (38% of trained samples show one), targeting weak demographic GROUPS but sampling uniformly inside them (group means cancel per-sample label noise), and a mid-quantile band instead of the extreme. Every arm trains on exactly 10,000 nodes/epoch for 15 epochs and records its own selection diagnostic, so what each arm trained on is measured rather than reconstructed afterwards.",
+    "reference": {
+      "architectures": ["resnestdf"],
+      "traversal_type": "comprehensive",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "balance_labels": "none",
+      "edge_construction": "knn",
+      "knn_neighbors": 50,
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 15,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes_full.pkl",
+      "cached_nodes_count": 240333,
+      "train_steps": 4000000,
+      "max_nodes_per_epoch": 10000,
+      "val_steps": 10000,
+      "num_workers": 10,
+      "val_num_workers": 10,
+      "preprocess_workers": 8,
+      "selection_diagnostic": true
+    },
+    "axes": ["arm"],
+    "extra_axes": {
+      "arm": {
+        "control_ivalue_asis": {
+          "traversal_type": "i-value"
+        },
+        "treat_pool_only": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128
+        },
+        "treat_band_mid_pool": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128,
+          "ivalue_selection": "band",
+          "ivalue_band": "0.4,0.7"
+        },
+        "treat_weight_rank": {
+          "traversal_type": "comprehensive",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_loss_weight": "rank",
+          "ivalue_weight_clip": 2.0
+        },
+        "treat_ban_negative_gain": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_ban_negative_gain": 3,
+          "ivalue_ban_max_fraction": 0.2
+        },
+        "treat_group_targeting": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128,
+          "ivalue_group_targeting": true,
+          "ivalue_group_top": 3
+        },
+        "treat_pool_plus_weight": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128,
+          "ivalue_loss_weight": "rank"
+        }
+      }
+    }
+  }
+}

@@ -184,6 +184,82 @@ def test_every_cli_traversal_choice_is_constructible():
     assert not failures, f"advertised traversal types that fail to construct: {failures}"
 
 
+class _SelectionConfiguredTrainer(DummyTrainer):
+    """A trainer exposing every selection-mechanism knob `create_traversal` must read.
+
+    Values are all non-default, so a factory that silently drops one of them produces a
+    traversal that is distinguishable from the correctly-wired one -- which is exactly the
+    bug this guards against: `test_hierarchical.create_traversal` (used for every
+    non-switching run) used to build `IValueTraversal` with none of these, so
+    `--ivalue-candidate-pool`, `--ivalue-selection`, `--ivalue-band`, and
+    `--ivalue-group-targeting` were silently inert for every single-traversal run, and
+    three sweep arms meant to test three different selection mechanisms ran the identical
+    one without either the sweep or the training log ever mentioning it.
+    """
+
+    def __init__(self, graph=None):
+        super().__init__()
+        from trainers.capabilities.group_targeting import GroupTargeting
+
+        self.ivalue_candidate_pool = 64
+        self.ivalue_selection_mode = "band"
+        self.ivalue_selection_band = (0.2, 0.6)
+        self.group_targeting = GroupTargeting(top_groups=2, enabled=True)
+        # `_create_traversal` does `kwargs.get('graph', self.graphmanager.get_graph())`,
+        # which evaluates the default eagerly even when `graph` is supplied -- so this
+        # attribute has to exist regardless of whether the test ends up using it.
+        self.graphmanager = _StaticGraphManager(graph)
+
+
+class _StaticGraphManager:
+    def __init__(self, graph):
+        self._graph = graph
+
+    def get_graph(self):
+        return self._graph
+
+
+def test_create_traversal_forwards_every_selection_knob():
+    """`create_traversal` must build the same `IValueTraversal` config `_create_traversal`
+    does, given the same trainer -- see `_SelectionConfiguredTrainer`'s docstring.
+    """
+    import test_hierarchical
+    from trainers.AdaptiveTrainer import AdaptiveTrainer
+
+    graph = build_line_graph(6)
+    trainer = _SelectionConfiguredTrainer(graph=graph)
+
+    single_mode = test_hierarchical.create_traversal(
+        "i-value", graph, trainer=trainer, bias_hop_period=7,
+    )
+    switching_mode = AdaptiveTrainer._create_traversal(
+        trainer, "i-value", graph=graph, bias_hop_period=7,
+    )
+
+    for traversal, label in ((single_mode, "create_traversal"),
+                             (switching_mode, "_create_traversal")):
+        assert traversal.candidate_pool == 64, label
+        assert traversal.selection_mode == "band", label
+        assert traversal.selection_band == (0.2, 0.6), label
+        assert traversal.group_targeting is trainer.group_targeting, label
+
+
+def test_create_traversal_defaults_match_ivaluetraversals_own_defaults():
+    """A trainer with none of the knobs set must reproduce `IValueTraversal`'s own
+    defaults, not `None` or some other falsy placeholder that changes behavior.
+    """
+    import test_hierarchical
+
+    graph = build_line_graph(6)
+    traversal = test_hierarchical.create_traversal(
+        "i-value", graph, trainer=DummyTrainer(),
+    )
+    assert traversal.candidate_pool == 0
+    assert traversal.selection_mode == "max"
+    assert traversal.selection_band == (0.4, 0.7)
+    assert traversal.group_targeting is None
+
+
 @pytest.mark.parametrize("traversal_name", sorted(get_traversal_classes()))
 def test_traversal_is_reproducible_under_a_fixed_seed(traversal_name):
     """Same seed -> same visit sequence, for every traversal class.

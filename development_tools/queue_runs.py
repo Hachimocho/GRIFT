@@ -46,17 +46,23 @@ DEFAULT_RUNS_DIR = os.path.join(REPO_ROOT, "web_ui", "runs")
 
 
 @contextlib.contextmanager
-def open_manager(shutdown=True, runs_dir=None):
+def open_manager(shutdown=True, runs_dir=None, visible_gpus=None, runs_per_gpu=1):
     """Yield the single `GPUQueueManager` for this process.
 
     `shutdown=False` leaves the queue's threads and child processes alive after the
     block exits, for callers that queue work and intend to let it finish after they
     return. Imported lazily: the manager pulls in psutil, GPUtil, and torch, which a
     caller doing offline scoring should not have to have installed.
+
+    `visible_gpus` restricts the queue to those GPU ids; `None` falls back to the
+    `GRIFT_VISIBLE_GPUS` env var, then to every GPU on the box.
     """
     from web_ui.gpu_queue_manager import GPUQueueManager
 
-    manager = GPUQueueManager(runs_dir=runs_dir or DEFAULT_RUNS_DIR)
+    manager = GPUQueueManager(
+        runs_dir=runs_dir or DEFAULT_RUNS_DIR, visible_gpus=visible_gpus,
+        runs_per_gpu=runs_per_gpu,
+    )
     try:
         yield manager
     finally:

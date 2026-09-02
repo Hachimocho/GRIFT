@@ -36,10 +36,52 @@ class AdaptiveTrainer(Trainer):
         self.attribute_metadata = attribute_metadata
         # Selected DQN model type for I-value prediction (e.g., 'basic', 'residual', ...)
         self.dqn_model_type = kwargs.get('dqn_model_type', 'basic')
+        self.preprocess_workers = kwargs.get('preprocess_workers', None)
+        # I-value design knobs. Read off the trainer by DQNCapability and the traversals, so
+        # one place carries them and every capability sees the same values.
+        self.ivalue_reward = kwargs.get('ivalue_reward', None)
+        self.ivalue_state_features = kwargs.get('ivalue_state_features', False)
+        self.ivalue_candidate_pool = kwargs.get('ivalue_candidate_pool', 0)
+        self.ivalue_selection_mode = kwargs.get('ivalue_selection_mode', None)
+        self.ivalue_selection_band = kwargs.get('ivalue_selection_band', None)
+        self.comprehensive_cumulative = kwargs.get('comprehensive_cumulative', False)
+        self.collect_ivalue_diagnostic = kwargs.get('collect_ivalue_diagnostic', False)
+        self.dqn_fixes = kwargs.get('dqn_fixes', False)
+        self.dqn_objective = kwargs.get('dqn_objective', None)
+        self.dqn_buffer_size = kwargs.get('dqn_buffer_size', None)
+        self.ivalue_unseen_prior = kwargs.get('ivalue_unseen_prior', None)
+        self.selection_diagnostic = kwargs.get('selection_diagnostic', None)
+        # Read by BasicTrainingCapability's __init__, so it must exist before
+        # CapabilityManager below builds it -- the same ordering trap that silently reverted
+        # the matched-budget guarantee once already. Every knob a capability reads is
+        # therefore assigned here, above the construction, and nowhere else.
+        self.ivalue_loss_weight = kwargs.get('ivalue_loss_weight', None)
+        self.ivalue_weight_clip = kwargs.get('ivalue_weight_clip', None)
+        self.ivalue_ban_negative_gain = kwargs.get('ivalue_ban_negative_gain', 0)
+        self.ivalue_ban_max_fraction = kwargs.get('ivalue_ban_max_fraction', None)
+        # Group targeting, fed from `get_i_value` below -- the same funnel
+        # `PerformanceGraphManager.track_performance` uses, so it costs no extra passes.
+        from trainers.capabilities.group_targeting import GroupTargeting
+        self.group_targeting = GroupTargeting(
+            top_groups=kwargs.get('ivalue_group_top', 3) or 3,
+            enabled=bool(kwargs.get('ivalue_group_targeting', False)),
+        )
         print(f"AdaptiveTrainer: DQN model type set to '{self.dqn_model_type}'")
         
         # Initialize capability components
+        # BEFORE CapabilityManager: it constructs `BasicTrainingCapability(trainer)`
+        # eagerly, and that capability reads this attribute in its own __init__. Setting it
+        # afterwards leaves the basic path on its private 5000 default while the DQN path --
+        # built lazily by `configure_for_traversal` -- sees the real value, which is exactly
+        # the 2x budget asymmetry that made the first Claim 1 sweep uninterpretable.
+        # A single assignment, before any reader exists, is the only ordering that is safe.
+        self.max_nodes_per_epoch = kwargs.get('max_nodes_per_epoch') or 10000
+
         self.capabilities = CapabilityManager(self)
+        if (self.ivalue_loss_weight or 'none') != 'none':
+            self.capabilities.require_dqn(
+                "--ivalue-loss-weight needs an I-value per sample under any traversal"
+            )
         
         # Training state
         self.current_traversal = None
@@ -47,7 +89,6 @@ class AdaptiveTrainer(Trainer):
         
         # Training settings
         self.batch_size = 32
-        self.max_nodes_per_epoch = 10000
         self.scaler = GradScaler()
         
         # Setup logging
@@ -184,9 +225,16 @@ class AdaptiveTrainer(Trainer):
                     str(kwargs['graph_type']).startswith('clustered')
                     if kwargs.get('graph_type') else None
                 ),
+                candidate_pool=getattr(self, 'ivalue_candidate_pool', 0),
+                selection_mode=getattr(self, 'ivalue_selection_mode', None) or 'max',
+                selection_band=getattr(self, 'ivalue_selection_band', None) or (0.4, 0.7),
+                group_targeting=getattr(self, 'group_targeting', None),
             )
         elif traversal_type == "comprehensive":
-            return ComprehensiveTraversal(graph, num_pointers, num_steps)
+            return ComprehensiveTraversal(
+                graph, num_pointers, num_steps,
+                cumulative=getattr(self, 'comprehensive_cumulative', False),
+            )
         elif traversal_type == "random":
             return RandomTraversal(graph, num_pointers, num_steps)
         else:
@@ -210,6 +258,8 @@ class AdaptiveTrainer(Trainer):
         A manager with no `track_performance` (the default `NoGraphManager`) is untouched.
         """
         value = self.capabilities.get_i_value(node, model_idx)
+        if getattr(self, 'group_targeting', None) is not None:
+            self.group_targeting.observe(node, value)
         tracker = getattr(self.graphmanager, 'track_performance', None)
         if tracker is not None:
             try:

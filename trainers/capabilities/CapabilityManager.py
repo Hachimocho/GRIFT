@@ -40,6 +40,20 @@ class CapabilityManager:
             self._enable_dqn_capability()
             self._enable_bias_capability()
         
+    def require_dqn(self, reason=""):
+        """Enable the DQN regardless of traversal type.
+
+        The loss-weighting arm samples with `comprehensive` -- deliberately, because that is
+        the sampler that wins -- but still needs an I-value per sample. Without this the DQN
+        is only built for an i-value traversal, so the weights would all fall back to a
+        uniform default and the arm would silently be its own control.
+        """
+        self.requires_dqn_warmup = True
+        if reason:
+            print(f"CapabilityManager: DQN required ({reason})")
+        self._enable_dqn_capability()
+        self._enable_bias_capability()
+
     def configure_for_traversal(self, traversal_type):
         """Enable capabilities needed for specific traversal type."""
         print(f"CapabilityManager: Configuring for traversal type '{traversal_type}'")
