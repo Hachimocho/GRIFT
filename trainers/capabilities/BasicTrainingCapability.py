@@ -53,6 +53,11 @@ class BasicTrainingCapability:
             clip=getattr(trainer, 'ivalue_weight_clip', None) or DEFAULT_WEIGHT_CLIP,
             band=getattr(trainer, 'ivalue_selection_band', None) or DEFAULT_BAND,
         )
+        # Mirrors DQNCapability's wiring -- see its docstring on the same attributes for
+        # why this path being unreachable once a DQN exists does not make keeping it in
+        # sync optional.
+        self.fairness_tracker = getattr(trainer, 'fairness_tracker', None)
+        self.fairness_weight_enabled = bool(getattr(trainer, 'ivalue_fairness_weight', False))
         self.scaler = GradScaler()
         
         # Setup CUDA optimizations
@@ -223,7 +228,9 @@ class BasicTrainingCapability:
                                 # defines `forward_with_uncertainty`, so the plain-criterion
                                 # branch is never taken and a hook there is dead code.
                                 head_type = getattr(model, 'uncertainty_head_type', None)
-                                if self.weighter.enabled and head_type in (None, 'none'):
+                                if (self.weighter.enabled
+                                        or getattr(self, 'fairness_weight_enabled', False)) \
+                                        and head_type in (None, 'none'):
                                     loss = self._weighted_loss(
                                         chunk_outputs, chunk_labels_tensor, chunk_nodes
                                     )
@@ -349,20 +356,39 @@ class BasicTrainingCapability:
             return self._get_empty_metrics()
     
     def _weighted_loss(self, outputs, labels, nodes):
-        """Per-sample BCE scaled by each node's I-value, via the shared weighter."""
+        """Per-sample BCE scaled by each node's I-value and/or group fairness.
+
+        Fairness weights are read from the tracker's state *before* this batch's own
+        outcomes are folded into it -- see `DQNCapability`'s mirror of this method for
+        why that ordering matters (no sample's weight may depend on its own label).
+        """
         per_sample = torch.nn.functional.binary_cross_entropy_with_logits(
             outputs.reshape(-1).float(), labels.reshape(-1).float(), reduction='none'
         )
-        getter = getattr(self.trainer, 'get_i_value', None)
-        if getter is None:
-            return per_sample.mean()
+
+        fairness_tracker = getattr(self, 'fairness_tracker', None)
+        extra_weights = None
+        if getattr(self, 'fairness_weight_enabled', False):
+            from trainers.capabilities.group_fairness import fairness_weights_for_batch
+            extra_weights = fairness_weights_for_batch(
+                nodes, fairness_tracker, clip=self.weighter.clip,
+                device=per_sample.device,
+            )
+        if fairness_tracker is not None and fairness_tracker.enabled:
+            preds = (torch.sigmoid(outputs).reshape(-1) > 0.5).float()
+            correct = (preds == labels.reshape(-1))
+            for node, is_correct in zip(nodes, correct):
+                fairness_tracker.observe(node, bool(is_correct.item()))
+
         values = []
-        for node in nodes:
-            try:
-                values.append(float(getter(node, 0)))
-            except Exception:
-                values.append(float('nan'))
-        return self.weighter.apply(per_sample, values)
+        getter = getattr(self.trainer, 'get_i_value', None)
+        if self.weighter.enabled and getter is not None:
+            for node in nodes:
+                try:
+                    values.append(float(getter(node, 0)))
+                except Exception:
+                    values.append(float('nan'))
+        return self.weighter.apply(per_sample, values, extra_weights=extra_weights)
 
     def _get_empty_metrics(self):
         """Return empty metrics structure for when no valid data is processed."""

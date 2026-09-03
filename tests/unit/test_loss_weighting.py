@@ -231,3 +231,81 @@ def test_midband_uses_the_bands_it_is_given():
     # on (0.0, 0.3)'s edge, not inside it -- so it is deliberately not used here.
     assert low_band[5] > high_band[5]
     assert high_band[15] > low_band[15]
+
+
+# --------------------------------------------------------------------------- #
+# extra_weights: composes group-fairness weighting into the same apply() call
+# --------------------------------------------------------------------------- #
+
+def test_extra_weights_compose_multiplicatively_with_the_ivalue_mode():
+    weighter = LossWeighter(mode="linear", clip=2.0)
+    per_sample = torch.ones(4)
+    ivalues = [0.1, 0.3, 0.6, 0.9]
+    base = ivalue_weights(ivalues, "linear", clip=2.0)
+
+    extra = torch.tensor([1.0, 2.0, 0.5, 1.0])
+    weighter.apply(per_sample, ivalues, extra_weights=extra)
+    mean_weight = weighter.weight_applied / weighter.weighted_samples
+    expected_mean = float((base * extra).mean())
+    assert mean_weight == pytest.approx(expected_mean, abs=1e-5)
+
+
+def test_extra_weights_alone_reweight_even_when_mode_is_none():
+    """The failure `apply`'s docstring calls out by name: mode='none' must not make a
+    fairness-only run silently do nothing."""
+    weighter = LossWeighter(mode="none")
+    per_sample = torch.tensor([1.0, 1.0, 1.0, 1.0])
+    extra = torch.tensor([2.0, 0.5, 2.0, 0.5])
+
+    plain_mean = per_sample.mean()
+    weighted = weighter.apply(per_sample, values=[0.0] * 4, extra_weights=extra)
+    assert not torch.isclose(weighted, plain_mean)
+    assert float(weighted) == pytest.approx(float((extra * per_sample).mean()), abs=1e-6)
+
+
+def test_extra_weights_of_the_wrong_length_are_ignored_not_crashed():
+    weighter = LossWeighter(mode="none")
+    per_sample = torch.tensor([1.0, 2.0, 3.0])
+    wrong_length = torch.tensor([1.0, 2.0])
+    result = weighter.apply(per_sample, values=[], extra_weights=wrong_length)
+    assert float(result) == pytest.approx(float(per_sample.mean()), abs=1e-6)
+
+
+def test_no_extra_weights_reproduces_the_old_behaviour_exactly():
+    """Every existing caller that never passes `extra_weights` must be bit-for-bit
+    unaffected by its addition."""
+    weighter = LossWeighter(mode="rank", clip=2.0)
+    per_sample = torch.tensor([0.5, 1.0, 1.5, 2.0])
+    values = [0.1, 0.4, 0.6, 0.9]
+    with_default = weighter.apply(per_sample, values)
+
+    weighter2 = LossWeighter(mode="rank", clip=2.0)
+    without = weighter2.apply(per_sample, values, extra_weights=None)
+    assert float(with_default) == pytest.approx(float(without), abs=1e-9)
+
+
+def test_fairness_weighting_end_to_end_through_dqncapability():
+    """Constructs a real DQNCapability with fairness weighting on and I-value weighting
+    off, and checks the plumbing all the way from CLI-shaped kwargs to a reweighted
+    per-sample loss -- the same level `test_both_training_paths_share_one_weighter`
+    checks the I-value path at."""
+    import torch as _torch
+
+    from trainers.capabilities.DQNCapability import DQNCapability
+    from trainers.capabilities.group_fairness import GroupPerformanceTracker
+
+    class _Trainer:
+        device = _torch.device("cpu")
+        models = []
+        attribute_metadata = None
+        ivalue_loss_weight = "none"
+        ivalue_fairness_weight = True
+        fairness_tracker = GroupPerformanceTracker(
+            enabled=True, min_observations=1, target_groups=1,
+        )
+
+    dqn = DQNCapability(_Trainer())
+    assert dqn.fairness_weight_enabled is True
+    assert not dqn.weighter.enabled, "I-value weighting must stay off for this arm"
+    assert dqn.fairness_tracker is _Trainer.fairness_tracker, \
+        "must reuse the trainer's tracker, not build its own"

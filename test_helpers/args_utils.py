@@ -422,7 +422,26 @@ def parse_args(argv=None):
                              "selection amplifies, and uniform sampling inside a group keeps "
                              "the batch diversity that selection destroys.")
     parser.add_argument('--ivalue-group-top', type=int, default=3,
-                        help="How many groups --ivalue-group-targeting keeps.")
+                        help="How many groups --ivalue-group-targeting/--ivalue-fairness-"
+                             "selection keep.")
+    parser.add_argument('--ivalue-fairness-weight', action='store_true', default=False,
+                        help="Multiply each sample's loss weight by a bounded factor for "
+                             "how much worse (or better) its demographic group's REALISED "
+                             "running accuracy is than the mean across groups -- unlike "
+                             "--ivalue-group-targeting, which targets by mean *predicted* "
+                             "I-value, this needs no estimator and reflects what the model "
+                             "is actually getting wrong right now. Composes multiplicatively "
+                             "with --ivalue-loss-weight (including 'none', for a "
+                             "fairness-only run) on the same [1/clip, clip] scale as "
+                             "--ivalue-weight-clip. A group is only weighted once it has "
+                             "enough observations to trust its running accuracy.")
+    parser.add_argument('--ivalue-fairness-selection', action='store_true', default=False,
+                        help="Restrict the candidate pool to the demographic groups with "
+                             "the worst REALISED running accuracy, in place of "
+                             "--ivalue-group-targeting's I-value-based targeting (the two "
+                             "are mutually exclusive -- this one wins if both are set). "
+                             "Needs --ivalue-candidate-pool to mean anything, same as "
+                             "--ivalue-group-targeting.")
     parser.add_argument('--ivalue-unseen-prior',
                         choices=('neutral', 'optimistic', 'pessimistic'), default='neutral',
                         help="How an UNVISITED node's loss placeholder ranks against visited "

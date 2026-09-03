@@ -66,6 +66,20 @@ class AdaptiveTrainer(Trainer):
             top_groups=kwargs.get('ivalue_group_top', 3) or 3,
             enabled=bool(kwargs.get('ivalue_group_targeting', False)),
         )
+        # Fairness tracking, from *realised* outcomes rather than predicted I-value --
+        # see trainers/capabilities/group_fairness.py. One tracker serves both roles:
+        # --ivalue-fairness-selection swaps it in for `group_targeting` on the traversal
+        # (the two share an `is_targeted` interface by design), and
+        # --ivalue-fairness-weight multiplies its `multiplier()` into the loss weight via
+        # `LossWeighter.apply`'s `extra_weights`. Built whenever either flag is set, since
+        # both consume the same tracker.
+        from trainers.capabilities.group_fairness import GroupPerformanceTracker
+        self.ivalue_fairness_weight = bool(kwargs.get('ivalue_fairness_weight', False))
+        self.ivalue_fairness_selection = bool(kwargs.get('ivalue_fairness_selection', False))
+        self.fairness_tracker = GroupPerformanceTracker(
+            target_groups=kwargs.get('ivalue_group_top', 3) or 3,
+            enabled=self.ivalue_fairness_weight or self.ivalue_fairness_selection,
+        )
         print(f"AdaptiveTrainer: DQN model type set to '{self.dqn_model_type}'")
         
         # Initialize capability components
@@ -210,6 +224,8 @@ class AdaptiveTrainer(Trainer):
         `subclusters` probe, duplicating a decision the traversal is better placed to make.
         The two subcluster subclasses are gone entirely.
         """
+        from trainers.capabilities.group_fairness import pool_targeting_for
+
         graph = kwargs.get('graph', self.graphmanager.get_graph())
         num_pointers = kwargs.get('num_pointers', 1)
         num_steps = kwargs.get('num_steps', 1000)
@@ -228,7 +244,7 @@ class AdaptiveTrainer(Trainer):
                 candidate_pool=getattr(self, 'ivalue_candidate_pool', 0),
                 selection_mode=getattr(self, 'ivalue_selection_mode', None) or 'max',
                 selection_band=getattr(self, 'ivalue_selection_band', None) or (0.4, 0.7),
-                group_targeting=getattr(self, 'group_targeting', None),
+                group_targeting=pool_targeting_for(self),
             )
         elif traversal_type == "comprehensive":
             return ComprehensiveTraversal(

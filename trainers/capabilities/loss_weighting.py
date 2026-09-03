@@ -152,13 +152,26 @@ class LossWeighter:
     def enabled(self):
         return self.mode != "none"
 
-    def apply(self, per_sample_loss, values):
-        """Weighted mean of `per_sample_loss`; the plain mean when there is no signal."""
-        if not self.enabled:
-            return per_sample_loss.mean()
-        weights = ivalue_weights(values, self.mode, self.clip, band=self.band,
-                                 device=per_sample_loss.device)
-        if weights is None or weights.numel() != per_sample_loss.numel():
+    def apply(self, per_sample_loss, values, extra_weights=None):
+        """Weighted mean of `per_sample_loss`; the plain mean when there is no signal.
+
+        `extra_weights`, when given, multiplies into the I-value weight regardless of
+        `mode` -- including `mode="none"`, so a fairness-only run (I-value weighting off,
+        group fairness on) still reweights instead of silently doing nothing. See
+        `trainers.capabilities.group_fairness.fairness_weights_for_batch`, the intended
+        source of this argument.
+        """
+        weights = None
+        if self.enabled:
+            weights = ivalue_weights(values, self.mode, self.clip, band=self.band,
+                                     device=per_sample_loss.device)
+            if weights is not None and weights.numel() != per_sample_loss.numel():
+                weights = None
+
+        if extra_weights is not None and extra_weights.numel() == per_sample_loss.numel():
+            weights = extra_weights if weights is None else weights * extra_weights
+
+        if weights is None:
             return per_sample_loss.mean()
         self.weight_applied += float(weights.sum())
         self.weighted_samples += int(weights.numel())

@@ -757,6 +757,8 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
         # (candidate_pool=0, selection_mode='max', group_targeting=None) no matter what was
         # passed on the CLI, so three sweep arms meant to test three different selection
         # mechanisms ran the identical one.
+        from trainers.capabilities.group_fairness import pool_targeting_for
+
         return IValueTraversal(
             graph=graph,
             num_pointers=num_pointers,
@@ -766,7 +768,7 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
             candidate_pool=getattr(trainer, 'ivalue_candidate_pool', 0),
             selection_mode=getattr(trainer, 'ivalue_selection_mode', None) or 'max',
             selection_band=getattr(trainer, 'ivalue_selection_band', None) or (0.4, 0.7),
-            group_targeting=getattr(trainer, 'group_targeting', None),
+            group_targeting=pool_targeting_for(trainer),
         )
     else:
         raise ValueError(f"Unsupported traversal type: {traversal_type}")
@@ -829,6 +831,8 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
         ivalue_ban_max_fraction=getattr(args, 'ivalue_ban_max_fraction', 0.2),
         ivalue_group_targeting=getattr(args, 'ivalue_group_targeting', False),
         ivalue_group_top=getattr(args, 'ivalue_group_top', 3),
+        ivalue_fairness_weight=getattr(args, 'ivalue_fairness_weight', False),
+        ivalue_fairness_selection=getattr(args, 'ivalue_fairness_selection', False),
     )
     return trainer
 

@@ -147,6 +147,11 @@ class DQNCapability:
             clip=getattr(trainer, 'ivalue_weight_clip', None) or DEFAULT_WEIGHT_CLIP,
             band=getattr(trainer, 'ivalue_selection_band', None) or DEFAULT_BAND,
         )
+        # Shared with `AdaptiveTrainer` and, when --ivalue-fairness-selection is set, with
+        # the traversal's pool filter too -- one tracker, never rebuilt here. See
+        # trainers/capabilities/group_fairness.py.
+        self.fairness_tracker = getattr(trainer, 'fairness_tracker', None)
+        self.fairness_weight_enabled = bool(getattr(trainer, 'ivalue_fairness_weight', False))
         self.unseen_prior = getattr(trainer, 'ivalue_unseen_prior', None) or DEFAULT_UNSEEN_PRIOR
         self.node_state = (
             NodeTrainingState(unseen_prior=self.unseen_prior)
@@ -521,6 +526,30 @@ class DQNCapability:
                     else:
                         outputs = model(images)
                         loss = self.trainer.criterion(outputs, batch_labels_tensor)
+
+                    # Per-sample correctness, needed by the fairness tracker below and
+                    # reused for the epoch's aggregate `correct` count further down --
+                    # computed once here rather than twice.
+                    preds = (torch.sigmoid(outputs) > 0.5).float()
+                    sample_correct = (preds == batch_labels_tensor).squeeze(-1)
+
+                    # Fairness weight for *this* batch, from the tracker's state as of the
+                    # *previous* batch -- computed before `observe()` below folds this
+                    # batch's own outcomes in, so no sample's weight is ever influenced by
+                    # its own label. See trainers/capabilities/group_fairness.py.
+                    fairness_weights = None
+                    if self.fairness_weight_enabled:
+                        from trainers.capabilities.group_fairness import (
+                            fairness_weights_for_batch,
+                        )
+                        fairness_weights = fairness_weights_for_batch(
+                            batch_nodes_loaded, self.fairness_tracker,
+                            clip=self.weighter.clip, device=outputs.device,
+                        )
+                    if self.fairness_tracker is not None and self.fairness_tracker.enabled:
+                        for node, is_correct in zip(batch_nodes_loaded, sample_correct):
+                            self.fairness_tracker.observe(node, bool(is_correct.item()))
+
                     # Re-weight by I-value.
                     #
                     # Gated on the *head type*, not on which branch produced the loss: the
@@ -544,16 +573,24 @@ class DQNCapability:
                     # all-zero gradient, and the only thing that moved the weights at all was
                     # AdamW's decoupled weight decay -- which explains both the chance-level
                     # AUROC and why it drifted slightly rather than sitting frozen.
+                    #
+                    # The gate now also fires for a *fairness-only* run (I-value weighting
+                    # off, --ivalue-fairness-weight on): `LossWeighter.apply`'s
+                    # `extra_weights` reweights even when `self.weighter.mode == 'none'`, so
+                    # skipping this block in that case would silently do nothing, the same
+                    # failure shape the comment above documents for the I-value case.
                     head_type = getattr(self.trainer.models[0], 'uncertainty_head_type', None)
-                    if self.weighter.enabled and head_type in (None, 'none'):
+                    if (self.weighter.enabled or fairness_weights is not None) \
+                            and head_type in (None, 'none'):
                         per_sample = self._per_sample_bce(outputs, batch_labels_loaded, detach=False)
                         values = []
-                        for node in batch_nodes_loaded:
-                            try:
-                                values.append(float(self.get_i_value(node, 0)))
-                            except Exception:
-                                values.append(float('nan'))
-                        loss = self.weighter.apply(per_sample, values)
+                        if self.weighter.enabled:
+                            for node in batch_nodes_loaded:
+                                try:
+                                    values.append(float(self.get_i_value(node, 0)))
+                                except Exception:
+                                    values.append(float('nan'))
+                        loss = self.weighter.apply(per_sample, values, extra_weights=fairness_weights)
 
                     # Add bias loss if available
                     bias_loss_val = 0.0
@@ -568,8 +605,8 @@ class DQNCapability:
                             print(f"Warning: Error calculating bias loss: {e}")
                     # Combine losses
                     total_loss_for_backward = loss + bias_weight * bias_loss_val
-                    # Calculate metrics
-                    preds = (torch.sigmoid(outputs) > 0.5).float()
+                    # Calculate metrics. `preds` was already computed above, ahead of the
+                    # fairness-weighting block that needs it.
                     correct += (preds == batch_labels_tensor).sum().item()
                     total_loss += loss.item()
                     total += len(batch_labels_loaded)

@@ -108,6 +108,8 @@ ARG_MAPPING = {
     "ivalue_ban_max_fraction": "--ivalue-ban-max-fraction",
     "ivalue_group_targeting": "--ivalue-group-targeting",
     "ivalue_group_top": "--ivalue-group-top",
+    "ivalue_fairness_weight": "--ivalue-fairness-weight",
+    "ivalue_fairness_selection": "--ivalue-fairness-selection",
     "dqn_fixes": "--dqn-fixes",
     "dqn_objective": "--dqn-objective",
     "dqn_buffer_size": "--dqn-buffer-size",

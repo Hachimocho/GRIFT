@@ -1,0 +1,75 @@
+{
+  "midband_extended": {
+    "description": "Phase 2: is treat_midband_pool's win (bal.acc 0.9336 vs reference 0.9248, best on every metric measured) real and worth building on? Three questions. (1) Robustness: a second seed, and three tuning variants of the band/pool that bracket the winning (0.35,0.9)/pool=128 config -- narrower (0.5,0.8), wider (0.2,0.95), and a bigger pool (256) at the same band -- to see whether the win is a knife-edge or a genuine basin. (2) Fairness: treat_midband_pool's own worst-group accuracy (0.748) trails three lower-overall-accuracy arms, so this tests two concrete fixes. treat_midband_perf_group and treat_fair_weight_only introduce a new signal -- GroupPerformanceTracker, tracking REALISED per-group running error (not predicted I-value, which this project's own gate result shows barely correlates with realised outcomes) -- used respectively to restrict the candidate pool to the worst-performing groups (the selection-side idea) and to multiply loss weight by relative group error (the weighting-side idea, composable with any --ivalue-loss-weight mode including 'none'). treat_midband_group is the cheap comparison point: the EXISTING I-value-based group_targeting composed with midband, zero new code. treat_fair_weight_only is the clean control: fairness weighting alone, i.i.d. sampling, no I-value involved at all. (3) Distribution: does the win hold under a demographically-balanced training set (--fair-train, the closest thing to a 'fair dataset' the project already builds), and under leave-one-out generalisation (--holdout H1_diffusion_unseen, the project's headline holdout)? All ten arms otherwise match treat_midband_pool exactly -- same architecture, epochs, node budget -- so a run differs from it in exactly the one dimension its name says.",
+    "reference": {
+      "architectures": ["resnestdf"],
+      "traversal_type": "i-value",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "balance_labels": "none",
+      "edge_construction": "knn",
+      "knn_neighbors": 50,
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 15,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes_full.pkl",
+      "cached_nodes_count": 240333,
+      "train_steps": 4000000,
+      "max_nodes_per_epoch": 10000,
+      "val_steps": 10000,
+      "num_workers": 10,
+      "val_num_workers": 10,
+      "preprocess_workers": 8,
+      "selection_diagnostic": true,
+      "ivalue_reward": "learning_gain",
+      "ivalue_state_features": true,
+      "ivalue_diagnostic": true,
+      "ivalue_candidate_pool": 128,
+      "ivalue_selection": "midband",
+      "ivalue_band": "0.35,0.9"
+    },
+    "axes": ["arm"],
+    "extra_axes": {
+      "arm": {
+        "treat_midband_pool_seed43": {
+          "seed": 43
+        },
+        "treat_midband_pool_narrow": {
+          "ivalue_band": "0.5,0.8"
+        },
+        "treat_midband_pool_wide": {
+          "ivalue_band": "0.2,0.95"
+        },
+        "treat_midband_pool_bigpool": {
+          "ivalue_candidate_pool": 256
+        },
+        "treat_midband_group": {
+          "ivalue_group_targeting": true,
+          "ivalue_group_top": 3
+        },
+        "treat_midband_perf_group": {
+          "ivalue_fairness_selection": true,
+          "ivalue_group_top": 3
+        },
+        "treat_midband_fair_weight": {
+          "ivalue_fairness_weight": true
+        },
+        "treat_fair_weight_only": {
+          "traversal_type": "comprehensive",
+          "ivalue_selection": "max",
+          "ivalue_candidate_pool": 0,
+          "ivalue_fairness_weight": true
+        },
+        "treat_midband_pool_fair_train": {
+          "fair_train": true
+        },
+        "treat_midband_pool_holdout_H1": {
+          "holdout": "H1_diffusion_unseen"
+        }
+      }
+    }
+  }
+}
