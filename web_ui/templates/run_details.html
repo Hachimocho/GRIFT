@@ -99,6 +99,38 @@
                         <td>{{ "%.1f%%"|format(run.cpu_percent) }}</td>
                     </tr>
                     {% endif %}
+                    <tr>
+                        <td><strong>Uncertainty Head:</strong></td>
+                        <td>
+                            <span class="badge {% if run.uncertainty_head and run.uncertainty_head != 'none' %}bg-primary{% else %}bg-light text-dark{% endif %}">
+                                {{ run.uncertainty_head or 'none' }}
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>MC Dropout:</strong></td>
+                        <td>
+                            {% if run.mc_dropout_samples and run.mc_dropout_samples > 0 %}
+                                {{ run.mc_dropout_samples }} samples
+                            {% else %}
+                                <span class="text-muted">Disabled</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Graph Methods:</strong></td>
+                        <td>
+                            {% if run.graph_uncertainty_methods %}
+                                {{ run.graph_uncertainty_methods|join(', ') }}
+                            {% else %}
+                                <span class="text-muted">None</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Val/Test Edges:</strong></td>
+                        <td>{{ 'Full edges cached' if run.build_val_test_edges else 'Node-only graphs' }}</td>
+                    </tr>
                 </table>
             </div>
         </div>
@@ -115,12 +147,18 @@
             <div class="card-body">
                 {% if run.results %}
                     <table class="table table-borderless">
-                        {% if run.results.final_accuracy %}
+                        {% if run.accuracy_percent is defined and run.accuracy_percent is not none %}
                         <tr>
                             <td><strong>Final Accuracy:</strong></td>
                             <td>
-                                <span class="badge bg-info fs-6">{{ "%.2f%%"|format(run.results.final_accuracy) }}</span>
+                                <span class="badge bg-info fs-6">{{ "%.2f%%"|format(run.accuracy_percent) }}</span>
                             </td>
+                        </tr>
+                        {% endif %}
+                        {% if run.loss is defined and run.loss is not none %}
+                        <tr>
+                            <td><strong>Average Loss:</strong></td>
+                            <td>{{ "%.4f"|format(run.loss) }}</td>
                         </tr>
                         {% endif %}
                         
@@ -138,6 +176,30 @@
                         </tr>
                         {% endif %}
                     </table>
+
+                    {% if run.uncertainty_items %}
+                    <div class="mt-3">
+                        <h6>Uncertainty Summary</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Metric</th>
+                                        <th>Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for item in run.uncertainty_items %}
+                                    <tr>
+                                        <td>{{ item.label }}</td>
+                                        <td>{{ "%.4f"|format(item.value) }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
                     
                     {% if run.results.bias_metrics %}
                     <div class="mt-3">

@@ -5,6 +5,12 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 
+
+def _replay_rng():
+    """Private RNG stream for replay-buffer sampling."""
+    from test_helpers.determinism import component_rng
+    return component_rng("dqn.ivalue_predictor", fallback_seed=20250806)
+
 class PredictorNetwork(nn.Module):
     def __init__(self, input_size):
         super(PredictorNetwork, self).__init__()
@@ -54,7 +60,7 @@ class DQNIValuePredictor:
         if len(self.memory) < self.batch_size:
             return
             
-        batch = random.sample(self.memory, self.batch_size)
+        batch = _replay_rng().sample(self.memory, self.batch_size)
         
         # Prepare batch data
         current_states = torch.stack([trace['attributes'] for trace in batch]).to(self.device)
@@ -96,7 +102,7 @@ class DQNIValuePredictor:
     def predict(self, node):
         """Predict reward and I-value for a node"""
         if self.model is None:
-            return random.random()  # Return random value if model not initialized
+            return _replay_rng().random()  # Uninitialized model: private stream, not global
             
         with torch.no_grad():
             attributes = torch.FloatTensor(node.attributes).to(self.device)

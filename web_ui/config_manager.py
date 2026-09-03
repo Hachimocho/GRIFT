@@ -31,6 +31,19 @@ class ConfigManager:
     
     def _create_default_templates(self):
         """Create default configuration templates."""
+        uncertainty_defaults = {
+            "uncertainty_head": "none",
+            "mc_dropout_samples": 0,
+            "batchensemble_members": 4,
+            "sngp_hidden_dim": 256,
+            "sngp_rff_dim": 256,
+            "uncertainty_dropout_rate": 0.2,
+            "uncertainty_train_frequency": 10,
+            "graph_uncertainty_methods": "attribute_distance,embedding_distance,hybrid_distance",
+            "graph_degree_penalty_weight": 1.0,
+            "build_val_test_edges": True
+        }
+
         templates = {
             "basic_training": {
                 "name": "Basic Training",
@@ -57,7 +70,8 @@ class ConfigManager:
                     "viz_track_nodes": 50,
                     "viz_sample_size": 200,
                     "bias_loss_weight": 0.1,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             },
             "bias_analysis": {
@@ -85,7 +99,8 @@ class ConfigManager:
                     "viz_track_nodes": 50,
                     "viz_sample_size": 200,
                     "bias_loss_weight": 0.2,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             },
             "traversal_switching": {
@@ -116,7 +131,8 @@ class ConfigManager:
                     "viz_sample_size": 300,
                     "bias_loss_weight": 0.1,
                     "num_workers": 0,
-                    "disconnected_switching": False
+                    "disconnected_switching": False,
+                    **uncertainty_defaults
                 }
             },
             "comparison_study": {
@@ -143,7 +159,8 @@ class ConfigManager:
                     "viz_track_nodes": 100,
                     "viz_sample_size": 500,
                     "bias_loss_weight": 0.15,
-                    "num_workers": 0
+                    "num_workers": 0,
+                    **uncertainty_defaults
                 }
             }
         }
@@ -301,7 +318,7 @@ class ConfigManager:
                     if len(epochs) != len(traversals) - 1:
                         errors.append("Number of switch epochs must be one less than traversal sequence length")
                     
-                    valid_traversals = ["comprehensive", "random", "i-value", "i-value-cluster-hop"]
+                    valid_traversals = ["comprehensive", "random", "i-value"]
                     for traversal in traversals:
                         if traversal not in valid_traversals:
                             errors.append(f"Invalid traversal type: {traversal}")
@@ -318,11 +335,37 @@ class ConfigManager:
         
         # Architecture validation
         if "architectures" in config:
-            valid_archs = ["resnestdf", "efficientnet", "resnet50", "vgg16"]
-            archs = [a.strip() for a in config["architectures"].split(',')]
+            # Validate against the verified detector table rather than a hardcoded
+            # list. The previous list was stale and wrong: 'efficientnet',
+            # 'resnet50', and 'vgg16' are not detector modules at all, while the real
+            # 'effnetdf' was missing -- so it warned about valid choices and stayed
+            # silent about broken ones.
+            try:
+                from models.uncertainty.capabilities import profile_for, supported_detectors
+            except ImportError:
+                profile_for = None
+
+            archs = [a.strip() for a in config["architectures"].split(',') if a.strip()]
             for arch in archs:
-                if arch not in valid_archs:
-                    warnings.append(f"Architecture '{arch}' may not be supported")
+                if profile_for is None:
+                    continue
+                profile = profile_for(arch)
+                if profile is None:
+                    warnings.append(
+                        f"Architecture '{arch}' is not a known detector "
+                        f"(known: {', '.join(supported_detectors())})"
+                    )
+                elif profile.status == "broken":
+                    warnings.append(
+                        f"Architecture '{arch}' is known to fail during model "
+                        f"construction: {profile.broken_reason}"
+                    )
+                elif profile.status == "logit_only":
+                    warnings.append(
+                        f"Architecture '{arch}' has no nn.Linear to graft onto, so "
+                        f"uncertainty heads (evidential/batchensemble/sngp) cannot be "
+                        f"used with it; logit-space methods still work"
+                    )
         
         # Performance warnings
         if config.get("enable_ivalue_viz", False) and config.get("num_epochs", 0) > 50:

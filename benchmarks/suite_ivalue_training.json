@@ -1,0 +1,70 @@
+{
+  "ivalue_training": {
+    "description": "Does a better learning-gain estimator produce a better DETECTOR? The 16-cell gate matrix (docs/ivalue_gate_result.md) measured how well each estimator ranks realised per-sample learning gain, and found that the three architectural fixes lift every legacy model from chance to ~+0.15 Spearman while nothing beats the stored per-node loss EWMA it already receives (+0.171). That is a statement about the estimator, not about accuracy. This suite asks the question that matters: driven through the i-value traversal, does any of it move test accuracy or AUROC? Every arm is i-value traversal on the full AI-Face graph at exactly 10,000 nodes/epoch for 15 epochs, so the arms differ in the estimator and nothing else. control_comprehensive is the i.i.d. sampler that currently beats i-value outright, and is the number to beat rather than a formality. The candidate pool is left at 0 (neighbours only) so the estimator is the single variable; widening it is a separate question.",
+    "reference": {
+      "architectures": ["resnestdf"],
+      "traversal_type": "comprehensive",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "balance_labels": "none",
+      "edge_construction": "knn",
+      "knn_neighbors": 50,
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 15,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes_full.pkl",
+      "cached_nodes_count": 240333,
+      "train_steps": 4000000,
+      "max_nodes_per_epoch": 10000,
+      "val_steps": 10000,
+      "num_workers": 10,
+      "val_num_workers": 10,
+      "preprocess_workers": 8
+    },
+    "axes": ["arm"],
+    "extra_axes": {
+      "arm": {
+        "control_ivalue_asis": {
+          "traversal_type": "i-value",
+          "dqn_model": "basic"
+        },
+        "treat_loss_ewma": {
+          "traversal_type": "i-value",
+          "dqn_model": "loss_ewma",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true
+        },
+        "treat_residual_fixed": {
+          "traversal_type": "i-value",
+          "dqn_model": "residual",
+          "dqn_fixes": true,
+          "dqn_objective": "huber",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true
+        },
+        "treat_conv_embedding_fixed": {
+          "traversal_type": "i-value",
+          "dqn_model": "conv_embedding",
+          "dqn_fixes": true,
+          "dqn_objective": "huber",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true
+        },
+        "treat_gain_ensemble_huber": {
+          "traversal_type": "i-value",
+          "dqn_model": "gain_ensemble",
+          "dqn_objective": "huber",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true
+        }
+      }
+    }
+  }
+}

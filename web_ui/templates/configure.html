@@ -42,6 +42,15 @@
                             <div class="form-text">Unique name for this configuration</div>
                         </div>
                         <div class="col-md-6 mb-3">
+                            <label for="dataRoot" class="form-label">Dataset Root</label>
+                            <input type="text" class="form-control" id="dataRoot" name="data_root"
+                                   placeholder="/path/to/ai-face">
+                            <div class="form-text">Optional. Leave blank to auto-detect or use `AIFACE_DATA_ROOT` on the server.</div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
                             <label class="form-label">DQN Model Types</label>
                             <div id="dqnModelCheckboxes">
                                 <div class="form-check">
@@ -219,6 +228,113 @@
                 </div>
             </div>
             
+            <!-- Uncertainty Configuration -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-wave-square text-primary me-2"></i>Uncertainty Configuration
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="uncertaintyHead" class="form-label">Uncertainty Head</label>
+                            <select class="form-select" id="uncertaintyHead" name="uncertainty_head">
+                                <option value="none">None</option>
+                                <option value="evidential">Evidential Softplus</option>
+                                <option value="batchensemble">BatchEnsemble</option>
+                                <option value="sngp">SNGP</option>
+                            </select>
+                            <div class="form-text">Choose the prediction head used to estimate uncertainty during training and evaluation.</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="mcDropoutSamples" class="form-label">MC Dropout Samples</label>
+                            <input type="number" class="form-control" id="mcDropoutSamples" name="mc_dropout_samples"
+                                   value="0" min="0" max="200" step="1">
+                            <div class="form-text">Set above 1 to enable Monte Carlo Dropout during validation and test.</div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="uncertaintyDropoutRate" class="form-label">Uncertainty Dropout Rate</label>
+                            <input type="number" class="form-control" id="uncertaintyDropoutRate" name="uncertainty_dropout_rate"
+                                   value="0.2" min="0" max="0.95" step="0.01">
+                            <div class="form-text">Dropout rate used by uncertainty-aware heads and MC Dropout passes.</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="uncertaintyTrainFrequency" class="form-label">Training Uncertainty Frequency</label>
+                            <input type="number" class="form-control" id="uncertaintyTrainFrequency" name="uncertainty_train_frequency"
+                                   value="10" min="1" max="10000" step="1">
+                            <div class="form-text">Compute training uncertainty summaries every N batches.</div>
+                        </div>
+                    </div>
+
+                    <div id="batchEnsembleConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="batchensembleMembers" class="form-label">BatchEnsemble Members</label>
+                                <input type="number" class="form-control" id="batchensembleMembers" name="batchensemble_members"
+                                       value="4" min="2" max="32" step="1">
+                                <div class="form-text">Number of ensemble members in the BatchEnsemble head.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="sngpConfig" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="sngpHiddenDim" class="form-label">SNGP Hidden Dimension</label>
+                                <input type="number" class="form-control" id="sngpHiddenDim" name="sngp_hidden_dim"
+                                       value="256" min="16" max="4096" step="1">
+                                <div class="form-text">Hidden layer size before the Gaussian process output layer.</div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="sngpRffDim" class="form-label">SNGP RFF Dimension</label>
+                                <input type="number" class="form-control" id="sngpRffDim" name="sngp_rff_dim"
+                                       value="256" min="16" max="4096" step="1">
+                                <div class="form-text">Random Fourier feature dimension for the SNGP head.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label d-block">Graph Uncertainty Methods</label>
+                            <div id="graphUncertaintyMethods">
+                                <div class="form-check">
+                                    <input class="form-check-input graph-uncertainty-method" type="checkbox" value="attribute_distance" id="graphMethodAttribute" checked>
+                                    <label class="form-check-label" for="graphMethodAttribute">Attribute Distance</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input graph-uncertainty-method" type="checkbox" value="embedding_distance" id="graphMethodEmbedding" checked>
+                                    <label class="form-check-label" for="graphMethodEmbedding">Embedding Distance</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input graph-uncertainty-method" type="checkbox" value="hybrid_distance" id="graphMethodHybrid" checked>
+                                    <label class="form-check-label" for="graphMethodHybrid">Hybrid Distance</label>
+                                </div>
+                            </div>
+                            <div class="form-text">Graph-based uncertainty uses node neighborhoods plus a low-degree penalty.</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="graphDegreePenaltyWeight" class="form-label">Graph Degree Penalty Weight</label>
+                            <input type="number" class="form-control" id="graphDegreePenaltyWeight" name="graph_degree_penalty_weight"
+                                   value="1.0" min="0" max="10" step="0.1">
+                            <div class="form-text">Increase uncertainty for sparsely connected nodes.</div>
+                        </div>
+                    </div>
+
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="buildValTestEdges" name="build_val_test_edges" checked>
+                        <label class="form-check-label" for="buildValTestEdges">
+                            Build and cache validation/test edges
+                        </label>
+                    </div>
+                    <div class="form-text">Validation and test graphs will build full edges once and reuse the cached result on later runs.</div>
+                </div>
+            </div>
+
             <!-- Traversal Configuration -->
             <div class="card mb-4">
                 <div class="card-header">
@@ -764,64 +880,13 @@
 {% block extra_js %}
 <script>
 $(document).ready(function() {
-    // Load config values if editing
-    {% if config %}
-    const config = {{ config|tojson }};
-    
-    // Load reduction/restoration config
-    if (config.reduction_enabled) {
-        $('#reductionEnabled').prop('checked', true);
-        $('#reductionConfig').show();
-        if (config.reduction_strategy) {
-            $('#reductionStrategy').val(config.reduction_strategy);
-            if (config.reduction_strategy === 'mix_max_ival') {
-                $('#mixMaxConfig').show();
-            }
-        }
-        if (config.reduction_percentage !== undefined) {
-            $('#reductionPercentage').val(config.reduction_percentage);
-        }
-        if (config.reduction_top_percentage !== undefined) {
-            $('#reductionTopPercentage').val(config.reduction_top_percentage);
-        }
-        if (config.reduction_bottom_percentage !== undefined) {
-            $('#reductionBottomPercentage').val(config.reduction_bottom_percentage);
-        }
-        if (config.reduction_interval) {
-            $('#reductionInterval').val(config.reduction_interval);
-            if (config.reduction_interval === 'every_n_steps') {
-                $('#reductionIntervalStepsRow').show();
-            }
-        }
-        if (config.reduction_interval_steps !== undefined) {
-            $('#reductionIntervalSteps').val(config.reduction_interval_steps);
-        }
+    const initialConfig = {% if config %}{{ config|tojson }}{% else %}null{% endif %};
+    if (initialConfig) {
+        applyConfigToForm(initialConfig.config || initialConfig);
     }
-    
-    if (config.restoration_enabled) {
-        $('#restorationEnabled').prop('checked', true);
-        $('#restorationConfig').show();
-        if (config.restoration_strategy) {
-            $('#restorationStrategy').val(config.restoration_strategy);
-        }
-        if (config.restoration_percentage !== undefined) {
-            $('#restorationPercentage').val(config.restoration_percentage);
-        }
-        if (config.restoration_trigger_threshold !== undefined) {
-            $('#restorationTriggerThreshold').val(config.restoration_trigger_threshold);
-        }
-    }
-    
-    if (config.model_rollback_enabled) {
-        $('#modelRollbackEnabled').prop('checked', true);
-        $('#modelRollbackConfig').show();
-        if (config.model_rollback_on_val_drop !== undefined) {
-            $('#modelRollbackOnValDrop').prop('checked', config.model_rollback_on_val_drop);
-        }
-    }
-    {% endif %}
     
     // Initialize form
+    updateUncertaintyVisibility();
     updatePreview();
     refreshCacheStatus();
     
@@ -938,48 +1003,20 @@ $(document).ready(function() {
         }
         updatePreview();
     });
+
+    $('#uncertaintyHead').on('change', function() {
+        updateUncertaintyVisibility();
+        updatePreview();
+    });
+
+    $('#graphUncertaintyMethods').on('change', '.graph-uncertainty-method', function() {
+        updatePreview();
+    });
     
     // Validate reduction/restoration when traversal type changes
     $('#traversalType, #secondTraversalType, #thirdTraversalType').on('change', function() {
         validateReductionRestoration();
     });
-    
-    // Function to validate reduction/restoration requirements
-    function validateReductionRestoration() {
-        const reductionEnabled = $('#reductionEnabled').is(':checked');
-        const restorationEnabled = $('#restorationEnabled').is(':checked');
-        const reductionStrategy = $('#reductionStrategy').val();
-        const restorationStrategy = $('#restorationStrategy').val();
-        
-        // Check if non-random strategies require I-value traversal
-        const needsIvalue = (reductionEnabled && reductionStrategy !== 'random' && reductionStrategy !== 'none') ||
-                           (restorationEnabled && restorationStrategy !== 'random_pool' && restorationStrategy !== 'none');
-        
-        if (needsIvalue) {
-            // Check if any I-value traversal is selected
-            const primaryTraversal = $('#traversalType').val();
-            const secondTraversal = $('#secondTraversalType').val();
-            const thirdTraversal = $('#thirdTraversalType').val();
-            const enableSwitching = $('#enableTraversalSwitching').is(':checked');
-            
-            let hasIvalueTraversal = primaryTraversal === 'i-value';
-            if (enableSwitching) {
-                hasIvalueTraversal = hasIvalueTraversal || secondTraversal === 'i-value' || thirdTraversal === 'i-value';
-            }
-            
-            if (!hasIvalueTraversal) {
-                $('#reductionRestorationWarning').show();
-                $('#reductionRestorationWarningText').text(
-                    'Non-random reduction or restoration strategies require at least one I-value traversal method. ' +
-                    'Please select an I-value traversal type in the Traversal Configuration section.'
-                );
-            } else {
-                $('#reductionRestorationWarning').hide();
-            }
-        } else {
-            $('#reductionRestorationWarning').hide();
-        }
-    }
     
     // Add event listeners for cache settings
     $('#cachedNodes, #cacheNodes, #cacheFull, #useFullCache').on('change', function() {
@@ -1050,6 +1087,146 @@ function updateIValueTraversalForGraphType(graphType, elementId = 'traversalType
     // Don't change the dropdown value - keep it as 'i-value'
     // The mapping will happen in getFormData() when the form is submitted
     // This prevents the dropdown from showing an invalid value
+}
+
+function getSelectedGraphUncertaintyMethods() {
+    const methods = [];
+    document.querySelectorAll('.graph-uncertainty-method:checked').forEach(element => {
+        methods.push(element.value);
+    });
+    return methods;
+}
+
+function setSelectedGraphUncertaintyMethods(methods) {
+    const methodSet = new Set((methods || []).filter(Boolean));
+    document.querySelectorAll('.graph-uncertainty-method').forEach(element => {
+        element.checked = methodSet.has(element.value);
+    });
+}
+
+function syncRangeDisplays() {
+    $('#qualityValue').text(parseFloat($('#qualityThreshold').val() || 0).toFixed(3));
+    $('#symmetryValue').text(parseFloat($('#symmetryThreshold').val() || 0).toFixed(3));
+    $('#embeddingValue').text(parseFloat($('#embeddingThreshold').val() || 0).toFixed(3));
+    $('#biasLossValue').text(parseFloat($('#biasLossWeight').val() || 0).toFixed(2));
+
+    $('#attributeBiasWeights input[type="range"]').each(function() {
+        const attrName = $(this).attr('id').replace('bias_weight_', '');
+        $('#bias_weight_value_' + attrName).text(parseFloat($(this).val()).toFixed(2));
+    });
+
+    $('#groupBiasWeights input[type="range"]').each(function() {
+        const groupName = $(this).attr('name').replace('bias_group_weights[', '').replace(']', '');
+        $('#bias_group_weight_value_' + groupName).text(parseFloat($(this).val()).toFixed(2));
+    });
+}
+
+function updateUncertaintyVisibility() {
+    const head = $('#uncertaintyHead').val() || 'none';
+    $('#batchEnsembleConfig').toggle(head === 'batchensemble');
+    $('#sngpConfig').toggle(head === 'sngp');
+}
+
+function applyConfigToForm(config) {
+    if (!config) {
+        return;
+    }
+
+    for (const [key, value] of Object.entries(config)) {
+        const element = document.querySelector(`[name="${key}"]`);
+        if (!element || key === 'architectures' || key === 'dqn-model' || key === 'dqn_model' || key === 'graph_uncertainty_methods') {
+            continue;
+        }
+
+        if (element.type === 'checkbox') {
+            element.checked = Boolean(value);
+        } else if (value !== null && value !== undefined) {
+            element.value = value;
+        }
+    }
+
+    document.querySelectorAll('#architectureCheckboxes input[type="checkbox"]').forEach(element => {
+        element.checked = false;
+    });
+    if (config.architectures) {
+        const selectedArchitectures = new Set(
+            (Array.isArray(config.architectures) ? config.architectures : String(config.architectures).split(','))
+                .map(value => value.trim())
+                .filter(Boolean)
+        );
+        document.querySelectorAll('#architectureCheckboxes input[type="checkbox"]').forEach(element => {
+            element.checked = selectedArchitectures.has(element.value);
+        });
+    }
+
+    document.querySelectorAll('#dqnModelCheckboxes input[type="checkbox"]').forEach(element => {
+        element.checked = false;
+    });
+    const dqnConfig = config['dqn-model'] || config.dqn_model;
+    if (dqnConfig) {
+        const selectedDqns = new Set(
+            (Array.isArray(dqnConfig) ? dqnConfig : String(dqnConfig).split(','))
+                .map(value => value.trim())
+                .filter(Boolean)
+        );
+        document.querySelectorAll('#dqnModelCheckboxes input[type="checkbox"]').forEach(element => {
+            element.checked = selectedDqns.has(element.value);
+        });
+    }
+
+    const graphMethods = Array.isArray(config.graph_uncertainty_methods)
+        ? config.graph_uncertainty_methods
+        : String(config.graph_uncertainty_methods || 'attribute_distance,embedding_distance,hybrid_distance').split(',');
+    setSelectedGraphUncertaintyMethods(graphMethods.map(value => value.trim()).filter(Boolean));
+
+    $('#gpuIdContainer').toggle($('#gpuOverride').is(':checked'));
+    $('#traversalSwitchingConfig').toggle($('#enableTraversalSwitching').is(':checked'));
+    $('#thirdTraversalEpochRow').toggle(Boolean($('#thirdTraversalType').val()));
+    $('#reductionConfig').toggle($('#reductionEnabled').is(':checked'));
+    $('#mixMaxConfig').toggle($('#reductionStrategy').val() === 'mix_max_ival');
+    $('#reductionIntervalStepsRow').toggle($('#reductionInterval').val() === 'every_n_steps');
+    $('#restorationConfig').toggle($('#restorationEnabled').is(':checked'));
+    $('#modelRollbackConfig').toggle($('#modelRollbackEnabled').is(':checked'));
+
+    updateCachedNodesCountVisibility();
+    updateUncertaintyVisibility();
+    syncRangeDisplays();
+    validateReductionRestoration();
+}
+
+function validateReductionRestoration() {
+    const reductionEnabled = $('#reductionEnabled').is(':checked');
+    const restorationEnabled = $('#restorationEnabled').is(':checked');
+    const reductionStrategy = $('#reductionStrategy').val();
+    const restorationStrategy = $('#restorationStrategy').val();
+
+    const needsIvalue = (reductionEnabled && reductionStrategy !== 'random' && reductionStrategy !== 'none') ||
+                       (restorationEnabled && restorationStrategy !== 'random_pool' && restorationStrategy !== 'none');
+
+    if (!needsIvalue) {
+        $('#reductionRestorationWarning').hide();
+        return;
+    }
+
+    const primaryTraversal = $('#traversalType').val();
+    const secondTraversal = $('#secondTraversalType').val();
+    const thirdTraversal = $('#thirdTraversalType').val();
+    const enableSwitching = $('#enableTraversalSwitching').is(':checked');
+
+    let hasIvalueTraversal = primaryTraversal === 'i-value';
+    if (enableSwitching) {
+        hasIvalueTraversal = hasIvalueTraversal || secondTraversal === 'i-value' || thirdTraversal === 'i-value';
+    }
+
+    if (!hasIvalueTraversal) {
+        $('#reductionRestorationWarning').show();
+        $('#reductionRestorationWarningText').text(
+            'Non-random reduction or restoration strategies require at least one I-value traversal method. ' +
+            'Please select an I-value traversal type in the Traversal Configuration section.'
+        );
+    } else {
+        $('#reductionRestorationWarning').hide();
+    }
 }
 
 function updateCachedNodesCountVisibility() {
@@ -1243,7 +1420,7 @@ function generateCacheStatusHtml(data) {
                 html += `<div class="mb-2"><strong>${split.charAt(0).toUpperCase() + split.slice(1)} Split:</strong></div>`;
                 html += '<div class="table-responsive mb-3">';
                 html += '<table class="table table-sm">';
-                html += '<thead><tr><th>Configuration</th><th>Nodes</th><th>Thresholds</th><th>Status</th></tr></thead><tbody>';
+                html += '<thead><tr><th>Configuration</th><th>Nodes</th><th>Thresholds</th><th>Edge Policy</th><th>Status</th></tr></thead><tbody>';
                 
                 for (const { configKey, cacheInfo } of splitCaches) {
                     const status = (cacheInfo.cache_files && cacheInfo.cache_files.length > 0) ? 
@@ -1293,6 +1470,7 @@ function generateCacheStatusHtml(data) {
                         <td><small class="text-muted">${balancing}</small></td>
                         <td><small>${nodeCount}</small></td>
                         <td><small>q${qThresh} s${sThresh} e${eThresh}</small></td>
+                        <td><small>${cacheInfo.edge_policy || 'unknown'}</small></td>
                         <td>${status}</td>
                     </tr>`;
                 }
@@ -1398,16 +1576,8 @@ function loadTemplate() {
             url: `/api/templates/${template}`,
             method: 'GET',
             success: function(response) {
-                for (const [key, value] of Object.entries(response.config)) {
-                    const element = document.querySelector(`[name="${key}"]`);
-                    if (element) {
-                        if (element.type === 'checkbox') {
-                            element.checked = value;
-                        } else {
-                            element.value = value;
-                        }
-                    }
-                }
+                document.getElementById('configForm').reset();
+                applyConfigToForm(response.config || response);
                 updatePreview();
             },
             error: function() {
@@ -1630,6 +1800,12 @@ function getFormData() {
     
     // Ensure graph_type is included (from select element)
     config.graph_type = $('#graphType').val();
+
+    // Uncertainty configuration
+    config.graph_uncertainty_methods = getSelectedGraphUncertaintyMethods().join(',');
+    if (!config.graph_uncertainty_methods) {
+        config.graph_uncertainty_methods = '';
+    }
     
     // Collect per-attribute bias weights
     const biasWeights = {};
@@ -1671,6 +1847,10 @@ function updatePreview() {
     
     if (config.batch_size) {
         preview += `<div class="mb-2"><strong>Batch Size:</strong> ${config.batch_size}</div>`;
+    }
+
+    if (config.data_root) {
+        preview += `<div class="mb-2"><strong>Dataset Root:</strong> ${config.data_root}</div>`;
     }
     
     // Add graph type configuration
@@ -1720,6 +1900,24 @@ function updatePreview() {
     if (config.quality_threshold || config.symmetry_threshold || config.embedding_threshold) {
         preview += `<div class="mb-2"><strong>Thresholds:</strong> Q:${config.quality_threshold || 'N/A'} S:${config.symmetry_threshold || 'N/A'} E:${config.embedding_threshold || 'N/A'}</div>`;
     }
+
+    const uncertaintyHeadLabel = {
+        none: 'None',
+        evidential: 'Evidential Softplus',
+        batchensemble: 'BatchEnsemble',
+        sngp: 'SNGP'
+    }[config.uncertainty_head || 'none'] || (config.uncertainty_head || 'None');
+    preview += `<div class="mb-2"><strong>Uncertainty Head:</strong> ${uncertaintyHeadLabel}</div>`;
+
+    if (config.mc_dropout_samples && config.mc_dropout_samples > 0) {
+        preview += `<div class="mb-2"><strong>MC Dropout:</strong> ${config.mc_dropout_samples} samples</div>`;
+    }
+
+    if (config.graph_uncertainty_methods) {
+        preview += `<div class="mb-2"><strong>Graph Uncertainty:</strong> ${config.graph_uncertainty_methods}</div>`;
+    }
+
+    preview += `<div class="mb-2"><strong>Val/Test Edges:</strong> ${config.build_val_test_edges ? 'Build + Cache Full Edges' : 'Node-Only Graphs'}</div>`;
 
     // Traversal steps preview
     const trainStepsLabel = config.train_steps_equal_nodes ? '# Train Nodes' : (config.train_steps || '1000');

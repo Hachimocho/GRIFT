@@ -1,0 +1,72 @@
+name: tests
+
+# All branches, not just main: the fast tier takes well under a minute of compute,
+# and catching a break on a feature branch is the point.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-fast:
+    name: fast tier (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.ci.yml
+          environment-name: grift-ci
+          cache-downloads: true
+          cache-environment: true
+          init-shell: bash
+
+      - name: Show environment
+        shell: bash -l {0}
+        run: micromamba run -n grift-ci python -c "import torch, numpy, sklearn, cv2; print('torch', torch.__version__, 'cuda', torch.cuda.is_available()); print('numpy', numpy.__version__)"
+
+      - name: Run fast tier
+        shell: bash -l {0}
+        env:
+          # Pinned here as well as by conftest's re-exec, so the run is reproducible
+          # even if that mechanism is ever disabled.
+          PYTHONHASHSEED: "0"
+          CUBLAS_WORKSPACE_CONFIG: ":4096:8"
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          # opencv in the training env is a qt6 build and several modules import
+          # matplotlib at import time; both must be headless.
+          QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
+        run: >
+          micromamba run -n grift-ci pytest
+          --timeout=300
+          --junitxml=junit.xml
+          --cov=. --cov-report=xml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            junit.xml
+            coverage.xml
+
+  env-drift:
+    name: environment.yml drift check
+    runs-on: ubuntu-latest
+    # Informational: environment.yml is the training env's source of truth and is
+    # allowed to diverge from the CI env. This job surfaces the divergence rather
+    # than failing on it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare package sets
+        run: python3 ci/check_env_drift.py

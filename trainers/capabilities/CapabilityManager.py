@@ -1,4 +1,6 @@
 import random
+
+from test_helpers.args_utils import IVALUE_TRAVERSAL_ALIASES
 from trainers.capabilities.DQNCapability import DQNCapability
 from trainers.capabilities.BiasCapability import BiasCapability
 from trainers.capabilities.BasicTrainingCapability import BasicTrainingCapability
@@ -29,7 +31,7 @@ class CapabilityManager:
     def set_traversal_sequence(self, sequence):
         """Set the full traversal sequence to enable DQN warm-up if needed."""
         self.traversal_sequence = sequence
-        self.requires_dqn_warmup = any(t in ["i-value", "i-value-cluster-hop"] for t in sequence)
+        self.requires_dqn_warmup = any(t in IVALUE_TRAVERSAL_ALIASES for t in sequence)
         
         if self.requires_dqn_warmup:
             print(f"CapabilityManager: I-value traversal detected in sequence {sequence}")
@@ -38,11 +40,30 @@ class CapabilityManager:
             self._enable_dqn_capability()
             self._enable_bias_capability()
         
+    def require_dqn(self, reason=""):
+        """Enable the DQN regardless of traversal type.
+
+        The loss-weighting arm samples with `comprehensive` -- deliberately, because that is
+        the sampler that wins -- but still needs an I-value per sample. Without this the DQN
+        is only built for an i-value traversal, so the weights would all fall back to a
+        uniform default and the arm would silently be its own control.
+        """
+        self.requires_dqn_warmup = True
+        if reason:
+            print(f"CapabilityManager: DQN required ({reason})")
+        self._enable_dqn_capability()
+        self._enable_bias_capability()
+
     def configure_for_traversal(self, traversal_type):
         """Enable capabilities needed for specific traversal type."""
         print(f"CapabilityManager: Configuring for traversal type '{traversal_type}'")
         
-        if traversal_type in ["i-value", "i-value-cluster-hop"]:
+        # Membership test against the alias set rather than a hand-kept list. The list
+        # named only two of the four I-value traversals that existed, so the two
+        # `*-subcluster` variants silently got basic capabilities: no DQN, and
+        # `get_i_value` falling through to a random draw. They were named "i-value" and
+        # ran on random numbers.
+        if traversal_type in IVALUE_TRAVERSAL_ALIASES:
             self._enable_dqn_capability()
             self._enable_bias_capability()
         else:
@@ -97,9 +118,32 @@ class CapabilityManager:
         """Get I-value using appropriate method."""
         if self.dqn_capability:
             return self.dqn_capability.get_i_value(node, model_idx)
-        else:
-            # Fallback for non-I-value traversals
-            return random.random()
+
+        # Fallback for non-I-value traversals. This draws from a dedicated stream
+        # rather than the global `random` module, which matters more here than
+        # anywhere else: IValueTraversal.reset_pointers calls this once per node per
+        # pointer per epoch, so the number of global draws consumed scaled with
+        # *graph size* -- meaning changing the node count shifted every subsequent
+        # random decision in the run.
+        return self._ivalue_fallback_rng().random()
+
+    _IVALUE_FALLBACK_SEED = 1013904223
+
+    def _ivalue_fallback_rng(self):
+        """Lazily bind this manager's private I-value RNG."""
+        if getattr(self, '_ivalue_rng', None) is not None:
+            return self._ivalue_rng
+
+        seeded = None
+        try:
+            from test_helpers.determinism import is_configured, rng_for
+            if is_configured():
+                seeded = rng_for("ivalue.fallback")
+        except ImportError:
+            pass
+
+        self._ivalue_rng = seeded or random.Random(self._IVALUE_FALLBACK_SEED)
+        return self._ivalue_rng
             
     def train_with_traversal(self, traversal, epoch=None):
         """Execute training with current capabilities."""

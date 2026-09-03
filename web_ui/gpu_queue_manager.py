@@ -42,17 +42,247 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+#: Run-config key -> `test_hierarchical.py` CLI flag. This table is the authoritative
+#: schema of a run config: `_build_command_args` **silently drops anything not listed
+#: here**, which is how `--cache-file` and `--determinism` came to be missing from every
+#: queue-launched run. Module level rather than a local so callers that build configs
+#: programmatically can check their keys against it *before* launching -- see
+#: `validate_config_keys`.
+ARG_MAPPING = {
+    "test": "--test",
+    "visualize": "--visualize",
+    "show": "--show",
+    "search": "--search",
+    "search_split": "--search-split",
+    "quality_steps": "--quality-steps",
+    "symmetry_steps": "--symmetry-steps",
+    "embedding_steps": "--embedding-steps",
+    "search_results": "--search-results",
+    "traversal_type": "--traversal-type",
+    "enable_traversal_switching": "--enable-traversal-switching",
+    "traversal_sequence": "--traversal-sequence",
+    "switch_epochs": "--switch-epochs",
+    "test_all_traversals": "--test-all-traversals",
+    "architectures": "--architectures",
+    "num_epochs": "--num-epochs",
+    "batch_size": "--batch-size",
+    "bias_hop_period": "--bias_hop_period",
+    "seed": "--seed",
+    "quality_threshold": "--quality-threshold",
+    "symmetry_threshold": "--symmetry-threshold",
+    "embedding_threshold": "--embedding-threshold",
+    "data_root": "--data-root",
+    "cached_nodes": "--use-cached",
+    "cache_nodes": "--cache-nodes",
+    "cached_nodes_count": "--cached-nodes",
+    # Without this, --cache-file was dropped and every queue-launched run fell
+    # back to the default path -- so pointing a sweep at a purpose-built cache
+    # silently had no effect.
+    "cache_file": "--cache-file",
+    "dynamic_cache_detection": "--dynamic-cache-detection",
+    "fair_train": "--fair-train",
+    "fair_test": "--fair-test",
+    "balance_labels": "--balance-labels",
+    "enable_ivalue_viz": "--enable-ivalue-viz",
+    "viz_track_nodes": "--viz-track-nodes",
+    "viz_sample_size": "--viz-sample-size",
+    "viz_save_dir": "--viz-save-dir",
+    "bias_loss_weight": "--bias_loss_weight",
+    "num_workers": "--num-workers",
+    "val_num_workers": "--val-num-workers",
+    "preprocess_workers": "--preprocess-workers",
+    "max_nodes_per_epoch": "--max-nodes-per-epoch",
+    "ivalue_reward": "--ivalue-reward",
+    "ivalue_state_features": "--ivalue-state-features",
+    "ivalue_candidate_pool": "--ivalue-candidate-pool",
+    "comprehensive_cumulative": "--comprehensive-cumulative",
+    "ivalue_diagnostic": "--ivalue-diagnostic",
+    "ivalue_unseen_prior": "--ivalue-unseen-prior",
+    "selection_diagnostic": "--selection-diagnostic",
+    "ivalue_selection": "--ivalue-selection",
+    "ivalue_band": "--ivalue-band",
+    "ivalue_loss_weight": "--ivalue-loss-weight",
+    "ivalue_weight_clip": "--ivalue-weight-clip",
+    "ivalue_ban_negative_gain": "--ivalue-ban-negative-gain",
+    "ivalue_ban_max_fraction": "--ivalue-ban-max-fraction",
+    "ivalue_group_targeting": "--ivalue-group-targeting",
+    "ivalue_group_top": "--ivalue-group-top",
+    "ivalue_fairness_weight": "--ivalue-fairness-weight",
+    "ivalue_fairness_selection": "--ivalue-fairness-selection",
+    "dqn_fixes": "--dqn-fixes",
+    "dqn_objective": "--dqn-objective",
+    "dqn_buffer_size": "--dqn-buffer-size",
+    "dqn_embedding_dim": "--dqn-embedding-dim",
+    "dqn_model": "--dqn-model",
+    "graph_type": "--graph-type",
+    "edge_construction": "--edge-construction",
+    "knn_neighbors": "--knn-neighbors",
+    # GPU override passthrough
+    "gpu_override": "--gpu-override",
+    "gpu_id": "--gpu-id",
+    # Cache full / use full cache
+    "cache_full": "--cache-full",
+    "use_full_cache": "--use-full-cache",
+    # Traversal steps configuration
+    "train_steps": "--train-steps",
+    "val_steps": "--val-steps",
+    "train_steps_equal_nodes": "--train-steps-equal-nodes",
+    "val_steps_equal_nodes": "--val-steps-equal-nodes",
+    # Uncertainty configuration
+    "uncertainty_head": "--uncertainty-head",
+    "mc_dropout_samples": "--mc-dropout-samples",
+    "batchensemble_members": "--batchensemble-members",
+    "sngp_hidden_dim": "--sngp-hidden-dim",
+    "sngp_rff_dim": "--sngp-rff-dim",
+    "uncertainty_dropout_rate": "--uncertainty-dropout-rate",
+    "uncertainty_train_frequency": "--uncertainty-train-frequency",
+    "graph_uncertainty_methods": "--graph-uncertainty-methods",
+    "graph_degree_penalty_weight": "--graph-degree-penalty-weight",
+    "sngp_precision_policy": "--sngp-precision-policy",
+    # Reproducibility. Absent from this table, --determinism was silently
+    # dropped from every UI- and ensemble-launched run, so those runs were
+    # non-strict no matter what was requested.
+    "determinism": "--determinism",
+    "lr_schedule": "--lr-schedule",
+    # Model construction
+    "finetune": "--finetune",
+    # Benchmark artifacts and deep ensembles
+    "uq_records": "--uq-records",
+    "uq_records_splits": "--uq-records-splits",
+    "tune_threshold": "--tune-threshold",
+    "threshold_objective": "--threshold-objective",
+    "ensemble_member": "--ensemble-member",
+    "ensemble_id": "--ensemble-id",
+    # Distribution shift
+    "holdout": "--holdout",
+    "corruption": "--corruption",
+    "corruption_severity": "--corruption-severity",
+    # Graph updaters. The manager was hardcoded to NoGraphManager and the reduction
+    # keys were read from a dict nothing populated, so neither component was reachable
+    # from any entry point until these were routed.
+    "graph_manager": "--graph-manager",
+    "weak_quantile": "--weak-quantile",
+    "strong_quantile": "--strong-quantile",
+    "removal_fraction": "--removal-fraction",
+    "graph_updates_per_epoch": "--graph-updates-per-epoch",
+    "graph_remove_target": "--graph-remove-target",
+    "graph_manager_sample_nodes": "--graph-manager-sample-nodes",
+    "reduction_enabled": "--reduction-enabled",
+    "reduction_strategy": "--reduction-strategy",
+    "reduction_percentage": "--reduction-percentage",
+    "reduction_top_percentage": "--reduction-top-percentage",
+    "reduction_bottom_percentage": "--reduction-bottom-percentage",
+    "reduction_interval": "--reduction-interval",
+    "reduction_interval_steps": "--reduction-interval-steps",
+    "restoration_strategy": "--restoration-strategy",
+    "restoration_percentage": "--restoration-percentage",
+    "restoration_trigger_threshold": "--restoration-trigger-threshold",
+    # Remaining CLI flags that had no route through the queue at all.
+    "enable_train_bias_inference": "--enable-train-bias-inference",
+    "enable_val_bias_inference": "--enable-val-bias-inference",
+    "load_last_checkpoint": "--load-last-checkpoint",
+    "checkpoint_metric": "--checkpoint-metric",
+    "export_csv_per_run": "--export-csv-per-run",
+    "disconnected_switching": "--disconnected-switching",
+    "viz_step_frequency": "--viz-step-frequency",
+}
+
+#: Config keys for flags that default to *on*, so only the negation is ever emitted.
+#: These cannot live in `ARG_MAPPING`: a False value there emits nothing at all, which
+#: would silently leave the default in place. Handled explicitly in
+#: `_build_command_args`, and listed here so `validate_config_keys` does not report them
+#: as unroutable.
+DEFAULT_ON_KEYS = frozenset({"build_val_test_edges", "graph_distance_robust_stats"})
+
+#: Keys the queue consumes itself rather than forwarding to the CLI.
+QUEUE_ONLY_KEYS = frozenset({"run_id"})
+
+
+def validate_config_keys(config: Dict[str, Any]) -> List[str]:
+    """Config keys that would be silently dropped on the way to the CLI.
+
+    Returns them sorted. An empty list means every key in `config` reaches
+    `test_hierarchical.py`. Programmatic callers should refuse to launch on a non-empty
+    result: a dropped key does not fail, it just makes the run quietly different from
+    the one that was asked for, and the resulting numbers look real.
+    """
+    routable = set(ARG_MAPPING) | DEFAULT_ON_KEYS | QUEUE_ONLY_KEYS
+    return sorted(key for key in config if key not in routable)
+
+
+#: Env var naming the GPU ids this process may use, e.g. "0,1". Unset means every GPU.
+#: A shared box is the normal case, and the memory check alone cannot express "someone
+#: else owns that card": another user training in 5 GB of a 46 GB L40S leaves it looking
+#: idle and available, so the only reliable way to stay off their GPU is an explicit
+#: allowlist.
+VISIBLE_GPUS_ENV = "GRIFT_VISIBLE_GPUS"
+
+
+def parse_visible_gpus(value):
+    """Parse a "0,1" GPU allowlist into a sorted set of ints, or None for "all".
+
+    Raises `ValueError` on anything unparseable rather than falling back to all GPUs --
+    a typo that silently widens the allowlist is how you end up on a colleague's card.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (set, frozenset, list, tuple)):
+        items = list(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        items = [part for part in text.replace(" ", ",").split(",") if part]
+    ids = set()
+    for item in items:
+        try:
+            ids.add(int(item))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"cannot parse {item!r} as a GPU id in {value!r}; "
+                f"expected a comma-separated list like 0,1"
+            )
+    if not ids:
+        return None
+    negative = sorted(i for i in ids if i < 0)
+    if negative:
+        raise ValueError(f"GPU ids must be non-negative, got {negative}")
+    return ids
+
+
 class GPUQueueManager:
     """Manages GPU allocation and queueing for test runs."""
     
-    def __init__(self, runs_dir: str = "web_ui/runs"):
+    def __init__(self, runs_dir: str = "web_ui/runs", visible_gpus=None, runs_per_gpu=1):
         self.runs_dir = Path(runs_dir)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Restrict every GPU view to this allowlist. Filtered in `get_gpu_info`, which is
+        # the single source `get_available_gpus`, the queue loop, and the status endpoint
+        # all read from, so one filter covers allocation, availability, and reporting.
+        if visible_gpus is None:
+            visible_gpus = os.environ.get(VISIBLE_GPUS_ENV)
+        self.visible_gpus = parse_visible_gpus(visible_gpus)
+        if self.visible_gpus is not None:
+            logger.info(
+                "GPU allowlist active: %s (others are ignored even when idle)",
+                ",".join(str(i) for i in sorted(self.visible_gpus)),
+            )
         
         # GPU management
-        self.gpu_allocations = {}  # {gpu_id: run_id}
-        self.gpu_processes = {}    # {gpu_id: process}
-        self.gpu_monitor_threads = {}  # {gpu_id: thread}
+        self.gpu_allocations = {}  # {gpu_id: most recent run_id, for display only}
+        #: Per-run state, keyed by run_id rather than by GPU.
+        #:
+        #: It used to be keyed by `gpu_id`, which silently made "one run per GPU" structural
+        #: rather than a policy: a second run on the same card would overwrite the first's
+        #: process handle, and the monitor -- which reaps `gpu_processes[gpu_id]` -- would
+        #: attribute the wrong exit code to the wrong run and release a GPU still in use.
+        #: Keyed by run_id, concurrency is just a number.
+        self.run_processes = {}    # {run_id: process}
+        self.run_gpus = {}         # {run_id: gpu_id}
+        self.run_monitor_threads = {}  # {run_id: thread}
+        self.gpu_run_ids = {}      # {gpu_id: set(run_id)}
         
         # Queue management
         self.run_queue = []  # List of (run_id, config_name, config, priority)
@@ -63,6 +293,15 @@ class GPUQueueManager:
         self.run_metadata = {}  # {run_id: full_metadata}
         
         # Configuration
+        #: How many runs may share one GPU.
+        #:
+        #: Measured on this box: a training process sits at ~1.5-2.5 GB of a 46 GB card and
+        #: 95.6% of a *single* core, with the GPU at ~14% utilisation -- the work is
+        #: single-threaded Python, not GPU compute. So the card is the wrong thing to
+        #: serialise on, and packing several runs onto it converts idle silicon into
+        #: throughput. Results are unaffected: strict determinism pins one visible device per
+        #: run and no result depends on what else shares the card.
+        self.runs_per_gpu = max(1, int(runs_per_gpu or 1))
         self.min_gpu_memory_gb = 2.0  # Minimum GPU memory required
         self.gpu_check_interval = 5.0  # Seconds between GPU availability checks
         self.queue_check_interval = 2.0  # Seconds between queue processing
@@ -108,7 +347,10 @@ class GPUQueueManager:
                         'temperature': gpu.temperature,
                         'load': gpu.load * 100 if gpu.load else 0,
                         'allocated_to': self.gpu_allocations.get(i),
-                        'status': 'allocated' if i in self.gpu_allocations else 'available'
+                        'runs_active': len(self.gpu_run_ids.get(i, ())),
+                        'status': ('allocated'
+                                   if len(self.gpu_run_ids.get(i, ())) >= self.runs_per_gpu
+                                   else 'available')
                     }
                     gpu_info.append(gpu_data)
             except Exception as e:
@@ -128,12 +370,18 @@ class GPUQueueManager:
                         'temperature': None,
                         'load': None,
                         'allocated_to': self.gpu_allocations.get(i),
-                        'status': 'allocated' if i in self.gpu_allocations else 'available'
+                        'runs_active': len(self.gpu_run_ids.get(i, ())),
+                        'status': ('allocated'
+                                   if len(self.gpu_run_ids.get(i, ())) >= self.runs_per_gpu
+                                   else 'available')
                     }
                     gpu_info.append(gpu_data)
             except Exception as e:
                 logger.error(f"Error getting GPU info with PyTorch: {e}")
-        
+
+        if self.visible_gpus is not None:
+            gpu_info = [gpu for gpu in gpu_info if gpu['id'] in self.visible_gpus]
+
         return gpu_info
     
     def get_available_gpus(self, min_memory_gb: float = None) -> List[int]:
@@ -263,7 +511,17 @@ class GPUQueueManager:
                 env = os.environ.copy()
                 env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
                 env['PYTHONUNBUFFERED'] = '1'
-                
+                # Determinism variables that must be set *before* interpreter start:
+                # PYTHONHASHSEED cannot be assigned from inside Python, and
+                # CUBLAS_WORKSPACE_CONFIG is read when the cuBLAS handle is created.
+                # Only run_reproducible.sh set these, which the queue bypasses -- so
+                # a UI-launched run could not honor --determinism strict at all, and
+                # test_hierarchical.py's bootstrap had to re-exec itself to recover.
+                # setdefault, not assignment: an operator who exported a different
+                # value deliberately should keep it.
+                env.setdefault('PYTHONHASHSEED', '0')
+                env.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+
                 process = subprocess.Popen(
                     cmd_args,
                     stdout=f,
@@ -273,9 +531,11 @@ class GPUQueueManager:
                     preexec_fn=os.setsid
                 )
             
-            # Track process and allocation
+            # Track process and allocation, per run.
             self.gpu_allocations[gpu_id] = run_id
-            self.gpu_processes[gpu_id] = process
+            self.run_processes[run_id] = process
+            self.run_gpus[run_id] = gpu_id
+            self.gpu_run_ids.setdefault(gpu_id, set()).add(run_id)
             self.active_runs[run_id] = metadata
             
             # Start monitoring thread
@@ -285,7 +545,7 @@ class GPUQueueManager:
             )
             monitor_thread.daemon = True
             monitor_thread.start()
-            self.gpu_monitor_threads[gpu_id] = monitor_thread
+            self.run_monitor_threads[run_id] = monitor_thread
             
             logger.info(f"Started run {run_id} on GPU {gpu_id} with PID {process.pid}")
             return True
@@ -297,19 +557,17 @@ class GPUQueueManager:
     def stop_run(self, run_id: str) -> bool:
         """Stop a running test."""
         try:
-            # Find which GPU this run is using
-            gpu_id = None
-            for gid, rid in self.gpu_allocations.items():
-                if rid == run_id:
-                    gpu_id = gid
-                    break
-            
+            # Which GPU this run is on. A direct lookup now: scanning `gpu_allocations`
+            # by value only ever found one run per GPU, so with several sharing a card it
+            # would stop whichever happened to be recorded last.
+            gpu_id = self.run_gpus.get(run_id)
+
             if gpu_id is None:
                 logger.warning(f"Run {run_id} not found in active runs")
                 return False
-            
+
             # Stop the process
-            process = self.gpu_processes.get(gpu_id)
+            process = self.run_processes.get(run_id)
             if process:
                 try:
                     # Send SIGTERM to the process group
@@ -368,6 +626,7 @@ class GPUQueueManager:
                     'run_id': run_id,
                     'config_name': config_name,
                     'status': 'queued',
+                    'config': config,
                     'priority': priority,
                     'queued_time': metadata.get('queued_time'),
                     'created': metadata.get('created', metadata.get('queued_time', '')),
@@ -376,15 +635,16 @@ class GPUQueueManager:
         
         # Add active runs
         for run_id, metadata in self.active_runs.items():
-            runs.append({
-                'run_id': run_id,
-                'config_name': metadata.get('config_name'),
-                'status': 'running',
-                'gpu_id': metadata.get('gpu_id'),
-                'start_time': metadata.get('start_time'),
-                'created': metadata.get('created', metadata.get('start_time', '')),
-                'last_updated': metadata.get('last_updated', metadata.get('start_time', ''))
-            })
+                runs.append({
+                    'run_id': run_id,
+                    'config_name': metadata.get('config_name'),
+                    'status': 'running',
+                    'config': metadata.get('config'),
+                    'gpu_id': metadata.get('gpu_id'),
+                    'start_time': metadata.get('start_time'),
+                    'created': metadata.get('created', metadata.get('start_time', '')),
+                    'last_updated': metadata.get('last_updated', metadata.get('start_time', ''))
+                })
         
         # Add completed/failed runs from files
         for run_file in self.runs_dir.glob("*.json"):
@@ -397,6 +657,7 @@ class GPUQueueManager:
                             'run_id': run_id,
                             'config_name': metadata.get('config_name'),
                             'status': metadata.get('status', 'unknown'),
+                            'config': metadata.get('config'),
                             'start_time': metadata.get('start_time'),
                             'end_time': metadata.get('end_time'),
                             'created': metadata.get('created', metadata.get('start_time', '')),
@@ -501,19 +762,24 @@ class GPUQueueManager:
         
         while self.running:
             try:
-                # Check for completed processes
-                completed_gpus = []
-                for gpu_id, process in self.gpu_processes.items():
-                    if process.poll() is not None:
-                        completed_gpus.append(gpu_id)
-                
+                # Check for completed processes, per run. Iterating by GPU attributed a
+                # completed process to `gpu_allocations[gpu_id]` -- the *most recent* run on
+                # that card -- so with concurrency it would credit one run's exit code to
+                # another and free a GPU that was still busy.
+                completed = [
+                    run_id for run_id, process in list(self.run_processes.items())
+                    if process.poll() is not None
+                ]
+
                 # Handle completed runs
-                for gpu_id in completed_gpus:
-                    run_id = self.gpu_allocations.get(gpu_id)
-                    if run_id:
-                        exit_code = self.gpu_processes[gpu_id].returncode
-                        status = "completed" if exit_code == 0 else "failed"
-                        self._release_gpu(gpu_id, run_id, status, exit_code=exit_code)
+                for run_id in completed:
+                    process = self.run_processes.get(run_id)
+                    gpu_id = self.run_gpus.get(run_id)
+                    if process is None or gpu_id is None:
+                        continue
+                    exit_code = process.returncode
+                    status = "completed" if exit_code == 0 else "failed"
+                    self._release_gpu(gpu_id, run_id, status, exit_code=exit_code)
                 
                 # Periodically check for orphaned queued runs
                 orphaned_check_counter += 1
@@ -564,13 +830,18 @@ class GPUQueueManager:
                 
                 self._save_run_metadata(run_id, metadata)
             
-            # Clean up GPU allocation
-            if gpu_id in self.gpu_allocations:
-                del self.gpu_allocations[gpu_id]
-            if gpu_id in self.gpu_processes:
-                del self.gpu_processes[gpu_id]
-            if gpu_id in self.gpu_monitor_threads:
-                del self.gpu_monitor_threads[gpu_id]
+            # Clean up, per run. Only free the card once nothing is left on it.
+            self.run_processes.pop(run_id, None)
+            self.run_gpus.pop(run_id, None)
+            self.run_monitor_threads.pop(run_id, None)
+            remaining = self.gpu_run_ids.get(gpu_id)
+            if remaining is not None:
+                remaining.discard(run_id)
+                if not remaining:
+                    self.gpu_run_ids.pop(gpu_id, None)
+                    self.gpu_allocations.pop(gpu_id, None)
+                elif self.gpu_allocations.get(gpu_id) == run_id:
+                    self.gpu_allocations[gpu_id] = next(iter(remaining))
             if run_id in self.active_runs:
                 del self.active_runs[run_id]
             
@@ -590,78 +861,74 @@ class GPUQueueManager:
         # Use the current Python interpreter, enable unbuffered and faulthandler for early crash diagnostics
         args = [sys.executable, "-u", "-X", "faulthandler", "test_hierarchical.py"]
         
-        # Define argument mapping
-        arg_mapping = {
-            "test": "--test",
-            "visualize": "--visualize",
-            "show": "--show",
-            "search": "--search",
-            "search_split": "--search-split",
-            "quality_steps": "--quality-steps",
-            "symmetry_steps": "--symmetry-steps",
-            "embedding_steps": "--embedding-steps",
-            "search_results": "--search-results",
-            "traversal_type": "--traversal-type",
-            "enable_traversal_switching": "--enable-traversal-switching",
-            "traversal_sequence": "--traversal-sequence",
-            "switch_epochs": "--switch-epochs",
-            "test_all_traversals": "--test-all-traversals",
-            "architectures": "--architectures",
-            "num_epochs": "--num-epochs",
-            "batch_size": "--batch-size",
-            "bias_hop_period": "--bias_hop_period",
-            "seed": "--seed",
-            "quality_threshold": "--quality-threshold",
-            "symmetry_threshold": "--symmetry-threshold",
-            "embedding_threshold": "--embedding-threshold",
-            "cached_nodes": "--use-cached",
-            "cache_nodes": "--cache-nodes",
-            "cached_nodes_count": "--cached-nodes",
-            "fair_train": "--fair-train",
-            "fair_test": "--fair-test",
-            "enable_ivalue_viz": "--enable-ivalue-viz",
-            "viz_track_nodes": "--viz-track-nodes",
-            "viz_sample_size": "--viz-sample-size",
-            "viz_save_dir": "--viz-save-dir",
-            "bias_loss_weight": "--bias_loss_weight",
-            "num_workers": "--num-workers",
-            "val_num_workers": "--val-num-workers",
-            "dqn_model": "--dqn-model",
-            "graph_type": "--graph-type",
-            # GPU override passthrough
-            "gpu_override": "--gpu-override",
-            "gpu_id": "--gpu-id",
-            # Cache full / use full cache
-            "cache_full": "--cache-full",
-            "use_full_cache": "--use-full-cache",
-            # Traversal steps configuration
-            "train_steps": "--train-steps",
-            "val_steps": "--val-steps",
-            "train_steps_equal_nodes": "--train-steps-equal-nodes",
-            "val_steps_equal_nodes": "--val-steps-equal-nodes"
-        }
-        
+        # The argument mapping lives at module level (`ARG_MAPPING`) so callers that
+        # build configs programmatically can validate their keys against it before
+        # launching, instead of discovering a dropped flag in the results.
+        arg_mapping = ARG_MAPPING
+
         # Add arguments based on configuration
         for config_key, arg_name in arg_mapping.items():
             if config_key in config:
                 value = config[config_key]
-                
+
                 # Handle boolean flags
                 if isinstance(value, bool):
                     if value:
                         args.append(arg_name)
+                elif value is None:
+                    # str(None) is "None", which argparse would accept as a literal
+                    # value for any str-typed flag. Omit instead, so the CLI default
+                    # applies.
+                    continue
                 else:
+                    # Every comma-separated CLI flag must be joined here. This was
+                    # special-cased for graph_uncertainty_methods only, so a list
+                    # `architectures` -- which is how the UI and the ensemble launcher
+                    # both pass it -- reached the CLI as the Python repr
+                    # `['resnestdf']` and failed architecture validation.
+                    if isinstance(value, (list, tuple, set)):
+                        value = ",".join(
+                            str(item).strip() for item in value if str(item).strip()
+                        )
                     args.extend([arg_name, str(value)])
-        
-        # Special handling for cache flags
-        if config.get("cached_nodes", False):
-            args.append("--use-cached")
-        
+
+        # `cached_nodes` already maps to --use-cached above, so appending it again
+        # would duplicate the flag. Kept as an explicit no-op note rather than deleted,
+        # because the key's name reads like a count and the mapping is easy to miss.
+
+        # Flags that default to *on*, so only the negation ever needs emitting. These
+        # cannot live in arg_mapping: a False value there emits nothing at all, which
+        # would silently leave the default in place.
+        if config.get("build_val_test_edges", True) is False:
+            args.append("--no-build-val-test-edges")
+
+        if config.get("graph_distance_robust_stats", True) is False:
+            args.append("--no-graph-distance-robust-stats")
+
         # Add run ID if provided
         if run_id:
             args.extend(["--run-id", run_id])
         
         return args
+
+    def _parse_final_test_metrics(self, log_content: str) -> Optional[Dict[str, Any]]:
+        """Parse the final JSON metrics block emitted after final testing."""
+        marker = "--- Final Test Results ---"
+        marker_index = log_content.find(marker)
+        if marker_index == -1:
+            return None
+
+        json_payload = log_content[marker_index + len(marker):].lstrip()
+        if not json_payload:
+            return None
+
+        try:
+            decoder = json.JSONDecoder()
+            metrics, _ = decoder.raw_decode(json_payload)
+            return metrics if isinstance(metrics, dict) else None
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Unable to decode final test metrics JSON: {exc}")
+            return None
     
     def _save_run_metadata(self, run_id: str, metadata: Dict[str, Any]) -> bool:
         """Save run metadata to file."""
@@ -720,11 +987,11 @@ class GPUQueueManager:
         self.running = False
         
         # Stop all running processes
-        for gpu_id, process in self.gpu_processes.items():
+        for run_id, process in list(self.run_processes.items()):
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             except Exception as e:
-                logger.error(f"Error stopping process on GPU {gpu_id}: {e}")
+                logger.error(f"Error stopping process for run {run_id}: {e}")
         
         logger.info("GPU Queue Manager shutdown complete")
     
@@ -753,22 +1020,56 @@ class GPUQueueManager:
                     # Initialize results dict if not present
                     if "results" not in metadata:
                         metadata["results"] = {}
+
+                    parsed_metrics = self._parse_final_test_metrics(log_content)
+                    if parsed_metrics:
+                        accuracy = parsed_metrics.get("accuracy")
+                        if accuracy is not None:
+                            accuracy_value = float(accuracy)
+                            metadata["results"]["final_accuracy"] = accuracy_value / 100.0 if accuracy_value > 1.5 else accuracy_value
+                            logger.info(f"Extracted structured accuracy {metadata['results']['final_accuracy']} for run {run_id}")
+
+                        average_loss = parsed_metrics.get("average_loss", parsed_metrics.get("loss"))
+                        if average_loss is not None:
+                            metadata["results"]["loss"] = float(average_loss)
+
+                        uncertainty_summary = parsed_metrics.get("uncertainty_summary")
+                        if isinstance(uncertainty_summary, dict):
+                            metadata["results"]["uncertainty_summary"] = {
+                                name: float(value)
+                                for name, value in uncertainty_summary.items()
+                                if isinstance(value, (int, float))
+                            }
+
+                        bias_metrics = parsed_metrics.get("bias_metrics")
+                        if isinstance(bias_metrics, dict):
+                            metadata["results"]["bias_metrics"] = bias_metrics
+                            if "race_gender_overall_bias" in bias_metrics:
+                                metadata["results"]["race_gender_bias"] = float(bias_metrics["race_gender_overall_bias"])
+                            per_attribute_bias = bias_metrics.get("per_attribute_bias", {})
+                            if isinstance(per_attribute_bias, dict):
+                                if "Ground Truth Gender" in per_attribute_bias:
+                                    metadata["results"]["gender_bias"] = float(per_attribute_bias["Ground Truth Gender"])
+                                if "Ground Truth Race" in per_attribute_bias:
+                                    metadata["results"]["race_bias"] = float(per_attribute_bias["Ground Truth Race"])
+                            if "average_attribute_bias" in bias_metrics:
+                                metadata["results"]["average_attribute_bias"] = float(bias_metrics["average_attribute_bias"])
                     
                     # Look for final test results
                     if "Final Test Results" in log_content:
                         # Extract accuracy from log using regex
                         import re
                         acc_match = re.search(r'Final Test Results: Accuracy=([0-9.]+)%', log_content)
-                        if acc_match:
+                        if acc_match and "final_accuracy" not in metadata["results"]:
                             # Store as decimal (0.8044) instead of percentage (80.44)
                             metadata["results"]["final_accuracy"] = float(acc_match.group(1)) / 100.0
                             logger.info(f"Extracted accuracy {acc_match.group(1)}% (stored as {float(acc_match.group(1)) / 100.0}) for run {run_id}")
-                        else:
+                        elif "final_accuracy" not in metadata["results"]:
                             logger.warning(f"Could not extract accuracy from log for run {run_id}")
                         
                         # Extract loss if available (from Final Test Results)
                         loss_match = re.search(r'Final Test Results: Accuracy=[0-9.]+%, Avg Loss=([0-9.]+)', log_content)
-                        if loss_match:
+                        if loss_match and "loss" not in metadata["results"]:
                             metadata["results"]["loss"] = float(loss_match.group(1))
                             logger.info(f"Extracted loss {loss_match.group(1)} for run {run_id}")
                         
@@ -792,16 +1093,21 @@ class GPUQueueManager:
                         
                         # Extract architecture and traversal from configuration section
                         config_match = re.search(r'"architectures":\s*"([^"]+)"', log_content)
-                        if config_match:
+                        if config_match and "architecture" not in metadata["results"]:
                             metadata["results"]["architecture"] = config_match.group(1)
                             logger.info(f"Extracted architecture {config_match.group(1)} for run {run_id}")
                         
                         traversal_match = re.search(r'"traversal_type":\s*"([^"]+)"', log_content)
-                        if traversal_match:
+                        if traversal_match and "traversal_type" not in metadata["results"]:
                             metadata["results"]["traversal_type"] = traversal_match.group(1)
                             logger.info(f"Extracted traversal_type {traversal_match.group(1)} for run {run_id}")
                     else:
                         logger.warning(f"No 'Final Test Results' found in log for run {run_id}")
+
+                    config = metadata.get("config", {})
+                    if isinstance(config, dict):
+                        metadata["results"].setdefault("architecture", config.get("architectures"))
+                        metadata["results"].setdefault("traversal_type", config.get("traversal_type"))
                     
                     # Always try to extract bias metrics, regardless of whether accuracy was found
                     # Extract bias metrics using simple regex patterns
@@ -837,13 +1143,13 @@ class GPUQueueManager:
                     
                     if race_gender_match or gender_match or race_match or avg_bias_match:
                         # Extract bias metrics
-                        if race_gender_match:
+                        if race_gender_match and "race_gender_bias" not in metadata["results"]:
                             metadata["results"]["race_gender_bias"] = float(race_gender_match.group(1))
-                        if gender_match:
+                        if gender_match and "gender_bias" not in metadata["results"]:
                             metadata["results"]["gender_bias"] = float(gender_match.group(1))
-                        if race_match:
+                        if race_match and "race_bias" not in metadata["results"]:
                             metadata["results"]["race_bias"] = float(race_match.group(1))
-                        if avg_bias_match:
+                        if avg_bias_match and "average_attribute_bias" not in metadata["results"]:
                             metadata["results"]["average_attribute_bias"] = float(avg_bias_match.group(1))
                         
                         logger.info(f"Extracted bias metrics for run {run_id}: race_gender={metadata['results'].get('race_gender_bias')}, gender={metadata['results'].get('gender_bias')}, race={metadata['results'].get('race_bias')}, avg={metadata['results'].get('average_attribute_bias')}")

@@ -30,6 +30,189 @@ except ImportError:
     from nodes.atrnode import AttributeNode
 
 from .logging_utils import NullHandler # Relative import for NullHandler
+from .cache_keys import EDGE_BUILD_VERSION
+
+
+AI_FACE_ENV_VARS = (
+    "AIFACE_DATA_ROOT",
+    "AI_FACE_DATA_ROOT",
+    "DEEPFAKE_DATA_ROOT",
+    "DATA_ROOT",
+)
+
+
+def _normalize_candidate_path(path):
+    if not path:
+        return None
+    return os.path.abspath(os.path.expanduser(str(path)))
+
+
+def _is_valid_ai_face_root(path):
+    normalized_path = _normalize_candidate_path(path)
+    if not normalized_path or not os.path.isdir(normalized_path):
+        return False
+
+    required_markers = ("train.csv", "val.csv", "test.csv", "data.csv")
+    return any(os.path.exists(os.path.join(normalized_path, marker)) for marker in required_markers)
+
+
+def resolve_ai_face_data_root(explicit_path=None):
+    """Resolve the AI-Face dataset root from args, environment, or common server paths."""
+    candidates = []
+
+    if explicit_path:
+        candidates.append(explicit_path)
+
+    for env_var in AI_FACE_ENV_VARS:
+        env_value = os.environ.get(env_var)
+        if env_value:
+            candidates.append(env_value)
+
+    cwd = os.getcwd()
+    candidates.extend([
+        # Current location on the shared training server. Listed first among the
+        # hardcoded fallbacks because the previous default
+        # (/home/brg2890/major/datasets/ai-face) no longer exists.
+        "/shared/datasets/ai-face/ai-face",
+        "/shared/datasets/ai-face",
+        "/home/brg2890/major/datasets/ai-face",
+        os.path.join(os.path.expanduser("~"), "major", "datasets", "ai-face"),
+        os.path.join(os.path.expanduser("~"), "datasets", "ai-face"),
+        os.path.join(os.path.expanduser("~"), "data", "ai-face"),
+        "/datasets/ai-face",
+        "/data/ai-face",
+        os.path.join(cwd, "ai-face"),
+        os.path.join(cwd, "datasets", "ai-face"),
+        os.path.join(cwd, "data", "ai-face"),
+    ])
+
+    checked_paths = []
+    seen = set()
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_candidate_path(candidate)
+        if not normalized_candidate or normalized_candidate in seen:
+            continue
+
+        seen.add(normalized_candidate)
+        checked_paths.append(normalized_candidate)
+
+        if _is_valid_ai_face_root(normalized_candidate):
+            print(f"Resolved AI-Face data root: {normalized_candidate}")
+            return normalized_candidate
+
+    checked_paths_str = "\n".join(f"  - {path}" for path in checked_paths) if checked_paths else "  - <no candidates checked>"
+    raise FileNotFoundError(
+        "Unable to locate a valid AI-Face dataset root.\n"
+        "Set `--data-root /path/to/ai-face` or export one of: "
+        f"{', '.join(AI_FACE_ENV_VARS)}.\n"
+        "Checked paths:\n"
+        f"{checked_paths_str}"
+    )
+
+
+def _apply_label_balancing(args, train_nodes, val_nodes, test_nodes):
+    """Apply `--balance-labels` to the splits it names. Returns the three lists.
+
+    ``train`` balances only the training set: the model then learns from a 50/50 prior
+    while validation and test keep the population's real distribution, which is usually
+    what you want -- the reported numbers stay on the data as it is.
+
+    ``all`` balances validation and test as well. That makes accuracy at a 0.5 threshold
+    directly interpretable, at the cost of no longer measuring the deployed distribution,
+    and it changes which samples are scored -- so a baseline built with it cannot be
+    compared against one built without.
+    """
+    mode = getattr(args, 'balance_labels', 'none')
+    if mode == 'none':
+        return train_nodes, val_nodes, test_nodes
+
+    # `cached_nodes` is the per-split size budget the rest of the pipeline uses.
+    target = getattr(args, 'cached_nodes', None)
+
+    print(f"Applying label balancing (--balance-labels {mode})...")
+    print("  train:")
+    train_nodes = balance_nodes_by_label(train_nodes, target_num_nodes=target)
+    if mode == 'all':
+        print("  val:")
+        val_nodes = balance_nodes_by_label(val_nodes, target_num_nodes=target)
+        print("  test:")
+        test_nodes = balance_nodes_by_label(test_nodes, target_num_nodes=target)
+    return train_nodes, val_nodes, test_nodes
+
+
+def balance_nodes_by_label(nodes, target_num_nodes=None):
+    """Balance a node list across the real/fake label. Returns the balanced list.
+
+    Distinct from `balance_nodes_by_subgroup`, which equalizes *demographic* subgroups
+    (race x gender) and leaves the class prior untouched. The corrected AI-Face split is
+    about 87% fake, and at that prior a model minimizes BCE substantially by pushing its
+    output bias up: it ends up emitting one class for every sample, scoring the prior as
+    its accuracy, with balanced accuracy pinned at exactly 0.5. Equalizing the label is
+    the direct fix -- the prior log-odds a sample has to overcome drops from about +1.95
+    to 0, so a 0.5 decision threshold becomes meaningful again.
+
+    The cost is data: only ~13% of the corpus is real, so a label-balanced list is roughly
+    twice the real count and most fakes are dropped. That is a deliberate trade, which is
+    why it is opt-in.
+
+    `target_num_nodes` caps the result; without it the list is as large as perfect balance
+    allows. Either way each class contributes the same count.
+
+    The seed is content-addressed from the node ids, matching `balance_nodes_by_subgroup`:
+    the selection then depends only on *which* nodes were offered, never on how much
+    randomness anything upstream happened to consume.
+    """
+    import hashlib
+    import random as rand_module
+
+    if not nodes:
+        print("Warning: cannot label-balance an empty node list. Returning empty list.")
+        return []
+
+    by_label = defaultdict(list)
+    for node in nodes:
+        try:
+            by_label[int(node.get_label())].append(node)
+        except Exception as error:
+            print(f"Warning: could not read label for node "
+                  f"{getattr(node, 'node_id', 'N/A')}: {error}. Excluding it.")
+
+    if len(by_label) < 2:
+        present = sorted(by_label)
+        raise ValueError(
+            f"cannot label-balance: only class {present} is present among "
+            f"{len(nodes)} node(s). A single-class split cannot be balanced, and "
+            f"training on it would be meaningless."
+        )
+
+    node_ids = sorted(node.node_id for node in nodes)
+    balance_seed = int(
+        hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8], 16
+    ) % (2 ** 32)
+    balance_rng = rand_module.Random(balance_seed)
+
+    smallest = min(len(group) for group in by_label.values())
+    per_class = smallest
+    if target_num_nodes:
+        per_class = min(per_class, max(1, int(target_num_nodes) // len(by_label)))
+
+    balanced = []
+    for label in sorted(by_label):
+        group = sorted(by_label[label], key=lambda node: node.node_id)
+        balanced.extend(balance_rng.sample(group, per_class))
+
+    # Shuffled so the two classes are interleaved. Left in label order, any consumer that
+    # takes a prefix -- a step-limited traversal, a truncated cache -- would see one class.
+    balance_rng.shuffle(balanced)
+
+    counts = {label: len(group) for label, group in sorted(by_label.items())}
+    print(f"Label balancing: {counts} -> {per_class} per class "
+          f"({len(balanced)} total, from {len(nodes)})")
+    if target_num_nodes and len(balanced) < int(target_num_nodes):
+        print(f"  NOTE: {len(balanced)} < requested {int(target_num_nodes)}; the minority "
+              f"class has only {smallest} node(s), which caps perfect balance.")
+    return balanced
 
 
 def balance_nodes_by_subgroup(nodes, target_num_nodes, attributes_to_balance=['race', 'gender']):
@@ -451,8 +634,46 @@ def plot_subgroup_i_values(history, output_filename):
         import traceback # Redundant if already imported at top, but safe
         traceback.print_exc()
 
+def _apply_configured_holdout(args, resolved_data_root, train_nodes, val_nodes,
+                              test_nodes):
+    """Apply ``--holdout`` if one is configured. Returns the three node lists.
+
+    Records the resulting stats on ``args.holdout_stats`` so the run manifest can carry
+    the class-prior shift -- the number that makes the paired ID-only control necessary
+    rather than optional.
+    """
+    from evaluation.uq.holdouts import apply_holdout, get_holdout
+
+    spec = get_holdout(getattr(args, 'holdout', None))
+    if spec is None:
+        args.holdout_stats = {"holdout_id": None}
+        return train_nodes, val_nodes, test_nodes
+
+    print(f"\nApplying holdout: {spec.describe()}")
+    train_nodes, val_nodes, test_nodes, stats = apply_holdout(
+        train_nodes, val_nodes, test_nodes, spec, resolved_data_root
+    )
+    args.holdout_stats = stats
+    return train_nodes, val_nodes, test_nodes
+
+
 def load_and_prepare_data_splits(args, data_root):
     """Loads, splits, caches, and balances node data based on arguments."""
+    resolved_data_root = resolve_ai_face_data_root(getattr(args, 'data_root', None) if args is not None else data_root)
+
+    if args is None:
+        class DummyArgs:
+            use_cached = False
+            cache_file = "node_cache/cached_nodes.pkl"
+            cached_nodes = 1000
+            dynamic_cache_detection = False
+            fair_train = False
+            fair_test = False
+            cache_nodes = False
+            data_root = resolved_data_root
+
+        args = DummyArgs()
+
     train_nodes, val_nodes, test_nodes = None, None, None
     train_nodes_full, val_nodes_full, test_nodes_full = None, None, None
 
@@ -460,6 +681,7 @@ def load_and_prepare_data_splits(args, data_root):
 
     # Debug output for cache loading
     print(f"DEBUG: load_and_prepare_data_splits called with:")
+    print(f"  resolved_data_root: {resolved_data_root}")
     print(f"  args.use_cached: {getattr(args, 'use_cached', 'Not set')}")
     print(f"  args.cache_file: {getattr(args, 'cache_file', 'Not set')}")
     print(f"  args.cached_nodes: {getattr(args, 'cached_nodes', 'Not set')}")
@@ -522,12 +744,32 @@ def load_and_prepare_data_splits(args, data_root):
             train_nodes, val_nodes, test_nodes = None, None, None  # Reset
         else:
             print("Successfully loaded nodes from cache.")
+
+            # The holdout must be applied on this branch too. The early return below
+            # bypasses the direct-load path entirely, and cached runs are how the
+            # benchmark is actually run -- so filtering only there would silently give
+            # every cached holdout run the unfiltered population.
+            train_nodes, val_nodes, test_nodes = _apply_configured_holdout(
+                args, resolved_data_root, train_nodes, val_nodes, test_nodes
+            )
+
             # If loaded from cache, full versions might not be loaded unless cache format changes or they are loaded separately.
             # For now, assume loaded lists are sufficient. Re-caching might not save original full sets.
             train_nodes_full = train_nodes # Placeholder if full not separately cached/loaded
             val_nodes_full = val_nodes   # Placeholder
             test_nodes_full = test_nodes  # Placeholder
-            
+
+            # Label balancing on the cached branch too. `--use-cached` is how the sweep and
+            # the benchmark actually run, so applying it only on the direct-load path below
+            # would mean the flag silently did nothing for every real run -- the same shape
+            # of bug as the holdout filtering above.
+            train_nodes, val_nodes, test_nodes = _apply_label_balancing(
+                args, train_nodes, val_nodes, test_nodes
+            )
+            train_nodes_full, val_nodes_full, test_nodes_full = (
+                train_nodes, val_nodes, test_nodes
+            )
+
             # Return early when cache loading succeeds to prevent unnecessary cache regeneration
             node_loading_time = time.time() - node_loading_start
             print(f"Node loading/preparation (from cache) time: {node_loading_time:.2f} seconds")
@@ -537,7 +779,7 @@ def load_and_prepare_data_splits(args, data_root):
         print("Loading nodes directly from dataset...")
         # Initialize the AIFaceDataset with correct parameters
         # Using imported AIFaceDataset, ImageFileData, AttributeNode directly
-        dataset = AIFaceDataset(data_root, ImageFileData, {}, AttributeNode, {"threshold": args.atr_threshold if hasattr(args, 'atr_threshold') else 2})
+        dataset = AIFaceDataset(resolved_data_root, ImageFileData, {}, AttributeNode, {"threshold": args.atr_threshold if hasattr(args, 'atr_threshold') else 2})
         
         print("Loading all nodes from dataset object...")
         all_nodes = dataset.load()
@@ -548,6 +790,14 @@ def load_and_prepare_data_splits(args, data_root):
         test_nodes_full = [node for node in all_nodes if node.split == 'test']
         print(f"  Full Train: {len(train_nodes_full)}, Full Val: {len(val_nodes_full)}, Full Test: {len(test_nodes_full)}")
 
+        # Between split separation and caching, and before balancing. Before caching,
+        # or a later --use-cached run reads back the unfiltered population; before
+        # balancing, or the holdout removes an unpredictable fraction of an
+        # already-fixed-size set, so the graph size would depend on the holdout.
+        train_nodes_full, val_nodes_full, test_nodes_full = _apply_configured_holdout(
+            args, resolved_data_root, train_nodes_full, val_nodes_full, test_nodes_full
+        )
+
         if args.cache_nodes:
             print(f"Caching full node lists to {args.cache_file}...")
             save_cached_nodes(train_nodes_full, val_nodes_full, test_nodes_full, args.cache_file, target_num_nodes=args.cached_nodes)
@@ -557,6 +807,10 @@ def load_and_prepare_data_splits(args, data_root):
         val_nodes = balance_nodes_by_subgroup(val_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else list(val_nodes_full)   # Ensure list copy
         test_nodes = balance_nodes_by_subgroup(test_nodes_full, target_num_nodes=args.cached_nodes) if args.fair_test else list(test_nodes_full) # Ensure list copy
         
+        train_nodes, val_nodes, test_nodes = _apply_label_balancing(
+            args, train_nodes, val_nodes, test_nodes
+        )
+
         print(f"  Final Train Nodes used for graph: {len(train_nodes)} ({'Balanced' if args.fair_train else 'Full from source'}) ({'Copy' if not args.fair_train else 'Balanced'}) ")
         print(f"  Final Val Nodes used for graph: {len(val_nodes)} ({'Balanced' if args.fair_test else 'Full from source'}) ({'Copy' if not args.fair_test else 'Balanced'}) ")
         print(f"  Final Test Nodes used for graph: {len(test_nodes)} ({'Balanced' if args.fair_test else 'Full from source'}) ({'Copy' if not args.fair_test else 'Balanced'}) ")
@@ -669,15 +923,31 @@ def check_graph_cache_compatibility(config, data_root, graph_cache_dir="graph_ca
 
         exact_match_path = None
         for pat in patterns:
-            found = glob.glob(pat)
+            # Sorted: glob order is filesystem-dependent, and this wildcard spans the
+            # node hash, so `found[0]` could otherwise pick an arbitrary cache file
+            # from a different node set. This prediction is display-only -- the
+            # pipeline uses the exact key from test_helpers.cache_keys -- but an
+            # unstable answer here makes the UI's cache report untrustworthy.
+            found = sorted(glob.glob(pat))
             if found:
                 exact_match_path = found[0]
+                if len(found) > 1:
+                    print(
+                        f"Note: {len(found)} cached graphs match the {split_name} pattern; "
+                        f"reporting {os.path.basename(exact_match_path)}. The pipeline "
+                        f"selects by exact key, which may differ."
+                    )
                 break
         if exact_match_path:
             cache_info[split_name]['exact_match'] = exact_match_path
 
-        # Store expected filename pattern (without hash) for UI display
-        cache_info[split_name]['expected_filename'] = f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_[hash]_edges.csv.gz"
+        # Store expected filename pattern (without the content-dependent parts) for UI display
+        cache_info[split_name]['expected_filename'] = (
+            f"{dataset_name}_{split_name}_{graph_type}_{suffix}_nodes_{node_count}"
+            f"_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}"
+            f"_hash[nodes]_mode[edge_policy]_seed[seed]_shape[graph_params]_ho[holdout]"
+            f"_v{EDGE_BUILD_VERSION}_edges.csv.gz"
+        )
     
     return cache_info
 
@@ -698,16 +968,42 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
     for cache_file in cache_files:
         filename = os.path.basename(cache_file)
         
-        # Parse filename to extract configuration; only CSV.gz supported now
-        # ai-face_train_clustered_full_nodes_827339_q0.500_s0.300_e0.700_hashHASH_edges.csv.gz
-        pattern = r"(.+)_(train|val|test)_(clustered|nonclustered|clustered_subclustered|nonclustered_subclustered)_(balanced|full)_nodes_(\d+)_q([\d.]+)_s([\d.]+)_e([\d.]+)_hash([a-f0-9]+)_edges\.csv\.gz$"
+        # Parse filename to extract configuration; only CSV.gz supported now.
+        # The graph_type group is an open `[a-z_]+` rather than a fixed alternation:
+        # the previous hardcoded list would silently fail to parse any newly added
+        # graph type, making its caches invisible. The trailing groups (seed, shaping
+        # digest, holdout, version) are optional so pre-v2 filenames still parse and
+        # can be reported as stale.
+        pattern = (
+            r"(?P<dataset>.+)_(?P<split>train|val|test)_(?P<graph_type>[a-z_]+)"
+            r"_(?P<balancing>balanced|full)_nodes_(?P<node_count>\d+)"
+            r"_q(?P<q>[\d.]+)_s(?P<s>[\d.]+)_e(?P<e>[\d.]+)"
+            r"_hash(?P<node_hash>[a-f0-9]+)_mode(?P<edge_policy>full_edges|node_only)"
+            r"(?:_seed(?P<seed>NA|\d+))?"
+            r"(?:_shape(?P<shape>[a-f0-9]+))?"
+            # Non-greedy: a greedy holdout group swallows the trailing `_v<n>`
+            # (e.g. "honone_v2" -> holdout="none_v2", version=None), which would
+            # make every current cache look like a stale version-1 file.
+            r"(?:_ho(?P<holdout>[A-Za-z0-9_]+?))?"
+            r"(?:_v(?P<version>\d+))?"
+            r"_edges\.csv\.gz$"
+        )
         match = re.match(pattern, filename)
-        
+
         if match:
-            dataset, split, graph_type, balancing, node_count, q_thresh, s_thresh, e_thresh, node_hash = match.groups()
-            
+            parts = match.groupdict()
+            dataset = parts['dataset']
+            split = parts['split']
+            graph_type = parts['graph_type']
+            balancing = parts['balancing']
+            node_count = parts['node_count']
+            q_thresh, s_thresh, e_thresh = parts['q'], parts['s'], parts['e']
+            node_hash = parts['node_hash']
+            edge_policy = parts['edge_policy']
+            cache_version = int(parts['version']) if parts['version'] else 1
+
             config_key = f"{dataset}_{split}_{graph_type}_{balancing}_{node_count}_q{q_thresh}_s{s_thresh}_e{e_thresh}"
-            
+
             if config_key not in cache_analysis:
                 cache_analysis[config_key] = {
                     'dataset': dataset,
@@ -718,6 +1014,12 @@ def find_existing_graph_caches(graph_cache_dir="graph_cache"):
                     'quality_threshold': float(q_thresh),
                     'symmetry_threshold': float(s_thresh),
                     'embedding_threshold': float(e_thresh),
+                    'edge_policy': edge_policy,
+                    'seed': parts['seed'],
+                    'graph_shape_hash': parts['shape'],
+                    'holdout': parts['holdout'],
+                    'cache_version': cache_version,
+                    'stale': cache_version < EDGE_BUILD_VERSION,
                     'cache_files': []
                 }
             

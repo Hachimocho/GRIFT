@@ -191,8 +191,32 @@ utils/shape_predictor_68_face_landmarks.dat
 *.pkl
 *.pth
 run_outputs
+# These were written as `web_ui/web_ui/...`, a path that does not exist, so run logs
+# and configs have never actually been ignored. Both spellings are listed: the doubled
+# one in case some deployment really does nest that way.
+web_ui/configs/*
+web_ui/runs/*
 web_ui/web_ui/configs/*
 web_ui/web_ui/runs/*
+# Node caches: the pickle is matched by *.pkl above, but its manifest sidecar is not,
+# and a manifest without its cache is worse than neither -- it names absolute paths
+# and node counts for a file that is not there.
+node_cache/
 @quanty_vault
 outdated/
 graph_cache/
+# --- Test fixtures -----------------------------------------------------------
+# `*.csv` is blanket-ignored above (line ~188), which would silently swallow any
+# committed test fixture. Negate it for the tests tree so fixture data can be
+# version-controlled.
+!tests/**/*.csv
+!tests/**/*.csv.gz
+!tests/fixtures/**
+!evaluation/uq/data/**
+
+# --- Benchmark artifacts -----------------------------------------------------
+# Record tables, manifests, and reports are reproducible outputs, not sources.
+uq_out/
+uq_manifests/
+uq_runs/
+junit*.xml

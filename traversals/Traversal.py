@@ -9,7 +9,27 @@ class Traversal:
     def __init__(self):
         """Initialize base traversal."""
         self.trainer = None  # Optional trainer reference
-    
+
+    @property
+    def rng(self):
+        """This traversal's private RNG stream, derived from its class name.
+
+        Every traversal previously drew from the process-global ``random`` module,
+        which made their decisions depend on how much randomness anything else
+        happened to consume first -- so adding a log line that called
+        ``random.random()``, or changing the graph size (which changes how many
+        I-value fallback draws occur), silently changed which nodes were visited.
+
+        A lazy property rather than a constructor assignment, because the concrete
+        traversals do not consistently call ``super().__init__()``.
+        """
+        stream = getattr(self, '_rng', None)
+        if stream is None:
+            from test_helpers.determinism import component_rng
+            stream = component_rng(f"traversal.{type(self).__name__}")
+            self._rng = stream
+        return stream
+
     def __iter__(self):
         """Make traversal iterable."""
         return self

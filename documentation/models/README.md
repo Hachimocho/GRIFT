@@ -22,9 +22,6 @@ Deep Q-Network for I-value prediction. Predicts information values for nodes bas
 
 **Documentation:** [DQNModel.md](DQNModel.md)
 
-### FairnessCNNModel
-CNN model with fairness-aware training capabilities.
-
 ### EnhancedDQNModels
 Extended DQN variants with residual connections and other improvements.
 

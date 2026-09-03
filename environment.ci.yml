@@ -1,0 +1,47 @@
+# Minimal CPU environment for the fast test tier.
+#
+# Deliberately hand-written rather than derived from environment.yml. That file is
+# 340 build-pinned packages against CUDA 11.8, and sanitizing it for a CPU runner
+# means stripping the `name:`/`prefix:` entries (which point at a path that no
+# longer exists), removing the pytorch/nvidia channels, dropping pytorch-cuda,
+# cuda-*, torchtriton, pytorch-mutex, libcu*, libnv*, and unpinning the torch
+# packages. That sed pipeline is brittle and has broken before.
+#
+# The fast tier needs none of it: no GPU, no dataset, no network. A drift-detection
+# CI job still diffs this against environment.yml so divergence gets noticed.
+name: grift-ci
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  # CPU-only torch. `cpuonly` is a `pytorch`-channel metapackage and does not exist
+  # on conda-forge (this environment's only channel) -- with it listed, `mamba env
+  # create` cannot solve at all ("cpuonly =* * does not exist"), so the entire fast
+  # CI job never got past environment setup. conda-forge's own convention is a build
+  # string pin instead: `pytorch=*=cpu*` selects the CPU build directly.
+  - pytorch=*=cpu*
+  - torchvision=*=cpu*
+  # numpy<2: the repo pins 1.26.4 and several modules assume that ABI.
+  - numpy<2
+  - pandas
+  - scikit-learn
+  - scipy
+  - networkx
+  - python-louvain          # absent from the training env, so Louvain is a no-op there
+  - opencv
+  - scikit-image            # models/Model.py imports skimage.io at module load time,
+                             # so every model subclass import chain needs it -- absent
+                             # here, it broke collection of every test that touches
+                             # models/, not just ones that use it directly
+  - matplotlib-base         # -base: no Qt, so no display needed
+  - seaborn                 # trainers/BiasMetricsTracker.py imports it at module
+                             # level, same failure shape as scikit-image above
+  - pillow
+  - tqdm
+  - dill
+  - psutil
+  - torchmetrics
+  - pyyaml
+  - pytest
+  - pytest-cov
+  - pytest-timeout

@@ -1,0 +1,54 @@
+{
+  "paper": {
+    "description": "The 7 selected methods for full-dataset training. Run twice: as-is for the natural-prior arm, and with --set balance_labels=train for the balanced arm.",
+    "reference": {
+      "architectures": [
+        "resnestdf"
+      ],
+      "traversal_type": "i-value",
+      "graph_type": "nonclustered",
+      "uncertainty_head": "none",
+      "graph_manager": "none",
+      "reduction_enabled": false,
+      "seed": 42,
+      "batch_size": 32,
+      "num_epochs": 30,
+      "cached_nodes": true,
+      "cache_file": "node_cache/cached_nodes.pkl",
+      "cached_nodes_count": 5000,
+      "train_steps": 5000,
+      "val_steps": 2500,
+      "num_workers": 4,
+      "val_num_workers": 4,
+      "balance_labels": "none"
+    },
+    "axes": [
+      "method"
+    ],
+    "extra_axes": {
+      "method": {
+        "control_random": {
+          "traversal_type": "random"
+        },
+        "comprehensive": {
+          "traversal_type": "comprehensive"
+        },
+        "ivalue_clustered": {
+          "graph_type": "clustered"
+        },
+        "head_batchensemble": {
+          "uncertainty_head": "batchensemble"
+        },
+        "head_evidential": {
+          "uncertainty_head": "evidential"
+        },
+        "updater_reduce_max_ival": {
+          "reduction_enabled": true,
+          "reduction_strategy": "max_ival",
+          "reduction_percentage": 10.0,
+          "reduction_interval": "end_of_epoch"
+        }
+      }
+    }
+  }
+}

@@ -13,10 +13,8 @@ from trainers.Trainer import Trainer
 from trainers.capabilities.CapabilityManager import CapabilityManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.RandomTraversal import RandomTraversal
+from test_helpers.args_utils import canonical_traversal_type
 from traversals.IValueTraversal import IValueTraversal
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop
-from traversals.IValueTraversal import IValueTraversalSubcluster
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHopSubcluster
 
 
 class AdaptiveTrainer(Trainer):
@@ -38,10 +36,66 @@ class AdaptiveTrainer(Trainer):
         self.attribute_metadata = attribute_metadata
         # Selected DQN model type for I-value prediction (e.g., 'basic', 'residual', ...)
         self.dqn_model_type = kwargs.get('dqn_model_type', 'basic')
+        self.preprocess_workers = kwargs.get('preprocess_workers', None)
+        # I-value design knobs. Read off the trainer by DQNCapability and the traversals, so
+        # one place carries them and every capability sees the same values.
+        self.ivalue_reward = kwargs.get('ivalue_reward', None)
+        self.ivalue_state_features = kwargs.get('ivalue_state_features', False)
+        self.ivalue_candidate_pool = kwargs.get('ivalue_candidate_pool', 0)
+        self.ivalue_selection_mode = kwargs.get('ivalue_selection_mode', None)
+        self.ivalue_selection_band = kwargs.get('ivalue_selection_band', None)
+        self.comprehensive_cumulative = kwargs.get('comprehensive_cumulative', False)
+        self.collect_ivalue_diagnostic = kwargs.get('collect_ivalue_diagnostic', False)
+        self.dqn_fixes = kwargs.get('dqn_fixes', False)
+        self.dqn_objective = kwargs.get('dqn_objective', None)
+        self.dqn_buffer_size = kwargs.get('dqn_buffer_size', None)
+        self.ivalue_unseen_prior = kwargs.get('ivalue_unseen_prior', None)
+        self.selection_diagnostic = kwargs.get('selection_diagnostic', None)
+        # Read by BasicTrainingCapability's __init__, so it must exist before
+        # CapabilityManager below builds it -- the same ordering trap that silently reverted
+        # the matched-budget guarantee once already. Every knob a capability reads is
+        # therefore assigned here, above the construction, and nowhere else.
+        self.ivalue_loss_weight = kwargs.get('ivalue_loss_weight', None)
+        self.ivalue_weight_clip = kwargs.get('ivalue_weight_clip', None)
+        self.ivalue_ban_negative_gain = kwargs.get('ivalue_ban_negative_gain', 0)
+        self.ivalue_ban_max_fraction = kwargs.get('ivalue_ban_max_fraction', None)
+        # Group targeting, fed from `get_i_value` below -- the same funnel
+        # `PerformanceGraphManager.track_performance` uses, so it costs no extra passes.
+        from trainers.capabilities.group_targeting import GroupTargeting
+        self.group_targeting = GroupTargeting(
+            top_groups=kwargs.get('ivalue_group_top', 3) or 3,
+            enabled=bool(kwargs.get('ivalue_group_targeting', False)),
+        )
+        # Fairness tracking, from *realised* outcomes rather than predicted I-value --
+        # see trainers/capabilities/group_fairness.py. One tracker serves both roles:
+        # --ivalue-fairness-selection swaps it in for `group_targeting` on the traversal
+        # (the two share an `is_targeted` interface by design), and
+        # --ivalue-fairness-weight multiplies its `multiplier()` into the loss weight via
+        # `LossWeighter.apply`'s `extra_weights`. Built whenever either flag is set, since
+        # both consume the same tracker.
+        from trainers.capabilities.group_fairness import GroupPerformanceTracker
+        self.ivalue_fairness_weight = bool(kwargs.get('ivalue_fairness_weight', False))
+        self.ivalue_fairness_selection = bool(kwargs.get('ivalue_fairness_selection', False))
+        self.fairness_tracker = GroupPerformanceTracker(
+            target_groups=kwargs.get('ivalue_group_top', 3) or 3,
+            enabled=self.ivalue_fairness_weight or self.ivalue_fairness_selection,
+        )
         print(f"AdaptiveTrainer: DQN model type set to '{self.dqn_model_type}'")
         
         # Initialize capability components
+        # BEFORE CapabilityManager: it constructs `BasicTrainingCapability(trainer)`
+        # eagerly, and that capability reads this attribute in its own __init__. Setting it
+        # afterwards leaves the basic path on its private 5000 default while the DQN path --
+        # built lazily by `configure_for_traversal` -- sees the real value, which is exactly
+        # the 2x budget asymmetry that made the first Claim 1 sweep uninterpretable.
+        # A single assignment, before any reader exists, is the only ordering that is safe.
+        self.max_nodes_per_epoch = kwargs.get('max_nodes_per_epoch') or 10000
+
         self.capabilities = CapabilityManager(self)
+        if (self.ivalue_loss_weight or 'none') != 'none':
+            self.capabilities.require_dqn(
+                "--ivalue-loss-weight needs an I-value per sample under any traversal"
+            )
         
         # Training state
         self.current_traversal = None
@@ -49,7 +103,6 @@ class AdaptiveTrainer(Trainer):
         
         # Training settings
         self.batch_size = 32
-        self.max_nodes_per_epoch = 10000
         self.scaler = GradScaler()
         
         # Setup logging
@@ -147,7 +200,11 @@ class AdaptiveTrainer(Trainer):
         new_traversal = self._create_traversal(new_traversal_type, **traversal_kwargs)
         
         # Transfer state if possible
-        if self.current_traversal and hasattr(self.current_traversal, 'get_state'):
+        # `is not None`, not truthiness: a truthiness test calls __len__, which the
+        # Random* traversals do not implement (Traversal.__len__ raises), so every
+        # run using one died here. For the traversals that *do* implement it, a
+        # zero-length traversal would have been silently treated as absent.
+        if self.current_traversal is not None and hasattr(self.current_traversal, 'get_state'):
             try:
                 state = self.current_traversal.get_state()
                 if hasattr(new_traversal, 'set_state'):
@@ -160,44 +217,79 @@ class AdaptiveTrainer(Trainer):
         self.set_traversal(new_traversal, new_traversal_type)
         
     def _create_traversal(self, traversal_type, **kwargs):
+        """Factory for traversal instances.
+
+        The I-value traversal is one class now, and it picks its own walk from the graph --
+        this method used to fan `"i-value"` out across four subclasses on `graph_type` and a
+        `subclusters` probe, duplicating a decision the traversal is better placed to make.
+        The two subcluster subclasses are gone entirely.
         """
-        Factory method to create traversal instances.
-        Automatically selects the correct I-value traversal variant based on graph type and subclustering.
-        """
+        from trainers.capabilities.group_fairness import pool_targeting_for
+
         graph = kwargs.get('graph', self.graphmanager.get_graph())
         num_pointers = kwargs.get('num_pointers', 1)
         num_steps = kwargs.get('num_steps', 1000)
-        # Try to infer graph_type from graph, else use kwarg, else default to clustered
-        graph_type = getattr(graph, 'graph_type', None) or kwargs.get('graph_type', None) or 'clustered'
-        # Detect subclustering: True if graph.subclusters exists and is not None, or if subclustering kwarg is set
-        subclustering = (hasattr(graph, 'subclusters') and getattr(graph, 'subclusters', None) is not None) or kwargs.get('subclustering', False)
 
-        # Map generic I-value traversal to the correct variant
+        traversal_type = canonical_traversal_type(traversal_type, quiet=True)
         if traversal_type == "i-value":
-            if graph_type == "clustered" and subclustering:
-                bias_hop_period = kwargs.get('bias_hop_period', 2)
-                return IValueTraversalClusterHopSubcluster(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
-            elif graph_type == "clustered":
-                bias_hop_period = kwargs.get('bias_hop_period', 2)
-                return IValueTraversalClusterHop(graph, num_pointers, num_steps, trainer=self, bias_hop_period=bias_hop_period)
-            elif subclustering:
-                return IValueTraversalSubcluster(graph, num_pointers, num_steps, trainer=self)
-            else:
-                return IValueTraversal(graph, num_pointers, num_steps, trainer=self)
+            return IValueTraversal(
+                graph, num_pointers, num_steps, trainer=self,
+                bias_hop_period=kwargs.get('bias_hop_period', 2),
+                # An explicit --graph-type from the caller wins over the graph's own
+                # attribute, which a cached graph shell may not carry.
+                cluster_hop=(
+                    str(kwargs['graph_type']).startswith('clustered')
+                    if kwargs.get('graph_type') else None
+                ),
+                candidate_pool=getattr(self, 'ivalue_candidate_pool', 0),
+                selection_mode=getattr(self, 'ivalue_selection_mode', None) or 'max',
+                selection_band=getattr(self, 'ivalue_selection_band', None) or (0.4, 0.7),
+                group_targeting=pool_targeting_for(self),
+            )
         elif traversal_type == "comprehensive":
-            return ComprehensiveTraversal(graph, num_pointers, num_steps)
+            return ComprehensiveTraversal(
+                graph, num_pointers, num_steps,
+                cumulative=getattr(self, 'comprehensive_cumulative', False),
+            )
         elif traversal_type == "random":
             return RandomTraversal(graph, num_pointers, num_steps)
         else:
             raise ValueError(f"Unknown traversal type: {traversal_type}")
-        
+
     def get_i_value(self, node, model_idx=0):
-        """Get I-value using appropriate capability."""
-        return self.capabilities.get_i_value(node, model_idx)
+        """Get I-value using appropriate capability, recording it for the graph manager.
+
+        This is the single funnel every predicted I-value passes through -- the traversals,
+        the reduction manager, and the visualizers all call it -- so it is the one place a
+        graph updater can observe the values training already computes without paying for a
+        second DQN forward pass per node.
+
+        That matters because the alternative was a separate sampling pass, which at a
+        million nodes is a million forward passes *per update*. `PerformanceGraphManager`
+        documented this as its input, and until this hook existed nothing called
+        `track_performance` at all: it logged "0 node(s) measured", never reached the
+        minimum for a quantile, and pruned nothing -- so three sweep cells came back with
+        byte-identical record tables.
+
+        A manager with no `track_performance` (the default `NoGraphManager`) is untouched.
+        """
+        value = self.capabilities.get_i_value(node, model_idx)
+        if getattr(self, 'group_targeting', None) is not None:
+            self.group_targeting.observe(node, value)
+        tracker = getattr(self.graphmanager, 'track_performance', None)
+        if tracker is not None:
+            try:
+                tracker(node, value)
+            except Exception as error:
+                # Bookkeeping must never break training.
+                print(f"Warning: could not record I-value for "
+                      f"{getattr(node, 'node_id', '?')}: {error}")
+        return value
         
     def train(self, epoch=None):
         """Train using current traversal method."""
-        if not self.current_traversal:
+        # See _switch_traversal: truthiness on a traversal invokes __len__.
+        if self.current_traversal is None:
             raise ValueError("No traversal method set")
             
         return self.capabilities.train_with_traversal(self.current_traversal, epoch)
@@ -241,7 +333,7 @@ class AdaptiveTrainer(Trainer):
     
     def get_current_traversal_info(self):
         """Get information about the current traversal configuration."""
-        if not self.current_traversal:
+        if self.current_traversal is None:
             return "No traversal set"
         
         info = {

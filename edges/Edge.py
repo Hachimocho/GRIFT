@@ -17,13 +17,29 @@ class Edge():
         self.x = x
         self.traversal_weight = traversal_weight
         
+    def _invalidate_endpoints(self, *nodes):
+        """Drop cached neighbour lists on every node this edge's change can affect.
+
+        Re-pointing an edge changes what its *other* endpoint sees as a neighbour without
+        touching either node's `edges` list, so the identity-and-length validation in
+        `Node.get_adjacent_nodes` cannot notice it. This is the one path that has to say
+        so explicitly.
+        """
+        for node in nodes:
+            invalidate = getattr(node, 'invalidate_adjacency_cache', None)
+            if invalidate is not None:
+                invalidate()
+
     def set_node1(self, node):
+        self._invalidate_endpoints(self.node1, self.node2, node)
         self.node1 = node
-        
+
     def set_node2(self, node):
+        self._invalidate_endpoints(self.node1, self.node2, node)
         self.node2 = node
-        
+
     def set_nodes(self, node1, node2):
+        self._invalidate_endpoints(self.node1, self.node2, node1, node2)
         self.node1 = node1
         self.node2 = node2
         

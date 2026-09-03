@@ -1,4 +1,4 @@
-name: /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary
+name: Primary
 channels:
   - pytorch
   - nvidia
@@ -259,6 +259,9 @@ dependencies:
   - python-dateutil=2.9.0.post0=pyhff2d567_1
   - python-tzdata=2025.2=pyhd8ed1ab_0
   - python_abi=3.12=7_cp312
+  - pytest=9.1.1=pyhc364b38_2
+  - pytest-cov=7.1.0=pyhcf101f3_0
+  - pytest-timeout=2.4.0=pyhd8ed1ab_0
   - pytorch=2.4.0=py3.12_cuda11.8_cudnn9.1.0_0
   - pytorch-cuda=11.8=h7e8668a_6
   - pytorch-mutex=1.0=cuda
@@ -345,4 +348,3 @@ dependencies:
       - itsdangerous==2.2.0
       - psutil==7.0.0
       - wandb
-prefix: /home/brg2890/major/bryce_python_workspace/miniforge3/envs/Primary

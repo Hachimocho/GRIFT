@@ -1,3 +1,4 @@
+import copy
 import random
 from itertools import combinations
 from tqdm.auto import tqdm
@@ -50,7 +51,12 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         "embedding_threshold": 0.9,  # Similarity threshold for face embeddings
         "quality_threshold": 0.9,    # Similarity threshold for quality metrics
         "symmetry_threshold": 0.9,  # Similarity threshold for facial symmetry
+        "edge_construction": "knn",  # see dataloaders/knn_edges.py
+        "knn_neighbors": 50,
         "silent_mode": False,  # When True, disables internal progress bars
+        # Build val/test edges the same way as train. Needed by graph-based
+        # uncertainty, which has no signal on an edgeless graph.
+        "build_val_test_edges": True,
     }
 
     def __init__(self, datasets, edge_class, **kwargs):
@@ -64,10 +70,13 @@ class UnclusteredDeepfakeDataloader(Dataloader):
                 silent_mode: When True, disables all internal progress bars and logging output
         """
         super().__init__(datasets, edge_class)
-        
-        # Update hyperparameters with any provided kwargs
-        self.hyperparameters.update(kwargs)
-        
+
+        # Bind an *instance* copy of the class-level defaults before applying
+        # kwargs -- see the matching comment in HierarchicalDeepfakeDataloader.
+        # Mutating the class attribute made every dataloader in the process share
+        # one config dict.
+        self.hyperparameters = {**copy.deepcopy(type(self).hyperparameters), **kwargs}
+
         # Configure logger based on silent mode
         global logger
         logger = setup_logger(log_to_console=not self.hyperparameters["silent_mode"])
@@ -621,11 +630,20 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         print("Building train graph with full edge construction...")
         train_graph = self._build_graph(train_nodes, "train")
         
-        print("Building val graph with no edges (for faster processing)...")
-        val_graph = HyperGraph(val_nodes)  # Create graph with nodes only, no edges
-        
-        print("Building test graph with no edges (for faster processing)...")
-        test_graph = HyperGraph(test_nodes)  # Create graph with nodes only, no edges
+        # Honor --build-val-test-edges. This was hardcoded to always build, so the
+        # flag (which only test_hierarchical.py's own graph-building path checked)
+        # had no effect here -- meaning every run through a dataloader paid full
+        # val/test edge construction regardless.
+        build_val_test = self.hyperparameters.get("build_val_test_edges", True)
+        if build_val_test:
+            print("Building val graph with full edge construction...")
+            val_graph = self._build_graph(val_nodes, "val")
+            print("Building test graph with full edge construction...")
+            test_graph = self._build_graph(test_nodes, "test")
+        else:
+            print("Building val/test graphs with nodes only (--no-build-val-test-edges)...")
+            val_graph = HyperGraph(val_nodes)
+            test_graph = HyperGraph(test_nodes)
         
         return train_graph, val_graph, test_graph
     
@@ -794,7 +812,15 @@ class UnclusteredDeepfakeDataloader(Dataloader):
         
         # Generate all possible edge pairs (unclustered approach)
         n_nodes = len(nodes)
-        all_edges = [(i, j) for i in range(n_nodes) for j in range(i + 1, n_nodes)]
+        # Candidate edges. Was an all-pairs list comprehension, which is O(N^2) in memory
+        # *before* any similarity filtering -- ~76 TiB at the full corpus's 1.6M nodes, and
+        # the surviving graph was 97% dense besides. See dataloaders/knn_edges.py.
+        from dataloaders.knn_edges import DEFAULT_KNN_NEIGHBOURS, candidate_edges
+        all_edges = candidate_edges(
+            nodes,
+            mode=self.hyperparameters.get("edge_construction", "knn"),
+            k=self.hyperparameters.get("knn_neighbors", DEFAULT_KNN_NEIGHBOURS),
+        )
         
         logger.info(f"Created {len(all_edges)} initial edges (all pairs)")
         initial_edge_count = len(all_edges)

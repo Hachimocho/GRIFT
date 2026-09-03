@@ -10,6 +10,23 @@ Updated to support the new AdaptiveTrainer architecture with:
 - Single-traversal mode: Use one traversal method throughout training
 - Switch-traversal mode: Switch between different traversal methods during training
 """
+# Reproducibility bootstrap MUST run before torch/numpy are imported.
+# PYTHONHASHSEED is consumed at interpreter startup and CUBLAS_WORKSPACE_CONFIG when
+# the cuBLAS handle is created, so neither can be set usefully once those libraries
+# are loaded. This re-execs the process once with the right environment if needed,
+# which works regardless of launcher -- run_reproducible.sh cannot guarantee it
+# because web_ui/gpu_queue_manager.py invokes this script directly.
+#
+# Guarded on __name__ == "__main__": re-execing replaces the *whole process*, so
+# doing it on import would kill any host that merely imports this module (pytest,
+# the web UI, tooling) rather than running it as a script.
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+if __name__ == "__main__":
+    from test_helpers.bootstrap import ensure_deterministic_env as _ensure_deterministic_env
+    _ensure_deterministic_env()
+
 import time
 import os
 import cv2
@@ -25,6 +42,7 @@ from datetime import datetime
 import dill
 import numpy as np
 import argparse
+import dataclasses
 import faulthandler
 import signal
 import resource
@@ -33,12 +51,27 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import utilities from the new helper module
-from test_helpers.logging_utils import NullHandler, capture_output, log_exception, set_seed
+from test_helpers.logging_utils import NullHandler, capture_output, log_exception
+from trainers.capabilities.selection_diagnostic import SelectionDiagnostic
+from test_helpers.determinism import (
+    assert_strict_invariants, configure_determinism, is_strict, rng_for,
+    seed_model_init, swallow_or_raise, write_run_fingerprint,
+)
+from test_helpers.cache_keys import cache_filenames, graph_cache_key
 from test_helpers.args_utils import parse_args
+
+#: Whether Louvain subclustering can actually run. `HyperGraph.assign_louvain_subclusters`
+#: degrades to a no-op without it, so a `*_subclustered` graph type would silently behave
+#: as its plain counterpart; the graph-type dispatch refuses that rather than allowing it.
+try:
+    import community as _community_louvain  # noqa: F401 - probe only
+    _LOUVAIN_AVAILABLE = True
+except ImportError:
+    _LOUVAIN_AVAILABLE = False
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
-    load_and_prepare_data_splits, check_graph_cache_compatibility
+    load_and_prepare_data_splits, check_graph_cache_compatibility, resolve_ai_face_data_root
 )
 
 # Import visualization modules
@@ -74,9 +107,17 @@ from managers.PerformanceGraphManager import PerformanceGraphManager
 from managers.GraphReductionManager import GraphReductionManager
 from traversals.ComprehensiveTraversal import ComprehensiveTraversal
 from traversals.IValueTraversal import IValueTraversal
-from traversals.IValueTraversalClusterHop import IValueTraversalClusterHop 
+from test_helpers.args_utils import (
+    IVALUE_TRAVERSAL_ALIASES, canonical_traversal_type,
+)
 from traversals.RandomTraversal import RandomTraversal
 from models.CNNModel import CNNModel
+from models.uncertainty import GraphDistanceUncertainty, PredictionBundle
+from models.uncertainty.capabilities import (
+    describe_detector, supported_detectors, validate_architectures,
+)
+from evaluation.uq.records import PredictionRecordCollector, RecordCollectionError
+from evaluation.uq.corruptions import ImageCorruption
 from edges.Edge import Edge
 import copy
 import torch
@@ -91,7 +132,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader 
 import io
 
-def _load_node_data(node, model):
+def _load_node_data(node, model, image_corruption=None):
     """Helper function to load a single node's data. Used for parallel loading."""
     try:
         node_data = node.get_data()
@@ -99,6 +140,13 @@ def _load_node_data(node, model):
             img = node_data.load_data()
             label = node.get_label()
             if img is not None and label is not None:
+                # Corrupt the decoded image *before* transform's resize and
+                # normalization: model-agnostic, and the only point where the image is
+                # still uint8 BGR at its source resolution. Inside the existing try, so
+                # a broken corruption degrades `coverage` rather than crashing the run
+                # -- and the coverage guard then refuses the cell.
+                if image_corruption is not None:
+                    img = image_corruption(img, node)
                 # Apply transformations using the model's internal method
                 img_tensor = model.transform(img)
                 
@@ -115,15 +163,163 @@ def _load_node_data(node, model):
     except Exception as e_load:
         return None
 
-def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4): 
+def _uq_record_splits(args):
+    """Which splits --uq-records should write. Empty tuple means "don't record"."""
+    if not getattr(args, 'uq_records', False):
+        return ()
+    raw = getattr(args, 'uq_records_splits', 'test') or 'test'
+    return tuple(
+        name for name in (part.strip() for part in raw.split(','))
+        if name in ('train', 'val', 'test')
+    )
+
+
+def _parse_band(text):
+    """`"0.4,0.7"` -> `(0.4, 0.7)`. Raises rather than silently falling back to the default:
+    a mistyped band would otherwise run a differently-configured arm under the right name."""
+    try:
+        low, high = (float(part) for part in str(text).split(','))
+    except Exception as error:
+        raise ValueError(
+            f"--ivalue-band must be two comma-separated numbers, got {text!r}"
+        ) from error
+    return (low, high)
+
+
+def _write_selection_diagnostic(diagnostic, output_dir):
+    """Write `selection_diagnostic.csv.gz`: one row per training batch.
+
+    The column that matters is `batch_diversity` -- mean pairwise cosine distance between the
+    batch's face embeddings. A graph walk selects among k-NN neighbours, which are similar
+    faces by construction, so its batches should be measurably less diverse than i.i.d. ones.
+    """
+    rows = getattr(diagnostic, 'rows', None)
+    if not rows:
+        return None
+    try:
+        import pandas as pd
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / 'selection_diagnostic.csv.gz'
+        pd.DataFrame(rows).to_csv(path, index=False, compression='gzip')
+        print(f"Wrote selection diagnostic ({len(rows)} batches) to {path}")
+        return str(path)
+    except Exception as error:
+        print(f"Warning: could not write the selection diagnostic: {error}")
+        return None
+
+
+def _write_ivalue_diagnostic(trainer, output_dir):
+    """Write `ivalue_diagnostic.csv.gz`: predicted I-value against realised learning gain.
+
+    This is the evidence for whether the DQN estimates anything useful. Each row pairs the
+    I-value the traversal saw when it *chose* a node with the per-sample loss reduction that
+    training on it actually produced, so a positive rank correlation is the minimum bar the
+    method has to clear before a selection strategy built on it can be expected to help.
+
+    A no-op unless `--ivalue-diagnostic` was passed, and silent when the run used no DQN.
+    """
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    rows = getattr(capability, 'ivalue_diagnostic_rows', None) if capability else None
+    if not rows:
+        return None
+    try:
+        import pandas as pd
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / 'ivalue_diagnostic.csv.gz'
+        pd.DataFrame(rows).to_csv(path, index=False, compression='gzip')
+        print(f"Wrote I-value diagnostic ({len(rows)} rows) to {path}")
+        return str(path)
+    except Exception as error:
+        print(f"Warning: could not write the I-value diagnostic: {error}")
+        return None
+
+
+def _save_uq_records(collector, output_dir, split, extra_manifest=None):
+    """Persist a collector's rows plus its manifest. Returns the records path.
+
+    Failure here must not lose a finished training run, so the exception is caught
+    and reported. But it is reported *loudly* and the coverage number is printed
+    either way: a records table silently written from 3% of the evaluation set is
+    exactly the failure mode the benchmark's coverage guard exists to catch, and
+    catching it here would defeat that.
+    """
+    from evaluation.uq.records import save_records
+
+    summary = collector.summary()
+    print(f"  [uq] {split}: {summary['n_rows']} rows from {summary['n_requested']} "
+          f"requested (coverage {summary['coverage']:.1%}, "
+          f"{summary['n_batches_failed']} batches failed)")
+    if summary['first_error']:
+        print(f"  [uq] {split}: first batch error was {summary['first_error']}")
+    if not collector.rows:
+        print(f"  [uq] {split}: nothing collected, skipping write")
+        return None
+
+    records_path = os.path.join(str(output_dir), f"records_{split}.csv.gz")
+    try:
+        _frame, manifest = save_records(collector, records_path,
+                                       extra_manifest=extra_manifest)
+    except Exception as exc:  # noqa: BLE001 - a finished run must not be lost
+        print(f"  [uq] ERROR writing {split} records: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return None
+    print(f"  [uq] {split}: wrote {records_path} "
+          f"(sha256 {manifest['sha256_records'][:12]})")
+    return records_path
+
+
+def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=None, device='cuda', desc="Evaluating", attribute_metadata=None, num_workers=4, *, record_collector=None, image_corruption=None, ivalue_provider=None):
     """Evaluates the model on the provided nodes, calculates standard metrics,
        and optionally calculates bias metrics based on categorical attributes.
-       
+
     Args:
         num_workers: Number of parallel workers for image loading (default: 4)
+        record_collector: Optional PredictionRecordCollector. When supplied, one row
+            per sample is accumulated (probability, logit, per-sample uncertainty,
+            source group, demographics) for the uncertainty benchmark. Without it
+            this function behaves exactly as before -- the continuous scores are
+            thresholded and discarded, so calibration and selective prediction are
+            not recoverable afterwards.
+        image_corruption: Optional callable ``(image, node) -> image`` applied to each
+            decoded uint8 BGR image before ``model.transform``. Used for the
+            severity-ladder shift protocol. Model-agnostic by construction, since no
+            detector is involved. ``None`` leaves every existing call site unchanged.
     """
     model.eval() # Ensure model is in evaluation mode
     model.model.to(device)
+
+    # Verify eval() actually took effect, rather than assuming it did.
+    #
+    # `_load_node_data` calls model.transform() from worker threads, and CNNModel's
+    # transform dispatches on `current_mode`: in train mode it applies
+    # RandomHorizontalFlip / RandomRotation / ColorJitter / RandomAffine /
+    # RandomErasing, all drawing on the global torch RNG from several threads at
+    # once. A model whose eval() fails to clear that mode would therefore randomize
+    # its own evaluation, and silently -- the metrics would simply be noisier.
+    current_mode = getattr(model, 'current_mode', 'eval')
+    if current_mode != 'eval':
+        raise RuntimeError(
+            f"evaluate_model called model.eval() but current_mode is still "
+            f"{current_mode!r}. Train-mode transforms are stochastic and run in worker "
+            f"threads, so evaluating in this state would randomize the results."
+        )
+
+    # A corruption whose label disagrees with what was actually applied is the worst
+    # kind of error here: the table is well-formed, the numbers are real, and they are
+    # filed under the wrong severity. Both sides carry the label, so check them.
+    if image_corruption is not None and record_collector is not None:
+        applied = (getattr(image_corruption, 'corruption', None),
+                   getattr(image_corruption, 'severity', None))
+        labelled = (record_collector.corruption, record_collector.severity)
+        if applied != (None, None) and applied != labelled:
+            raise RuntimeError(
+                f"image_corruption applies {applied} but record_collector labels rows "
+                f"{labelled}. The records would be filed under the wrong severity."
+            )
 
     total_loss = 0.0
     total_bias_loss = 0.0
@@ -136,6 +332,13 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
     all_predictions = []
     all_labels = []
+    all_probabilities = []
+    uncertainty_sums = defaultdict(float)
+    uncertainty_counts = defaultdict(int)
+    batches_failed = 0
+    first_inference_error = None
+    if record_collector is not None:
+        record_collector.note_requested(nodes_in_dataset)
     subgroup_stats = defaultdict(lambda: {'count': 0, 'correct': 0})
     categorical_attrs = []
     if attribute_metadata:
@@ -158,14 +361,24 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
             batch_labels_loaded = []
             batch_nodes_loaded = [] # Keep track of nodes successfully loaded in batch
 
-            # Load data for the current batch using parallel processing
-            # Use ThreadPoolExecutor for I/O-bound image loading
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                # Submit all node loading tasks
-                future_to_node = {executor.submit(_load_node_data, node, model): node for node in batch_nodes}
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_node):
+            # Load data for the current batch in parallel, but collect the results in
+            # *submission* order rather than completion order. `as_completed` made the
+            # within-batch row order vary run to run, which changes the floating-point
+            # reduction order in the loss and metrics and so produces small,
+            # irreproducible drift. Collecting by submission keeps the 4-8x I/O
+            # parallelism that this executor exists for while making the batch
+            # deterministic -- and it is what lets the benchmark assign stable
+            # per-sample record ids.
+            # max(1, ...): `--num-workers 0` reads as "no parallelism" by torch
+            # DataLoader convention, but ThreadPoolExecutor rejects it outright with
+            # `max_workers must be greater than 0` -- which surfaced as a failed
+            # configuration mid-evaluation, long after the value was accepted.
+            with ThreadPoolExecutor(max_workers=max(1, int(num_workers or 1))) as executor:
+                futures = [
+                    executor.submit(_load_node_data, node, model, image_corruption)
+                    for node in batch_nodes
+                ]
+                for future in futures:
                     result = future.result()
                     if result is not None:
                         img_tensor, label_value, node = result
@@ -188,30 +401,52 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
 
             # Perform inference
             try:                
-                outputs = model(batch_images_tensor)
-                
-                # Safety check: Handle unexpected output types
-                if isinstance(outputs, tuple):
-                    print(f"WARNING: Model returned tuple instead of tensor: {type(outputs)}, length: {len(outputs)}")
-                    # Try to extract the first element if it's a tensor
-                    if len(outputs) > 0 and hasattr(outputs[0], 'size'):
-                        print(f"Using first element of tuple: {outputs[0].shape}")
-                        outputs = outputs[0]
-                    else:
-                        print(f"ERROR: Cannot extract valid tensor from tuple: {[type(x) for x in outputs]}")
+                prediction_bundle = None
+                if hasattr(model, 'forward_with_uncertainty'):
+                    prediction_bundle = model.forward_with_uncertainty(
+                        batch_images_tensor,
+                        nodes=batch_nodes_loaded,
+                        use_mc_dropout=getattr(model, 'mc_dropout_samples', 0) > 1,
+                    )
+                    outputs = prediction_bundle.logits
+                    probabilities = prediction_bundle.probabilities
+                    preds = prediction_bundle.predictions
+                    uncertainty_summary = getattr(model, 'summarize_uncertainty', lambda _: {})(prediction_bundle)
+                    for name, value in uncertainty_summary.items():
+                        uncertainty_sums[name] += float(value) * len(batch_nodes_loaded)
+                        uncertainty_counts[name] += len(batch_nodes_loaded)
+                else:
+                    outputs = model(batch_images_tensor)
+
+                    # Safety check: Handle unexpected output types
+                    if isinstance(outputs, tuple):
+                        print(f"WARNING: Model returned tuple instead of tensor: {type(outputs)}, length: {len(outputs)}")
+                        if len(outputs) > 0 and hasattr(outputs[0], 'size'):
+                            print(f"Using first element of tuple: {outputs[0].shape}")
+                            outputs = outputs[0]
+                        else:
+                            print(f"ERROR: Cannot extract valid tensor from tuple: {[type(x) for x in outputs]}")
+                            continue
+                    elif not hasattr(outputs, 'size'):
+                        print(f"WARNING: Model output has no .size() method: {type(outputs)}")
                         continue
-                elif not hasattr(outputs, 'size'):
-                    print(f"WARNING: Model output has no .size() method: {type(outputs)}")
-                    continue
-                    
-                preds = (torch.sigmoid(outputs) > 0.5).float()
+
+                    probabilities = torch.sigmoid(outputs)
+                    preds = (probabilities > 0.5).float()
 
                 correct = (preds == batch_labels_tensor).sum().item()
                 correct_predictions += correct
                 current_batch_size = batch_labels_tensor.size(0)
                 total_nodes_processed += current_batch_size
 
-                loss = loss_fn(outputs, batch_labels_tensor)
+                if hasattr(model, 'compute_loss'):
+                    loss = model.compute_loss(
+                        prediction_bundle if prediction_bundle is not None else outputs,
+                        batch_labels_tensor,
+                        base_criterion=loss_fn,
+                    )
+                else:
+                    loss = loss_fn(outputs, batch_labels_tensor)
                 total_loss += loss.item() * current_batch_size # Accumulate total loss scaled by batch size
 
                 if bias_loss_fn and batch_nodes_loaded: # Use successfully loaded nodes
@@ -222,19 +457,60 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
                     except Exception as e_bias:
                         print(f"\nWarning: Error calculating bias loss for batch in {desc}: {e_bias}")
                         total_bias_loss += 0.0 # Add 0 on error for this batch
+            except RecordCollectionError:
+                # Never swallowed: a bug in record collection must not be reported as
+                # an inference failure, and must not quietly reduce coverage.
+                raise
             except Exception as e_inf:
                  print(f"\nError during model inference or loss calculation in {desc}: {e_inf}")
+                 if record_collector is not None:
+                     record_collector.note_batch_failure(e_inf)
+                 batches_failed += 1
+                 if first_inference_error is None:
+                     first_inference_error = f"{type(e_inf).__name__}: {e_inf}"
                  # Clear GPU cache on error to prevent memory buildup
                  if torch.cuda.is_available():
                      torch.cuda.empty_cache()
-                 # Potentially skip batch or handle error appropriately
+                 swallow_or_raise(e_inf, f"evaluate_model[{desc}] batch {i}")
                  continue # Skip batch on inference error
 
-            # --- Store Predictions and Labels for Metrics --- 
-            predictions = torch.sigmoid(outputs).cpu().numpy() > 0.5
+            # --- Per-sample records for the uncertainty benchmark ---
+            # Collected here because this is the only point where the prediction
+            # bundle, the loaded nodes, and the labels are all simultaneously live.
+            if record_collector is not None:
+                bundle_for_records = (
+                    prediction_bundle if prediction_bundle is not None
+                    else PredictionBundle(
+                        logits=outputs, probabilities=probabilities
+                    ).with_predictions()
+                )
+                # The DQN's predicted I-value, as an uncertainty score in its own right.
+                # It cannot come from the model -- the DQN lives on the trainer -- so it is
+                # merged into the bundle here, which is the one place the bundle, the loaded
+                # nodes and the labels are all live. Without this there is no I-value
+                # uncertainty column at all, and the question "are I-values a better
+                # uncertainty measure than the traditional methods" has no data behind it;
+                # the graph_* methods are neighbourhood *distance* statistics and use no DQN.
+                if ivalue_provider is not None:
+                    bundle_for_records = _with_ivalue_uncertainty(
+                        bundle_for_records, batch_nodes_loaded, ivalue_provider, desc,
+                    )
+                record_collector.add_batch(
+                    batch_nodes_loaded, batch_labels_tensor, bundle_for_records,
+                    batch_index=i,
+                )
+
+            # --- Store Predictions and Labels for Metrics ---
+            batch_probabilities = probabilities.cpu().numpy().reshape(-1)
+            predictions = batch_probabilities > 0.5
             current_labels = batch_labels_tensor.cpu().numpy().astype(int)
             all_predictions.extend(predictions.astype(int))
             all_labels.extend(current_labels)
+            # Probabilities too, not just the thresholded predictions. Accuracy alone
+            # cannot distinguish a model that learned nothing from one whose every output
+            # happens to sit on one side of 0.5, and on an 87%-positive split those score
+            # the same. Balanced accuracy and AUROC need the continuous scores.
+            all_probabilities.extend(batch_probabilities.astype(float))
             
             # Clear GPU cache periodically to prevent memory buildup
             if i % 10 == 0 and torch.cuda.is_available():
@@ -290,15 +566,70 @@ def evaluate_model(model, nodes_to_evaluate, loss_fn, batch_size, bias_loss_fn=N
     if total_nodes_processed > 0:
         final_metrics['accuracy'] = (correct_predictions / total_nodes_processed) * 100
         final_metrics['average_loss'] = total_loss / total_nodes_processed # Average loss per successfully processed sample
+
+        # Threshold-free and prevalence-free companions to accuracy, from the same
+        # implementation the benchmark scores with, so the number logged each epoch and the
+        # number in the results table cannot drift apart.
+        #
+        # Accuracy on this dataset is ~87% for a model that emits one class for every
+        # sample, which is both the majority-class prior and a completely uninformative
+        # result. Balanced accuracy pins to exactly 0.5 in that case and AUROC still
+        # measures the ranking, so between them they distinguish "learned nothing" from
+        # "learned something, wrong operating point" -- a distinction accuracy cannot make
+        # and which checkpoint selection depends on.
+        if all_labels and all_probabilities:
+            from evaluation.uq.metrics import discrimination_metrics
+
+            discrimination, discrimination_flags = discrimination_metrics(
+                all_labels, all_probabilities
+            )
+            final_metrics['balanced_accuracy'] = discrimination['balanced_accuracy'] * 100
+            final_metrics['auroc'] = discrimination['auroc']
+            final_metrics['n_positive'] = discrimination['n_positive']
+            if discrimination_flags:
+                final_metrics['discrimination_flags'] = sorted(discrimination_flags)
+                print(f"  NOTE ({desc}): {', '.join(sorted(discrimination_flags))}")
     else:
-        final_metrics['accuracy'] = 0.0
-        final_metrics['average_loss'] = float('nan')
+        # Raise rather than report accuracy 0.0. Reporting zero made a total failure
+        # indistinguishable from a genuinely terrible model -- which is exactly how
+        # the evidential/MC-dropout crash presented for as long as it did: every
+        # batch raised, was swallowed by the handler above, and the run cheerfully
+        # printed "Accuracy=0.00%".
+        raise RuntimeError(
+            f"evaluate_model({desc}) processed 0 of {nodes_in_dataset} nodes. "
+            f"{batches_failed} batch(es) failed"
+            + (f"; first error was {first_inference_error}" if first_inference_error else "")
+            + ". Refusing to report accuracy 0.0, which would be indistinguishable "
+              "from a model that simply predicts badly."
+        )
+
+    if batches_failed:
+        coverage = total_nodes_processed / max(1, nodes_in_dataset)
+        print(
+            f"\nWARNING: {batches_failed} batch(es) failed during {desc}; metrics "
+            f"cover {coverage:.1%} of the requested nodes. First error: "
+            f"{first_inference_error}"
+        )
+    final_metrics['batches_failed'] = batches_failed
+    final_metrics['coverage'] = total_nodes_processed / max(1, nodes_in_dataset)
 
     if bias_loss_fn:
          if total_nodes_processed > 0:
              final_metrics['average_bias_loss'] = total_bias_loss / total_nodes_processed # Average bias loss per successfully processed sample
          else:
              final_metrics['average_bias_loss'] = float('nan')
+
+    if record_collector is not None:
+        # A small, JSON-safe summary only. The rows themselves go to disk: this dict is
+        # json.dumps'd to stdout and scraped by the GPU queue manager, so embedding a
+        # 400k-row table here would bloat every log and break the parser.
+        final_metrics['records'] = record_collector.summary()
+
+    if uncertainty_sums:
+        final_metrics['uncertainty_summary'] = {
+            name: uncertainty_sums[name] / max(1, uncertainty_counts[name])
+            for name in uncertainty_sums
+        }
 
     final_metrics['total_nodes_in_dataset'] = nodes_in_dataset
     final_metrics['total_nodes_skipped_loading'] = skipped_loading
@@ -409,21 +740,35 @@ def create_traversal(traversal_type, graph, num_pointers=1, num_steps=1000, trai
         return ComprehensiveTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
     elif traversal_type == "random":
         return RandomTraversal(graph, num_pointers=num_pointers, num_steps=num_steps)
-    elif traversal_type == "i-value":
+    elif traversal_type in IVALUE_TRAVERSAL_ALIASES:
+        # One class, one name. The cluster-hopping walk is selected from the graph rather
+        # than from the traversal name: hopping exists because a clustered graph is built
+        # from disjoint race-gender groups that a pointer cannot walk between, so it is a
+        # property of the construction, not an independent strategy.
+        #
+        # candidate_pool/selection_mode/selection_band/group_targeting come off `trainer`
+        # rather than `kwargs`, mirroring `AdaptiveTrainer._create_traversal` exactly --
+        # that is the other factory that builds an IValueTraversal, used only for the
+        # traversal-*switching* feature, and it already reads these the same way. This one
+        # is what every single-traversal run (i.e. every non-switching run, which is most
+        # of them) actually calls, and it used to drop all four silently: `--ivalue-
+        # candidate-pool`, `--ivalue-selection`, `--ivalue-band`, and `--ivalue-group-
+        # targeting` all fell back to their `IValueTraversal.__init__` defaults
+        # (candidate_pool=0, selection_mode='max', group_targeting=None) no matter what was
+        # passed on the CLI, so three sweep arms meant to test three different selection
+        # mechanisms ran the identical one.
+        from trainers.capabilities.group_fairness import pool_targeting_for
+
         return IValueTraversal(
             graph=graph,
             num_pointers=num_pointers,
             num_steps=num_steps,
-            trainer=trainer
-        )
-    elif traversal_type == "i-value-cluster-hop":
-        bias_hop_period = kwargs.get('bias_hop_period', 100)
-        return IValueTraversalClusterHop(
-            graph=graph,
-            num_pointers=num_pointers,
-            num_steps=num_steps,
             trainer=trainer,
-            bias_hop_period=bias_hop_period
+            bias_hop_period=kwargs.get('bias_hop_period', 100),
+            candidate_pool=getattr(trainer, 'ivalue_candidate_pool', 0),
+            selection_mode=getattr(trainer, 'ivalue_selection_mode', None) or 'max',
+            selection_band=getattr(trainer, 'ivalue_selection_band', None) or (0.4, 0.7),
+            group_targeting=pool_targeting_for(trainer),
         )
     else:
         raise ValueError(f"Unsupported traversal type: {traversal_type}")
@@ -455,7 +800,8 @@ def parse_traversal_config(args):
     
     return config
 
-def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args):
+def create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args,
+                           selection_diagnostic=None):
     """Create and configure an AdaptiveTrainer instance."""
     trainer = AdaptiveTrainer(
         graphmanager=train_manager,
@@ -464,29 +810,45 @@ def create_adaptive_trainer(train_manager, model, device, attribute_metadata, cr
         attribute_metadata=attribute_metadata,
         loss_fn=criterion,
         bias_loss_weight=args.bias_loss_weight,
-        dqn_model_type=getattr(args, 'dqn_model', 'basic')
+        dqn_model_type=getattr(args, 'dqn_model', 'basic'),
+        preprocess_workers=getattr(args, 'preprocess_workers', 8),
+        max_nodes_per_epoch=getattr(args, 'max_nodes_per_epoch', None),
+        ivalue_reward=getattr(args, 'ivalue_reward', 'confidence'),
+        ivalue_state_features=getattr(args, 'ivalue_state_features', False),
+        ivalue_candidate_pool=getattr(args, 'ivalue_candidate_pool', 0),
+        comprehensive_cumulative=getattr(args, 'comprehensive_cumulative', False),
+        collect_ivalue_diagnostic=getattr(args, 'ivalue_diagnostic', False),
+        dqn_fixes=getattr(args, 'dqn_fixes', False),
+        dqn_objective=getattr(args, 'dqn_objective', 'rank'),
+        dqn_buffer_size=getattr(args, 'dqn_buffer_size', 512),
+        ivalue_unseen_prior=getattr(args, 'ivalue_unseen_prior', 'neutral'),
+        selection_diagnostic=selection_diagnostic,
+        ivalue_selection_mode=getattr(args, 'ivalue_selection', 'max'),
+        ivalue_selection_band=_parse_band(getattr(args, 'ivalue_band', '0.4,0.7')),
+        ivalue_loss_weight=getattr(args, 'ivalue_loss_weight', 'none'),
+        ivalue_weight_clip=getattr(args, 'ivalue_weight_clip', 2.0),
+        ivalue_ban_negative_gain=getattr(args, 'ivalue_ban_negative_gain', 0),
+        ivalue_ban_max_fraction=getattr(args, 'ivalue_ban_max_fraction', 0.2),
+        ivalue_group_targeting=getattr(args, 'ivalue_group_targeting', False),
+        ivalue_group_top=getattr(args, 'ivalue_group_top', 3),
+        ivalue_fairness_weight=getattr(args, 'ivalue_fairness_weight', False),
+        ivalue_fairness_selection=getattr(args, 'ivalue_fairness_selection', False),
     )
     return trainer
 
 def create_dqn_model(model_type, feature_dim, device, embedding_dim=512, **kwargs):
-    """Create a DQN model instance based on type and parameters."""
-    if model_type == "basic":
-        from models.DQNModel import DQNModel
-        return DQNModel(feature_dim, device, embedding_dim=embedding_dim)
-    elif model_type == "residual":
-        from models.EnhancedDQNModels import ResidualDQNModel
-        return ResidualDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "attention":
-        from models.EnhancedDQNModels import AttentionDQNModel
-        return AttentionDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "conv_embedding":
-        from models.EnhancedDQNModels import ConvEmbeddingDQN
-        return ConvEmbeddingDQN(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    elif model_type == "ensemble":
-        from models.EnhancedDQNModels import EnsembleDQNModel
-        return EnsembleDQNModel(feature_dim, device, embedding_dim=embedding_dim, **kwargs)
-    else:
-        raise ValueError(f"Unsupported DQN model type: {model_type}")
+    """Create an I-value estimator. Thin wrapper over the single factory.
+
+    `models.gain_estimator.build_estimator` owns the dispatch, so this function and
+    `DQNCapability._initialize_dqns` cannot drift apart -- they used to be two copies, which
+    is how a `--dqn-model gain_*` name could be accepted by the CLI and never be built.
+    """
+    from models.gain_estimator import build_estimator
+
+    return build_estimator(
+        model_type, feature_dim, device, embedding_dim=embedding_dim, **kwargs
+    )
+
 
 def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
     """Create either a CNN model or DQN model based on architecture."""
@@ -496,10 +858,289 @@ def create_model(arch, save_path, device, dqn_model_type="basic", **kwargs):
         return create_dqn_model(dqn_model_type, feature_dim, device, **kwargs)
     else:
         # Create CNN model as before
-        return CNNModel(save_path, arch, 1e-4, True, device)
+        return CNNModel(
+            save_path,
+            arch,
+            1e-4,
+            True,
+            device,
+            uncertainty_head=kwargs.get('uncertainty_head', 'none'),
+            mc_dropout_samples=kwargs.get('mc_dropout_samples', 0),
+            batchensemble_members=kwargs.get('batchensemble_members', 4),
+            sngp_hidden_dim=kwargs.get('sngp_hidden_dim', 256),
+            sngp_rff_dim=kwargs.get('sngp_rff_dim', 256),
+            uncertainty_dropout_rate=kwargs.get('uncertainty_dropout_rate', 0.2),
+            graph_uncertainty_methods=kwargs.get('graph_uncertainty_methods', []),
+            graph_degree_penalty_weight=kwargs.get('graph_degree_penalty_weight', 1.0),
+            uncertainty_train_frequency=kwargs.get('uncertainty_train_frequency', 10),
+            sngp_precision_policy=kwargs.get('sngp_precision_policy', 'per-epoch'),
+            finetune=kwargs.get('finetune', False),
+        )
 
-def main():
-    args = parse_args() # Parse args first
+def _fit_decision_threshold(uq_artifacts, uq_dir, args):
+    """Fit the decision threshold on the val records and report test at both points.
+
+    Returns the `ThresholdFit`, or None when it could not be fitted. Reads the record
+    tables that were just written rather than re-running inference, so it costs nothing and
+    is guaranteed to describe exactly the numbers reported above it.
+
+    Fitted on val and only ever applied to test. Fitting on the split being reported would
+    not be choosing an operating point, it would be fitting the metric.
+    """
+    from evaluation.uq.records import read_records
+    from evaluation.uq.threshold import (
+        apply_to_records, fit_from_records, save_fit,
+    )
+
+    val_path, test_path = uq_artifacts.get('val'), uq_artifacts.get('test')
+    if not val_path:
+        print("\n--- Decision Threshold ---")
+        print("  Skipped: --tune-threshold needs val records. Add 'val' to "
+              "--uq-records-splits.")
+        return None
+
+    try:
+        val_frame = read_records(val_path, verify=False)
+        fit = fit_from_records(
+            val_frame, objective=getattr(args, 'threshold_objective', 'balanced_accuracy'),
+        )
+    except Exception as error:  # noqa: BLE001 - reporting must not fail the run
+        print(f"\n--- Decision Threshold ---\n  Could not fit: "
+              f"{type(error).__name__}: {error}")
+        return None
+
+    print("\n--- Decision Threshold ---")
+    print(f"  objective       : {fit.objective} (fitted on {fit.n_val} val samples)")
+    if not fit.applicable:
+        print(f"  NOT APPLICABLE  : {fit.reason}")
+        return fit
+    print(f"  threshold       : {fit.threshold:.6f} (default 0.5)")
+    if fit.collapsed_at_default:
+        print("  NOTE            : at 0.5 the model predicted a single class for every "
+              "val sample, so its accuracy there was the class prior")
+    print(f"  val balanced acc: {fit.balanced_accuracy_at_default:.4f} -> "
+          f"{fit.balanced_accuracy_at_threshold:.4f}")
+    print(f"  val accuracy    : {fit.accuracy_at_default:.4f} -> "
+          f"{fit.accuracy_at_threshold:.4f}")
+
+    save_fit(fit, str(uq_dir / 'threshold_fit.json'))
+
+    # And what it does on test -- the number that matters, at a threshold test never saw.
+    if test_path:
+        try:
+            test_frame = read_records(test_path, verify=False)
+            retimed = apply_to_records(test_frame, fit)
+            labels = retimed['label'].to_numpy(int)
+            for name, predictions in (
+                ("@0.5", test_frame['pred'].to_numpy(int)),
+                (f"@{fit.threshold:.4f}", retimed['pred'].to_numpy(int)),
+            ):
+                positive, negative = labels == 1, labels == 0
+                balanced = 0.5 * (
+                    (predictions[positive] == 1).mean() + (predictions[negative] == 0).mean()
+                )
+                print(f"  test {name:<12}: accuracy {(predictions == labels).mean():.4f}  "
+                      f"balanced accuracy {balanced:.4f}")
+        except Exception as error:  # noqa: BLE001
+            print(f"  Could not apply to test: {type(error).__name__}: {error}")
+    return fit
+
+
+def _trained_nothing(train_metrics):
+    """Whether an epoch processed no training samples at all.
+
+    `BasicTrainingCapability` returns `_get_empty_metrics()` -- every field zero -- both
+    when the traversal yields no batches and when it raises. Either way no gradient step
+    ran. Detected as "the epoch reports a sample count of zero, or reports an exactly-zero
+    loss", because a genuine epoch cannot reach a loss of exactly 0.0 on this task.
+    """
+    if not isinstance(train_metrics, dict):
+        return False
+    for key in ('nodes_processed', 'samples', 'n', 'total_nodes'):
+        if key in train_metrics:
+            return not train_metrics[key]
+    losses = [
+        train_metrics[key] for key in ('avg_loss', 'train_loss', 'loss')
+        if key in train_metrics and train_metrics[key] is not None
+    ]
+    return bool(losses) and all(float(value) == 0.0 for value in losses)
+
+
+def _ivalue_provider(trainer):
+    """A callable giving a node's predicted I-value, or None when there is no DQN.
+
+    None matters: without a DQN capability `CapabilityManager.get_i_value` falls through to a
+    *random draw*, so recording it would produce a `u_ivalue` column of noise carrying a
+    method's name. The registry gate would still list `ivalue` as available, and the
+    comparison would report a chance-level result as though it were a measurement. Returning
+    None instead leaves the column absent, and `uq_report`/`sweep.py` then skip the method
+    because its score column is not present -- an explained hole rather than a fake number.
+    """
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    if capability is None or not getattr(capability, 'dqns', None):
+        return None
+    return lambda node: trainer.get_i_value(node, 0)
+
+
+def _with_ivalue_uncertainty(bundle, nodes, ivalue_provider, desc):
+    """Return `bundle` with `ivalue` added to its uncertainty dict.
+
+    `ivalue_provider(node) -> float`. A failure degrades to NaN for that sample rather than
+    losing the batch: `records.py` already treats a NaN score as "not measured" and
+    `metrics.py` drops it with a `nan_scores_dropped` flag, so a partial column is reported
+    honestly instead of silently becoming zeros.
+    """
+    import numpy as np
+
+    values = np.empty(len(nodes), dtype=np.float32)
+    for index, node in enumerate(nodes):
+        try:
+            values[index] = float(ivalue_provider(node))
+        except Exception:
+            values[index] = np.nan
+
+    if np.isnan(values).all():
+        print(f"  WARNING ({desc}): every I-value lookup failed; u_ivalue will be empty.")
+
+    uncertainty = dict(bundle.uncertainty or {})
+    uncertainty["ivalue"] = values
+    return dataclasses.replace(bundle, uncertainty=uncertainty)
+
+
+def _selection_score(val_metrics, metric):
+    """The validation number that decides the best epoch.
+
+    Falls back to accuracy when the requested metric is absent or NaN, which happens when
+    the validation subsample contains a single class -- AUROC and balanced accuracy are
+    both undefined there, and refusing to checkpoint at all would be worse than
+    checkpointing on the one metric that still exists.
+    """
+    import math
+
+    value = val_metrics.get(metric)
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        if metric != 'accuracy':
+            print(f"  NOTE: validation {metric} is unavailable this epoch "
+                  f"(single-class subsample?); falling back to accuracy for checkpoint "
+                  f"selection")
+        return float(val_metrics.get('accuracy', 0.0))
+    return float(value)
+
+
+def _jsonable_keys(value):
+    """Recursively coerce dict keys to str where json would refuse them.
+
+    The demographic attribute values are numpy integers -- the dataset produces them that
+    way deliberately -- and any of them used as a dict key makes `json.dumps` raise
+    ``keys must be str, int, float, bool or None, not int64``. `default=` does not help:
+    it is consulted for values, never for keys.
+    """
+    if isinstance(value, dict):
+        return {
+            (key if isinstance(key, (str, int, float, bool, type(None))) else str(key)):
+                _jsonable_keys(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_keys(item) for item in value]
+    return value
+
+
+def attach_i_value_predictor(graph_manager, trainer):
+    """Give a performance-based graph manager the DQN that predicts I-values.
+
+    ``PerformanceGraphManager.update_graph`` refuses to rewire without one, and it is
+    right to: ``CapabilityManager.get_i_value`` falls back to a random draw when no DQN
+    capability is enabled, so rewiring would be reacting to noise. Returns True when a
+    predictor was attached.
+    """
+    if not hasattr(graph_manager, 'set_i_value_predictor'):
+        return False
+    capability = getattr(getattr(trainer, 'capabilities', None), 'dqn_capability', None)
+    dqns = getattr(capability, 'dqns', None) if capability is not None else None
+    if not dqns:
+        print("  Graph updater: no DQN capability, so no I-value predictor is available. "
+              "The graph will stay static -- use an i-value traversal to enable rewiring.")
+        return False
+    graph_manager.set_i_value_predictor(dqns[0])
+    print("  Graph updater: I-value predictor attached from the DQN capability.")
+    return True
+
+
+def track_graph_performance(graph_manager, trainer, sample_size):
+    """Feed a sample of the training graph's I-values to the graph manager.
+
+    Nothing called ``track_performance`` before, so every node sat at the neutral
+    default and no node was ever classified weak or strong. Sampled rather than
+    exhaustive because each I-value is a DQN forward pass, and a per-epoch pass over a
+    five-thousand-node graph costs more than the rewiring it informs. The sample is
+    drawn from a dedicated RNG stream, so it does not shift any other random decision.
+    """
+    if not hasattr(graph_manager, 'track_performance'):
+        return 0
+    nodes = list(graph_manager.graph.get_nodes())
+    if not nodes:
+        return 0
+    if 0 < sample_size < len(nodes):
+        rng = rng_for("graph.performance_sample")
+        nodes = rng.sample(nodes, sample_size)
+    tracked = 0
+    for node in nodes:
+        try:
+            graph_manager.track_performance(node, trainer.get_i_value(node, 0))
+            tracked += 1
+        except Exception as error:
+            print(f"  Warning: could not track performance for node "
+                  f"{getattr(node, 'node_id', '?')}: {error}")
+    return tracked
+
+
+def main(argv=None):
+    """Run the training/evaluation pipeline.
+
+    ``argv=None`` reads ``sys.argv``, which is how the CLI and every queue-launched
+    subprocess invoke it. Passing a list lets a driver run a configuration in-process.
+    """
+    args = parse_args(argv) # Parse args first
+
+    if getattr(args, 'list_holdouts', False):
+        from evaluation.uq.holdouts import summarize_available
+        from evaluation.uq.corruptions import describe as describe_corruptions
+        print(summarize_available())
+        print()
+        print(describe_corruptions())
+        sys.exit(0)
+
+    # Fail on an unknown --holdout now, not after a graph build. get_holdout also
+    # refuses a spec that would hold out a real source, which would remove part of the
+    # negative class rather than shifting the distribution.
+    from evaluation.uq.holdouts import get_holdout
+    try:
+        get_holdout(getattr(args, 'holdout', None))
+    except ValueError as error:
+        print(f"\nERROR: {error}")
+        sys.exit(1)
+
+    graph_uncertainty_methods = [
+        method.strip() for method in getattr(args, 'graph_uncertainty_methods', '').split(',') if method.strip()
+    ]
+
+    # Validate architectures up front. `--architectures` is a free-form string with
+    # no argparse `choices`, so a typo previously surfaced as a ModuleNotFoundError
+    # deep inside CNNModel.__init__, and seven of the eleven architectures the web UI
+    # offers crash during construction for reasons the capability table records.
+    requested_architectures = [
+        name.strip() for name in getattr(args, 'architectures', '').split(',') if name.strip()
+    ]
+    usable_architectures, architecture_problems = validate_architectures(requested_architectures)
+    if architecture_problems:
+        print("\nERROR: unusable architecture(s) requested:")
+        for name, reason in architecture_problems.items():
+            print(f"  - {name}: {reason}")
+        print(f"\n  Usable architectures: {', '.join(supported_detectors())}")
+        for name in supported_detectors():
+            print(f"    {describe_detector(name)}")
+        sys.exit(1)
     # Enable faulthandler for hard crashes
     try:
         faulthandler.enable()
@@ -527,16 +1168,29 @@ def main():
     except Exception as e:
         print(f"Warning: Could not query system resources: {e}")
 
-    # --- Check for PYTHONHASHSEED --- 
-    if 'PYTHONHASHSEED' not in os.environ:
-        print("\nWarning: PYTHONHASHSEED environment variable not set.")
-        print("         For full reproducibility, set it before running the script, e.g.:")
-        print("         export PYTHONHASHSEED=42")
-        print("         Or prefix the command: PYTHONHASHSEED=42 python ...\n")
-    else:
-        print(f"Using PYTHONHASHSEED={os.environ['PYTHONHASHSEED']}")
-
-    set_seed(args.seed) # Use args.seed
+    # --- Reproducibility -------------------------------------------------- #
+    # `ensure_deterministic_env()` at import time has already re-exec'd this
+    # process if PYTHONHASHSEED or CUBLAS_WORKSPACE_CONFIG needed setting, so by
+    # here the environment is correct regardless of how the run was launched
+    # (shell, run_reproducible.sh, or the GPU queue's direct subprocess call).
+    determinism_config = configure_determinism(args.seed, args.determinism)
+    print(
+        f"Determinism: mode={determinism_config.mode}, seed={determinism_config.seed}, "
+        f"PYTHONHASHSEED={determinism_config.pythonhashseed}, "
+        f"CUBLAS_WORKSPACE_CONFIG={determinism_config.cublas_workspace_config}"
+    )
+    if determinism_config.strict:
+        print(
+            "  strict mode: deterministic algorithms on, TF32 off, single-threaded, "
+            "AMP disabled, swallowed exceptions re-raised"
+        )
+        if getattr(args, 'val_num_workers', 0) not in (0, 1):
+            print(
+                f"  strict mode: forcing --val-num-workers {args.val_num_workers} -> 1 "
+                "(results are collected in submission order, so parallelism is safe, "
+                "but a single worker removes the remaining thread-scheduling variance)"
+            )
+            args.val_num_workers = 1
     # GPU override: optionally force a single GPU via env and torch device
     try:
         if getattr(args, 'gpu_override', False):
@@ -574,7 +1228,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("logs", exist_ok=True)
     logfile = f"hierarchical_test_{timestamp}.log"   
-    data_root = "/home/brg2890/major/datasets/ai-face"
+    data_root = resolve_ai_face_data_root(args.data_root)
 
     # Set up attribute metadata for I-value traversal
     attribute_metadata = [
@@ -659,6 +1313,8 @@ def main():
             }
         ]
     
+    pipeline_start_time = time.time()
+
     # Call the new helper function to load and prepare data splits
     train_nodes, val_nodes, test_nodes, \
     train_nodes_full, val_nodes_full, test_nodes_full, \
@@ -671,16 +1327,29 @@ def main():
     # for graph construction below.
 
     # Determine cache filename suffix based on whether balanced nodes were used for graph construction
-    train_suffix = "balanced" if args.fair_train else "full"
-    val_suffix = "balanced" if args.fair_test else "full"
-    test_suffix = "balanced" if args.fair_test else "full"
+    # The label-balancing mode joins the balancing suffix so a balanced and an unbalanced
+    # run are legible as different caches. Correctness does not depend on it -- the key
+    # already carries `node_set_hash(nodes)`, which differs the moment the node set does --
+    # but a filename that says which population it came from is worth the characters.
+    label_mode = getattr(args, 'balance_labels', 'none')
+    label_part = "" if label_mode == 'none' else f"-lab{label_mode}"
+    train_suffix = ("balanced" if args.fair_train else "full") + label_part
+    # Val and test are only label-balanced under `all`.
+    eval_label_part = label_part if label_mode == 'all' else ""
+    val_suffix = ("balanced" if args.fair_test else "full") + eval_label_part
+    test_suffix = ("balanced" if args.fair_test else "full") + eval_label_part
 
     q_thresh_str = f"{args.quality_threshold:.3f}"
     s_thresh_str = f"{args.symmetry_threshold:.3f}"
     e_thresh_str = f"{args.embedding_threshold:.3f}"
 
-    # Select dataloader based on graph type
-    if args.graph_type == 'nonclustered':
+    # Select dataloader based on graph type. `startswith`, not `==`: the four choices are
+    # {clustered, nonclustered} x {plain, _subclustered}, and subclustering is an extra
+    # Louvain pass *on top of* the chosen construction. Testing equality against
+    # 'nonclustered' sent `nonclustered_subclustered` down the clustered branch, so that
+    # option built a race-gender-clustered graph while claiming to be non-clustered --
+    # and its results were consequently identical to `clustered_subclustered`.
+    if args.graph_type.startswith('nonclustered'):
         print(f"Using UnclusteredDeepfakeDataloader for non-clustered graph construction")
         dataloader_class = UnclusteredDeepfakeDataloader
         graph_type_str = 'nonclustered'
@@ -697,20 +1366,32 @@ def main():
         # Extract dataset name from data_root path (Corrected)
         dataset_name = os.path.basename(os.path.normpath(data_root)) if data_root else "unknown_dataset"
         
-        # Create hash of node IDs for cache consistency
-        import hashlib
-        node_ids = sorted([node.node_id for node in nodes_to_use])
-        node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
-        
-        cache_base = f"{dataset_name}_{split_name}_{graph_type_str}_{suffix}_nodes_{len(nodes_to_use)}_q{q_thresh_str}_s{s_thresh_str}_e{e_thresh_str}_hash{node_hash}"
-        pickle_cache_filename = os.path.join(
-            graph_cache_dir,
-            f"{cache_base}_graph.pkl"
+        # Cache key comes from the shared builder so it cannot drift from the
+        # compatibility check the UI uses. It covers --seed, the sparse/subcluster
+        # settings, and an edge-build version, all of which change the graph but were
+        # previously absent -- meaning materially different graphs shared one entry.
+        cache_base = graph_cache_key(
+            dataset_name=dataset_name,
+            split_name=split_name,
+            graph_type=graph_type_str,
+            balancing_suffix=suffix,
+            nodes=nodes_to_use,
+            quality_threshold=args.quality_threshold,
+            symmetry_threshold=args.symmetry_threshold,
+            embedding_threshold=args.embedding_threshold,
+            seed=args.seed,
+            build_val_test_edges=getattr(args, 'build_val_test_edges', True),
+            hyperparameters=dataloader_class.hyperparameters,
+            args=args,
+            # A holdout removes nodes, so a held-out run and its control build
+            # genuinely different graphs. The parameter has always existed here;
+            # nothing passed it, so every key ended `_honone` and the two runs shared
+            # one cache entry.
+            holdout_id=getattr(args, 'holdout', None),
         )
-        edges_csv_filename = os.path.join(
-            graph_cache_dir,
-            f"{cache_base}_edges.csv.gz"
-        )
+        _cache_paths = cache_filenames(graph_cache_dir, cache_base)
+        pickle_cache_filename = _cache_paths['pickle']
+        edges_csv_filename = _cache_paths['edges_csv']
 
         # Check/Load Graph Cache
         graph = None
@@ -790,9 +1471,19 @@ def main():
                 quality_threshold=args.quality_threshold,
                 symmetry_threshold=args.symmetry_threshold,
                 embedding_threshold=args.embedding_threshold,
+                build_val_test_edges=getattr(args, 'build_val_test_edges', True),
+                # Candidate-edge generation. Without these the dataloader falls back to its
+                # own defaults and --edge-construction / --knn-neighbors would be accepted
+                # and ignored.
+                edge_construction=getattr(args, 'edge_construction', 'knn'),
+                knn_neighbors=getattr(args, 'knn_neighbors', 50),
                 silent_mode=True  # Disable internal progress bars and logging during grid search
             )
-            graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name) if split_name == 'train' else HyperGraph(nodes_to_use)
+            should_build_edges = split_name == 'train' or getattr(args, 'build_val_test_edges', True)
+            if should_build_edges:
+                graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name)
+            else:
+                graph_build_result = HyperGraph(nodes_to_use)
             
             # Handle potential tuple return from build_graph_standard
             if isinstance(graph_build_result, tuple):
@@ -801,7 +1492,19 @@ def main():
             else:
                  graph = graph_build_result
             
-            # --- Save Edges to Cache (streaming CSV preferred) --- 
+            # Canonicalize before the graph is used *or* cached. Both CSV load paths
+            # canonicalize on the way in (HyperGraph.load_edges_from_csv), and the build
+            # path did not -- so a freshly built graph and the same graph reloaded from
+            # its own cache presented each node's adjacency in a different order. That
+            # changes traversal neighbor order and the float reduction order in
+            # graph-distance uncertainty, which made the *first* run of a configuration
+            # disagree with every later one: identical code, seed, and data, different
+            # numbers, depending only on whether the cache happened to be warm. Silent,
+            # and fatal to any baseline comparison.
+            if graph and hasattr(graph, 'canonicalize_edge_order'):
+                graph.canonicalize_edge_order()
+
+            # --- Save Edges to Cache (streaming CSV preferred) ---
             if graph: # Only save if graph build was successful
                 try:
                     print(f"Saving edges for {split_name} graph to streaming cache: {edges_csv_filename}")
@@ -814,7 +1517,37 @@ def main():
             else:
                 print(f"Skipping cache save for {split_name} due to build failure.")
 
-        # --- Store Graph --- 
+        # --- Subclustering ---
+        # Placed here because both branches above converge on `graph`: the cache-load path
+        # built a bare `HyperGraph(nodes)` and the build path called
+        # `_build_graph_standard`, and *neither* assigned subclusters. The two dataloaders
+        # do assign them, but only inside their clustered/unclustered builders, which the
+        # live path never calls -- and the Hierarchical one gates on an
+        # `assign_subclusters` hyperparameter that nothing ever set to True.
+        #
+        # Net effect before this: `--graph-type clustered_subclustered` and
+        # `nonclustered_subclustered` were silently identical to their plain counterparts,
+        # every subcluster traversal fell back to its no-subcluster path, and the missing
+        # `python-louvain` package was never even reached.
+        #
+        # Assignment mutates node attributes only, not edges, so it is deliberately *after*
+        # the edge cache is written -- the two subclustered graph types legitimately share
+        # an edge cache with their plain counterparts.
+        if graph and args.graph_type.endswith('_subclustered'):
+            if not _LOUVAIN_AVAILABLE:
+                raise RuntimeError(
+                    f"--graph-type {args.graph_type} requires python-louvain, which is "
+                    f"not installed. HyperGraph.assign_louvain_subclusters would be a "
+                    f"no-op, so the run would silently behave as "
+                    f"{args.graph_type.replace('_subclustered', '')} while reporting "
+                    f"otherwise. Install python-louvain, or choose a plain graph type."
+                )
+            print(f"Assigning Louvain subclusters for {split_name} graph...")
+            graph.assign_louvain_subclusters()
+            assigned = getattr(graph, 'subclusters', None)
+            print(f"  Assigned {len(assigned) if assigned is not None else 0} subcluster(s)")
+
+        # --- Store Graph ---
         # This part assumes 'graph' holds the final HyperGraph object, either loaded or built
         if graph:
              print(f"[Debug] Type of graph object for {split_name} before assignment: {type(graph)}")
@@ -837,7 +1570,7 @@ def main():
         print("\nError: One or more graphs could not be loaded or built. Exiting.")
         sys.exit(1)
         
-    graph_construction_time = time.time() - node_loading_time
+    graph_construction_time = time.time() - pipeline_start_time
 
     # Performance Reporting & Validation
     print("\nPerformance:")
@@ -879,8 +1612,25 @@ def main():
     with capture_output(logfile) as logpath:
         print(f"Starting test run, logging to: {logfile}")
     
-        # Create graph managers for each split
-        train_manager = NoGraphManager(train_graph)
+        # Create graph managers for each split. Only the training graph can be updated:
+        # rewiring val or test would change what the reported numbers are measured on.
+        graph_manager_kind = getattr(args, 'graph_manager', 'none')
+        if graph_manager_kind == 'performance':
+            train_manager = PerformanceGraphManager(
+                train_graph,
+                weak_quantile=args.weak_quantile,
+                strong_quantile=args.strong_quantile,
+                removal_fraction=args.removal_fraction,
+                updates_per_epoch=args.graph_updates_per_epoch,
+                remove_target=args.graph_remove_target,
+            )
+            print(f"Graph updater: PerformanceGraphManager("
+                  f"quantiles=[{args.strong_quantile}, {args.weak_quantile}], "
+                  f"removal_fraction={args.removal_fraction}, "
+                  f"updates_per_epoch={args.graph_updates_per_epoch}, "
+                  f"remove_target={args.graph_remove_target!r})")
+        else:
+            train_manager = NoGraphManager(train_graph)
         val_manager = NoGraphManager(val_graph)
         test_manager = NoGraphManager(test_graph)
 
@@ -899,6 +1649,9 @@ def main():
         print(f"  Trainer mode: {traversal_config['trainer_mode']}")
         print(f"  Architectures: {traversal_config['architectures']}")
         print(f"  DQN model type: {args.dqn_model}")
+        print(f"  Uncertainty head: {args.uncertainty_head}")
+        print(f"  MC Dropout samples: {args.mc_dropout_samples}")
+        print(f"  Graph uncertainty methods: {graph_uncertainty_methods}")
         
         if traversal_config['enable_switching']:
             print(f"  Traversal switching enabled")
@@ -943,7 +1696,28 @@ def main():
                         'traversal': traversal_config['single_traversal'],
                         'description': f"{arch}_{traversal_config['single_traversal']}"
                     })
-        
+
+        # Graph reduction/restoration is read off these per-configuration dicts further
+        # down. Nothing populated the keys, so `config.get('reduction_enabled', False)`
+        # was always False and the whole feature was dead from every entry point --
+        # including the web UI, which sends reduction_* keys that the queue's argument
+        # table then dropped. Merged once here rather than into each literal above so a
+        # new test_configs branch cannot forget them.
+        reduction_settings = {
+            'reduction_enabled': getattr(args, 'reduction_enabled', False),
+            'reduction_strategy': getattr(args, 'reduction_strategy', 'none'),
+            'reduction_percentage': getattr(args, 'reduction_percentage', 0.0),
+            'reduction_top_percentage': getattr(args, 'reduction_top_percentage', 0.0),
+            'reduction_bottom_percentage': getattr(args, 'reduction_bottom_percentage', 0.0),
+            'reduction_interval': getattr(args, 'reduction_interval', 'end_of_epoch'),
+            'reduction_interval_steps': getattr(args, 'reduction_interval_steps', 100),
+            'restoration_strategy': getattr(args, 'restoration_strategy', 'none'),
+            'restoration_percentage': getattr(args, 'restoration_percentage', 50.0),
+            'restoration_trigger_threshold': getattr(args, 'restoration_trigger_threshold', 0.0),
+        }
+        for entry in test_configs:
+            entry.update(reduction_settings)
+
         # Calculate graph sizes and training steps
         train_size = len(train_manager.graph.get_nodes())
         val_size = len(val_manager.graph.get_nodes())
@@ -967,16 +1741,35 @@ def main():
             val_steps = getattr(args, 'val_steps', default_val_steps)
         
         # --- Setup run-specific output directory ---
-        import string
-        import random as pyrandom
+        # Uses secrets, not the seeded `random` module. The previous version drew 8
+        # values from the global RNG, but only when --run-id was absent: the web UI
+        # always passes one and a manual invocation does not, so a manual run and a
+        # UI-launched run at the same --seed consumed different amounts of randomness
+        # and therefore produced different traversals.
+        import secrets
+
         def generate_run_id():
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            rand = ''.join(pyrandom.choices(string.ascii_lowercase + string.digits, k=8))
-            return f"run_{timestamp}_{rand}"
+            return f"run_{timestamp}_{secrets.token_hex(4)}"
+
         run_id = args.run_id if hasattr(args, 'run_id') and args.run_id else generate_run_id()
         run_output_dir = Path(f"run_outputs/{run_id}")
         run_output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[Quanty] All visualizations and outputs for this run will be saved under: {run_output_dir}")
+
+        # determinism.json is written *now*, not at the end: a run that crashes
+        # halfway is exactly the one whose environment you need to inspect, and it is
+        # also how an ensemble launcher discovers its members while they are still
+        # in flight. The final-results fields are filled in by a second write below.
+        determinism_path = run_output_dir / "determinism.json"
+        write_run_fingerprint(
+            determinism_path,
+            run_id=run_id,
+            seed=args.seed,
+            ensemble_member=getattr(args, 'ensemble_member', None),
+            ensemble_id=getattr(args, 'ensemble_id', None),
+            configs=[entry['description'] for entry in test_configs],
+        )
 
         # Test each configuration
         for config in test_configs:
@@ -987,17 +1780,72 @@ def main():
             try:
                 # Create model
                 arch = config['arch']
+                # Deep-ensemble members differ here and nowhere else: same seed, same
+                # graph, same data order, different weight initialization. A no-op
+                # unless --ensemble-member was passed.
+                member_seed = seed_model_init(getattr(args, 'ensemble_member', None))
+                if member_seed is not None:
+                    print(f"  Ensemble member {args.ensemble_member}: "
+                          f"weight-init seed {member_seed}")
                 model = create_model(
                     arch,
                     f"/home/brg2890/major/bryce_python_workspace/GraphWork/HyperGraph/saved_models/{config['description']}_{timestamp}.pt",
                     device,
                     dqn_model_type=args.dqn_model,  # Pass DQN model type from args
                     feature_dim=128,  # Default feature dimension for DQN models
-                    embedding_dim=512  # Default embedding dimension
+                    embedding_dim=512,  # Default embedding dimension
+                    uncertainty_head=args.uncertainty_head,
+                    mc_dropout_samples=args.mc_dropout_samples,
+                    batchensemble_members=args.batchensemble_members,
+                    sngp_hidden_dim=args.sngp_hidden_dim,
+                    sngp_rff_dim=args.sngp_rff_dim,
+                    uncertainty_dropout_rate=args.uncertainty_dropout_rate,
+                    graph_uncertainty_methods=graph_uncertainty_methods,
+                    graph_degree_penalty_weight=args.graph_degree_penalty_weight,
+                    uncertainty_train_frequency=args.uncertainty_train_frequency,
+                    sngp_precision_policy=args.sngp_precision_policy,
+                    finetune=args.finetune,
                 )
-                
+
+                if isinstance(model, CNNModel):
+                    counts = model.parameter_counts()
+                    print(
+                        f"  Trainable parameters: {counts['trainable']:,} / {counts['total']:,}"
+                        f" (finetune={counts['finetune']}, backbone_frozen={counts['backbone_frozen']})"
+                    )
+
+                # Fit graph-distance statistics once on the training graph and reuse
+                # them for val/test. Fitting per split would renormalize a shifted
+                # distribution until it matched training, erasing the shift signal.
+                if graph_uncertainty_methods and isinstance(model, CNNModel):
+                    standardizer = GraphDistanceUncertainty(
+                        methods=graph_uncertainty_methods,
+                        penalty_weight=args.graph_degree_penalty_weight,
+                        robust=args.graph_distance_robust_stats,
+                    ).fit(train_manager.get_graph().get_nodes())
+                    standardizer.precompute(train_manager.get_graph())
+                    model.set_graph_distance_standardizer(standardizer)
+                    print(
+                        f"  Graph-distance statistics fitted "
+                        f"(hash={standardizer.stats_hash}, "
+                        f"embedding coverage={standardizer.embedding_coverage:.1%})"
+                    )
+                    if standardizer.embedding_coverage is not None and standardizer.embedding_coverage < 0.5:
+                        print(
+                            "  WARNING: fewer than half of nodes have a usable face embedding; "
+                            "embedding_distance scores will be dominated by the missing-value sentinel"
+                        )
+
                 # Create trainer (always use AdaptiveTrainer)
-                trainer = create_adaptive_trainer(train_manager, model, device, attribute_metadata, criterion, args)
+                # One collector per run, shared by both training paths so a switching run
+                # still produces a single comparable file.
+                selection_diagnostic = SelectionDiagnostic(
+                    enabled=getattr(args, 'selection_diagnostic', False)
+                )
+                trainer = create_adaptive_trainer(
+                    train_manager, model, device, attribute_metadata, criterion, args,
+                    selection_diagnostic=selection_diagnostic,
+                )
                 
                 # NEW: Set traversal sequence for DQN warm-up if using switching mode
                 if config['mode'] == 'switching':
@@ -1030,6 +1878,10 @@ def main():
                 
                 # Training setup
                 best_val_accuracy = 0.0
+                # Separate high-water mark for --checkpoint-metric. -inf, not 0.0: AUROC
+                # below 0.5 is a real (if bad) score, and starting at 0.0 would be fine,
+                # but a future metric could legitimately be negative.
+                best_selection_score = float('-inf')
                 best_epoch = 0
                 
                 # Initialize Graph Reduction Manager if enabled
@@ -1085,7 +1937,7 @@ def main():
                        (config['mode'] == 'switching' and 'i-value-cluster-hop' in config.get('traversal_sequence', [])):
                         bias_hop_viz = BiasHopVisualizer(save_dir=config_output_dir / "bias_hops")
                     # Track specific nodes for detailed analysis
-                    sample_nodes = random.sample(list(train_manager.graph.get_nodes()), 
+                    sample_nodes = rng_for('viz.node_sample').sample(list(train_manager.graph.get_nodes()), 
                                                 min(args.viz_track_nodes, len(train_manager.graph.get_nodes())))
                     viz_tracker.track_specific_nodes(trainer, sample_nodes, max_nodes=args.viz_track_nodes)
                     print(f"   Visualization directory: {viz_save_dir}")
@@ -1103,11 +1955,29 @@ def main():
                 print(f"Val: {val_steps} steps with 1 pointer") 
                 print(f"Test: All nodes")
                 
+                # Attach the I-value predictor now that a traversal has been set: the
+                # DQN capability is created lazily by configure_for_traversal, so it
+                # does not exist until then.
+                if graph_manager_kind != 'none':
+                    attach_i_value_predictor(train_manager, trainer)
+
                 # Training loop
                 print(f"\nTraining {config['description']}...")
                 for epoch in range(args.num_epochs):
                     print(f"\n--- Epoch {epoch+1}/{args.num_epochs} ---")
-                    
+
+                    # Re-verify strict determinism each epoch, so a run that quietly
+                    # fell out of strict mode fails here instead of producing
+                    # unreproducible numbers to the end.
+                    assert_strict_invariants(f"start of epoch {epoch + 1}")
+
+                    # Let the model apply epoch-boundary policies. SNGP uses this to
+                    # reset its Laplace precision so gp_variance stays comparable
+                    # between epochs; previously it accumulated across the whole run.
+                    for trainer_model in getattr(trainer, 'models', []) or []:
+                        if hasattr(trainer_model, 'on_epoch_start'):
+                            trainer_model.on_epoch_start(epoch, num_epochs=args.num_epochs)
+
                     # Handle reversion strategy at start of epoch (if enabled)
                     if reduction_manager and reduction_manager.restoration_strategy == 'reversion' and epoch > 0:
                         print(f"  🔄 Checking for reversion restoration at start of epoch {epoch+1}...")
@@ -1141,12 +2011,32 @@ def main():
                                 device,
                                 dqn_model_type=args.dqn_model,  # Pass DQN model type from args
                                 feature_dim=128,  # Default feature dimension for DQN models
-                                embedding_dim=512  # Default embedding dimension
+                                embedding_dim=512,  # Default embedding dimension
+                                uncertainty_head=args.uncertainty_head,
+                                mc_dropout_samples=args.mc_dropout_samples,
+                                batchensemble_members=args.batchensemble_members,
+                                sngp_hidden_dim=args.sngp_hidden_dim,
+                                sngp_rff_dim=args.sngp_rff_dim,
+                                uncertainty_dropout_rate=args.uncertainty_dropout_rate,
+                                graph_uncertainty_methods=graph_uncertainty_methods,
+                                graph_degree_penalty_weight=args.graph_degree_penalty_weight,
+                                uncertainty_train_frequency=args.uncertainty_train_frequency,
+                                sngp_precision_policy=args.sngp_precision_policy,
+                                finetune=args.finetune,
                             )
+                            # Carry the fitted graph-distance statistics onto the
+                            # replacement model, so uncertainty stays on the same
+                            # scale across a disconnected-switching reset.
+                            previous_standardizer = getattr(
+                                trainer.models[0], 'graph_distance_standardizer', None
+                            )
+                            if previous_standardizer is not None:
+                                model.set_graph_distance_standardizer(previous_standardizer)
                             trainer.models[0] = model
                             print(f"[Disconnected Switching] Main detection model has been reset.")
                             # Reset best checkpoint/vars
                             best_val_accuracy = 0.0
+                            best_selection_score = float('-inf')
                             best_epoch = 0
                             if os.path.exists(best_model_checkpoint_path):
                                 os.remove(best_model_checkpoint_path)
@@ -1156,10 +2046,46 @@ def main():
                     train_start_time = time.time()
                     train_distribution = None
                     
-                    train_metrics = trainer.train()
+                    # Pass the epoch index through. AdaptiveTrainer.train(epoch=None)
+                    # already forwarded it to the capabilities, but it was always
+                    # called with no argument, so the capabilities never saw it.
+                    train_result = trainer.train(epoch=epoch)
+                    if isinstance(train_result, tuple) and len(train_result) == 2:
+                        train_metrics, train_distribution = train_result
+                    else:
+                        train_metrics = train_result
+                        train_distribution = None
+
+                    # An epoch that saw no training samples is never legitimate, and it is
+                    # invisible downstream: the traversal warns, the capability returns
+                    # zeroed metrics, the run continues, validation still scores the
+                    # *untrained* model at roughly the class prior, and the configuration
+                    # is written out as complete. Two cells did exactly that -- three
+                    # epochs of `avg_loss: 0.0` reported as an 85.8%-accurate result, with
+                    # a validation AUROC bit-identical across every epoch because no weight
+                    # ever changed. Raising here routes it through the per-configuration
+                    # handler, so `complete` is never set and the sweep counts it as the
+                    # hard failure it is.
+                    if _trained_nothing(train_metrics):
+                        raise RuntimeError(
+                            f"epoch {epoch + 1} trained on zero nodes: traversal "
+                            f"{config.get('traversal', config.get('mode'))!r} returned no "
+                            f"batches, so the model was never updated. Metrics reported "
+                            f"for it would describe an untrained network at roughly the "
+                            f"class prior. Check the traversal's compatibility with "
+                            f"--graph-type {args.graph_type} and whether it needs a "
+                            f"capability the CapabilityManager did not enable "
+                            f"(train metrics: {train_metrics})."
+                        )
+
+                    for trainer_model in getattr(trainer, 'models', []) or []:
+                        if hasattr(trainer_model, 'on_epoch_end'):
+                            trainer_model.on_epoch_end(epoch)
                     # Get current traversal info
                     current_traversal_info = trainer.get_current_traversal_info()
                     print(f"  Current traversal: {current_traversal_info}")
+                    if train_metrics and isinstance(train_metrics, dict):
+                        print(f"  Training metrics: {json.dumps(train_metrics, indent=2)}")
                     
                     # Check for reduction during training (if interval is every_n_steps)
                     if reduction_manager and reduction_manager.reduction_interval == 'every_n_steps':
@@ -1193,10 +2119,18 @@ def main():
                             if hop_history:
                                 viz_tracker.bias_hop_history.extend(hop_history)
                     
-                    # Print training distribution if available
+                    # Print training distribution if available. `default=str` is not
+                    # enough: the attribute *values* are numpy ints, so they end up as
+                    # dict keys, and json refuses a non-primitive key outright rather
+                    # than falling back to `default`. Unconverted, this raised
+                    # TypeError, the per-configuration handler swallowed it, and the run
+                    # exited 0 having trained but written no results -- a silent failure
+                    # that looked like success from the outside.
                     if train_distribution:
                         print("  Training Attribute Distribution for this Epoch:")
-                        print(json.dumps(train_distribution, indent=4))
+                        print(json.dumps(
+                            _jsonable_keys(train_distribution), indent=4, default=str
+                        ))
                     
                     # Evaluate training bias metrics periodically
                     train_metrics_full = None
@@ -1205,7 +2139,7 @@ def main():
                         model_to_eval = trainer.models[0] if trainer.models else None
                         if model_to_eval:
                             model_to_eval.eval()
-                            train_sample_nodes = random.sample(
+                            train_sample_nodes = rng_for('eval.train_bias_subsample').sample(
                                 list(train_manager.graph.get_nodes()), 
                                 min(len(train_manager.graph.get_nodes()), train_steps)
                             )
@@ -1233,7 +2167,7 @@ def main():
                         # Use parallel image loading for faster validation (4 workers)
                         val_metrics = evaluate_model(
                             model=model_to_eval,
-                            nodes_to_evaluate=random.sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
+                            nodes_to_evaluate=rng_for('eval.val_subsample').sample(val_nodes_from_graph, min(len(val_nodes_from_graph), val_steps)),
                             loss_fn=criterion,
                             batch_size=args.batch_size,
                             bias_loss_fn=bias_loss_fn,
@@ -1253,7 +2187,7 @@ def main():
                                 subgroup_i_values = {}
                                 if hasattr(trainer, 'attribute_metadata') and trainer.attribute_metadata:
                                     # Get a sample of validation nodes for I-value calculation
-                                    val_sample = random.sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
+                                    val_sample = rng_for('eval.val_subsample').sample(val_nodes_from_graph, min(100, len(val_nodes_from_graph)))
                                     try:
                                         for node in val_sample:
                                             if hasattr(node, 'attributes') and node.attributes:
@@ -1282,7 +2216,14 @@ def main():
                                 )
                         
                         current_val_accuracy = val_metrics.get('accuracy', 0.0)
-                        
+                        # The value that actually decides the best epoch. Kept separate from
+                        # `current_val_accuracy`, which the restoration and rollback
+                        # triggers below still read as accuracy.
+                        checkpoint_metric = getattr(args, 'checkpoint_metric', 'auroc')
+                        current_selection_score = _selection_score(
+                            val_metrics, checkpoint_metric
+                        )
+
                         # Check for restoration trigger
                         if reduction_manager and reduction_manager.restoration_enabled():
                             if reduction_manager.check_restoration_trigger(current_val_accuracy, best_val_accuracy):
@@ -1304,19 +2245,47 @@ def main():
                                     trainer.load_capability_checkpoints(best_model_checkpoint_path)
                                     print(f"  Rolled back to best model from epoch {best_epoch}")
                         
-                        # Save best model
-                        if current_val_accuracy > best_val_accuracy:
+                        # Save best model, judged on --checkpoint-metric.
+                        if current_selection_score > best_selection_score:
+                            best_selection_score = current_selection_score
                             best_val_accuracy = current_val_accuracy
                             best_epoch = epoch + 1
                             model_to_eval.save_checkpoint(best_model_checkpoint_path)
-                            
+
                             # Save additional checkpoints for AdaptiveTrainer capabilities
                             trainer.save_capability_checkpoints(best_model_checkpoint_path)
-                            
-                            print(f"New best validation accuracy: {best_val_accuracy:.4f} at epoch {best_epoch}")
+
+                            print(f"New best validation {checkpoint_metric}: "
+                                  f"{best_selection_score:.4f} at epoch {best_epoch} "
+                                  f"(accuracy {current_val_accuracy:.4f})")
                         else:
-                            print(f"Validation accuracy: {current_val_accuracy:.4f} (best: {best_val_accuracy:.4f} at epoch {best_epoch})")
+                            print(f"Validation {checkpoint_metric}: "
+                                  f"{current_selection_score:.4f} (best: "
+                                  f"{best_selection_score:.4f} at epoch {best_epoch}); "
+                                  f"accuracy {current_val_accuracy:.4f}")
                     
+                    # End of epoch: let the graph updater rewire. A no-op under
+                    # NoGraphManager, which is the default, so the untouched path stays
+                    # bit-identical. Ordered before reduction so a rewired graph is what
+                    # reduction then sees, matching the legacy Trainer.run ordering.
+                    if graph_manager_kind != 'none':
+                        # Several updates per epoch, not one. Ticking once per epoch meant
+                        # only the epochs after the best checkpoint could matter, and with
+                        # the best epoch frozen at 1 that was none of them.
+                        extra = getattr(args, 'graph_manager_sample_nodes', 0)
+                        for tick in range(train_manager.updates_per_epoch):
+                            if extra:
+                                tracked = track_graph_performance(
+                                    train_manager, trainer, extra
+                                )
+                                print(f"  Graph updater: sampled {tracked} extra node(s)")
+                            train_manager.update_graph()
+                        stats = train_manager.get_stats()
+                        print(f"  Graph updater: {stats['updates']} update(s) so far, "
+                              f"{stats['tracked_nodes']} node(s) measured, "
+                              f"{stats['removed_total']} withdrawn of "
+                              f"{stats['initial_node_count']}")
+
                     # End of epoch: perform reduction if interval is end_of_epoch
                     if reduction_manager and reduction_manager.reduction_interval == 'end_of_epoch':
                         if reduction_manager.reduction_enabled():
@@ -1350,6 +2319,46 @@ def main():
                             print(f"\n⚠️  No checkpoint found at {best_model_checkpoint_path}. Using current model state for final testing...")
                         
                         model_to_eval.eval()
+
+                        # Per-sample records for the uncertainty benchmark. The metrics
+                        # dict below carries only batch *means* of each raw uncertainty
+                        # signal, and those live on incomparable scales -- calibration,
+                        # selective prediction, and OOD detection all need the
+                        # per-sample table.
+                        record_splits = _uq_record_splits(args)
+                        uq_artifacts = {}
+                        # Severity 0 / corruption 'none' constructs an identity, which
+                        # short-circuits before any image work -- so a clean run pays
+                        # nothing and its rows are byte-identical to an uncorrupted one.
+                        test_corruption = ImageCorruption(
+                            corruption=getattr(args, 'corruption', 'none'),
+                            severity=getattr(args, 'corruption_severity', 0),
+                            data_root=data_root,
+                        )
+                        uq_manifest = {
+                            "run_id": run_id,
+                            "description": config['description'],
+                            "detector": arch,
+                            "uncertainty_head": args.uncertainty_head,
+                            "mc_dropout_samples": args.mc_dropout_samples,
+                            "seed": args.seed,
+                            "ensemble_member": getattr(args, 'ensemble_member', None),
+                            "ensemble_id": getattr(args, 'ensemble_id', None),
+                            "determinism_mode": args.determinism,
+                            "holdout_id": getattr(args, 'holdout', None),
+                            "holdout_stats": getattr(args, 'holdout_stats', None),
+                            "best_epoch": best_epoch,
+                        }
+                        test_collector = (
+                            PredictionRecordCollector(
+                                split='test', data_root=data_root,
+                                # Labelled from the same object that applies it, so
+                                # the two cannot disagree.
+                                corruption=test_corruption.corruption,
+                                severity=test_corruption.severity,
+                            )
+                            if 'test' in record_splits else None
+                        )
                         test_metrics = evaluate_model(
                             model=model_to_eval,
                             nodes_to_evaluate=test_nodes_from_graph,
@@ -1358,10 +2367,109 @@ def main():
                             bias_loss_fn=getattr(trainer, 'bias_loss', None) if getattr(args, 'enable_val_bias_inference', False) else None,
                             device=device,
                             desc="Final Test",
-                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None
+                            attribute_metadata=attribute_metadata if getattr(args, 'enable_val_bias_inference', False) else None,
+                            record_collector=test_collector,
+                            image_corruption=None if test_corruption.is_identity else test_corruption,
+                            ivalue_provider=_ivalue_provider(trainer),
                         )
                         print("\n--- Final Test Results ---")
                         print(json.dumps(test_metrics, indent=2))
+
+                        # After the eval, so n_applied is the real count rather than the
+                        # zero it would be if snapshotted at construction.
+                        uq_manifest["corruption"] = test_corruption.summary()
+
+                        # The I-value diagnostic is independent of --uq-records: it is
+                        # about the estimator, not the predictions, and the gate that decides
+                        # whether the estimator works at all must be runnable on a short job
+                        # that writes no record tables.
+                        _write_ivalue_diagnostic(
+                            trainer, run_output_dir / config['description']
+                        )
+                        _write_selection_diagnostic(
+                            selection_diagnostic, run_output_dir / config['description']
+                        )
+
+                        if record_splits:
+                            uq_dir = run_output_dir / config['description']
+                            uq_dir.mkdir(parents=True, exist_ok=True)
+                            if test_collector is not None:
+                                uq_artifacts['test'] = _save_uq_records(
+                                    test_collector, uq_dir, 'test', uq_manifest
+                                )
+                            # Val records exist for temperature scaling, which must be
+                            # fitted on data the reported test numbers never saw. Run
+                            # on the same best checkpoint, which is already loaded.
+                            if 'val' in record_splits and val_nodes_from_graph:
+                                val_collector = PredictionRecordCollector(
+                                    split='val', data_root=data_root
+                                )
+                                evaluate_model(
+                                    model=model_to_eval,
+                                    nodes_to_evaluate=val_nodes_from_graph,
+                                    loss_fn=criterion,
+                                    batch_size=args.batch_size,
+                                    device=device,
+                                    desc="UQ Val Records",
+                                    num_workers=getattr(args, 'val_num_workers', 4),
+                                    record_collector=val_collector,
+                                    ivalue_provider=_ivalue_provider(trainer),
+                                )
+                                uq_artifacts['val'] = _save_uq_records(
+                                    val_collector, uq_dir, 'val', uq_manifest
+                                )
+                            # Decision threshold, fitted on val and applied to test.
+                            # Separate from temperature scaling and not a substitute for
+                            # it: dividing a logit by T preserves its sign, so scaling
+                            # cannot move a single prediction across the boundary. Only a
+                            # threshold can, and on an imbalanced split that is the
+                            # difference between reporting the class prior and reporting
+                            # what the model actually discriminates.
+                            if getattr(args, 'tune_threshold', False):
+                                threshold_fit = _fit_decision_threshold(
+                                    uq_artifacts, uq_dir, args
+                                )
+                                if threshold_fit is not None:
+                                    uq_artifacts['threshold_fit'] = str(
+                                        uq_dir / 'threshold_fit.json'
+                                    )
+
+                            # A small, greppable marker so the web UI's log scraper can
+                            # link the artifacts without the 400k-row table ever
+                            # entering the metrics JSON it parses.
+                            print("--- UQ Artifacts ---")
+                            print(json.dumps(uq_artifacts))
+
+                        # Second fingerprint write, now that the results exist. This is
+                        # what an ensemble launcher reads to decide whether a member is
+                        # complete and mergeable -- head and detector included, so
+                        # averaging across mismatched heads is refusable rather than
+                        # silently wrong.
+                        write_run_fingerprint(
+                            determinism_path,
+                            run_id=run_id,
+                            seed=args.seed,
+                            ensemble_member=getattr(args, 'ensemble_member', None),
+                            ensemble_id=getattr(args, 'ensemble_id', None),
+                            results={
+                                config['description']: {
+                                    "detector": arch,
+                                    "uncertainty_head": args.uncertainty_head,
+                                    "mc_dropout_samples": args.mc_dropout_samples,
+                                    "best_epoch": best_epoch,
+                                    "best_val_accuracy": best_val_accuracy,
+                                    # Which criterion chose this checkpoint, and its score.
+                                    # Two runs selected on different metrics are not
+                                    # comparable, so it has to travel with the result.
+                                    "checkpoint_metric": getattr(args, 'checkpoint_metric', 'auroc'),
+                                    "best_selection_score": best_selection_score,
+                                    "checkpoint": best_model_checkpoint_path,
+                                    "test_accuracy": test_metrics.get('accuracy'),
+                                    "records": uq_artifacts,
+                                    "complete": True,
+                                }
+                            },
+                        )
                         # Log final test bias metrics (only if bias inference is enabled)
                         if getattr(args, 'enable_val_bias_inference', False):
                             bias_tracker.log_bias_metrics(epoch=best_epoch-1 if best_epoch > 0 else args.num_epochs-1, test_metrics=test_metrics)

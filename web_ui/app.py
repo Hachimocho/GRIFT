@@ -58,7 +58,7 @@ from web_ui.test_runner import TestRunner
 from test_helpers.data_graph_utils import (
     balance_nodes_by_subgroup, save_cached_nodes, load_cached_nodes,
     load_and_prepare_data_splits, check_graph_cache_compatibility,
-    find_existing_graph_caches
+    find_existing_graph_caches, resolve_ai_face_data_root
 )
 from dataloaders.HierarchicalDeepfakeDataloader import HierarchicalDeepfakeDataloader
 from graphs.HyperGraph import HyperGraph
@@ -69,7 +69,7 @@ from test_helpers.logging_utils import NullHandler, capture_output, log_exceptio
 from test_helpers.args_utils import parse_args
 from test_helpers.data_graph_utils import (
     run_threshold_grid_search, visualize_search_results, plot_subgroup_i_values,
-    load_and_prepare_data_splits, check_graph_cache_compatibility
+    load_and_prepare_data_splits, check_graph_cache_compatibility, resolve_ai_face_data_root
 )
 
 # Import visualization modules
@@ -145,6 +145,97 @@ app.json = CustomJSONProvider(app)
 config_manager = ConfigManager()
 gpu_queue_manager = GPUQueueManager()  # Replace test_runner with gpu_queue_manager
 
+
+def _parse_string_list(value):
+    """Normalize comma-delimited or list-like config values into a clean list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value).split(',') if item.strip()]
+
+
+def _normalize_accuracy(value):
+    """Normalize accuracy to 0-1 for UI tables regardless of log source."""
+    if value is None:
+        return None
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric_value / 100.0 if numeric_value > 1.5 else numeric_value
+
+
+def _format_uncertainty_items(summary):
+    """Convert uncertainty summary dicts into stable display items for templates."""
+    if not isinstance(summary, dict):
+        return []
+
+    items = []
+    for key in sorted(summary.keys()):
+        try:
+            numeric_value = float(summary[key])
+        except (TypeError, ValueError):
+            continue
+        label = key.replace('_', ' ').title()
+        items.append({
+            'name': key,
+            'label': label,
+            'value': numeric_value
+        })
+    return items
+
+
+def _enrich_run_for_display(run):
+    """Flatten result/config details so templates can render uncertainty cleanly."""
+    if not run:
+        return run
+
+    results = run.get('results') if isinstance(run.get('results'), dict) else {}
+    config = run.get('config') if isinstance(run.get('config'), dict) else {}
+
+    accuracy = _normalize_accuracy(results.get('final_accuracy', results.get('accuracy')))
+    if accuracy is not None:
+        run['accuracy'] = accuracy
+        run['accuracy_percent'] = accuracy * 100.0
+
+    loss = results.get('loss', results.get('average_loss'))
+    if loss is not None:
+        run['loss'] = loss
+
+    duration = results.get('duration')
+    if duration is not None:
+        run['duration'] = duration
+
+    run['architecture'] = results.get('architecture') or config.get('architecture') or config.get('architectures')
+    run['traversal_type'] = results.get('traversal_type') or config.get('traversal_type')
+
+    run['reduction_strategy'] = config.get('reduction_strategy')
+    run['reduction_percentage'] = config.get('reduction_percentage')
+    run['restoration_strategy'] = config.get('restoration_strategy')
+    run['restoration_percentage'] = config.get('restoration_percentage')
+
+    run['uncertainty_head'] = config.get('uncertainty_head', 'none')
+    run['mc_dropout_samples'] = config.get('mc_dropout_samples', 0)
+    run['graph_uncertainty_methods'] = _parse_string_list(config.get('graph_uncertainty_methods'))
+    run['build_val_test_edges'] = config.get('build_val_test_edges', True)
+
+    uncertainty_summary = results.get('uncertainty_summary') if isinstance(results.get('uncertainty_summary'), dict) else {}
+    run['uncertainty_summary'] = uncertainty_summary
+    run['uncertainty_items'] = _format_uncertainty_items(uncertainty_summary)
+    run['uncertainty_preview_items'] = run['uncertainty_items'][:3]
+
+    if 'race_gender_bias' not in run and 'race_gender_bias' in results:
+        run['race_gender_bias'] = results.get('race_gender_bias')
+    if 'gender_bias' not in run and 'gender_bias' in results:
+        run['gender_bias'] = results.get('gender_bias')
+    if 'race_bias' not in run and 'race_bias' in results:
+        run['race_bias'] = results.get('race_bias')
+    if 'average_attribute_bias' not in run and 'average_attribute_bias' in results:
+        run['average_attribute_bias'] = results.get('average_attribute_bias')
+
+    return run
+
 # Debug route to check if server is running
 @app.route('/debug/ping')
 def ping():
@@ -169,15 +260,8 @@ def index():
     configs = config_manager.list_configurations()
     runs = gpu_queue_manager.list_runs()  # Use gpu_queue_manager instead of test_runner
 
-    # Patch: promote results.final_accuracy to final_accuracy and accuracy for template compatibility
     for run in runs:
-        if 'final_accuracy' not in run:
-            accuracy = None
-            if 'results' in run and isinstance(run['results'], dict):
-                accuracy = run['results'].get('final_accuracy')
-            if accuracy is not None:
-                run['final_accuracy'] = accuracy
-                run['accuracy'] = accuracy / 100.0 if accuracy > 1.5 else accuracy  # for consistency with /results
+        _enrich_run_for_display(run)
 
     recent_runs = sorted(runs, key=lambda x: x.get('start_time') or '', reverse=True)[:10]
     
@@ -439,7 +523,9 @@ def generate_cache_background(
 ):
     """Background task to generate cache files."""
     try:
-        data_root = "/home/brg2890/major/datasets/ai-face"
+        import hashlib
+
+        data_root = resolve_ai_face_data_root()
         
         # Load and prepare data splits
         train_nodes, val_nodes, test_nodes, \
@@ -451,20 +537,22 @@ def generate_cache_background(
             print("Generating node cache...")
             node_cache_dir = "node_cache"
             os.makedirs(node_cache_dir, exist_ok=True)
-            
-            # Save nodes for each split
-            cache_data = {}
-            for split_name, nodes in [
-                ('train', train_nodes if balance_nodes else train_nodes_full),
-                ('val', val_nodes if balance_nodes else val_nodes_full),
-                ('test', test_nodes if balance_nodes else test_nodes_full)
-            ]:
-                cache_data[split_name] = nodes
-            
-            # Save to cache file
             cache_file = os.path.join(node_cache_dir, 'cached_nodes.pkl')
-            with open(cache_file, 'wb') as f:
-                dill.dump(cache_data, f)
+
+            # Route through the production writer rather than pickling by hand.
+            # This used to dump `{split: [nodes]}`, which matches none of the three
+            # shapes load_cached_nodes accepts -- it is not `{split: {'full':...,
+            # 'balanced':...}}`, has no top-level 'full' key, and is not a bare list --
+            # so every cache this button produced was silently rejected on load and the
+            # run fell back to a full dataset read.
+            save_cached_nodes(
+                train_nodes_full, val_nodes_full, test_nodes_full,
+                cache_file,
+                target_num_nodes=min(
+                    len(train_nodes_full), len(val_nodes_full), len(test_nodes_full),
+                    len(train_nodes) if balance_nodes else len(train_nodes_full),
+                ),
+            )
             print(f"Node cache saved to {cache_file}")
         
         # Generate graph cache if requested
@@ -539,22 +627,18 @@ def generate_cache_background(
             ]:
                 print(f"Building graph for {split_name} split...")
                 
-                # Build graph
-                if split_name == 'train':
-                    graph = dataloader._build_graph_standard(nodes_to_use, split_name)[0]
-                else:
-                    graph = HyperGraph(nodes_to_use)
-                
-                # Save edge list to cache
+                graph_build_result = dataloader._build_graph_standard(nodes_to_use, split_name)
+                graph = graph_build_result[0] if isinstance(graph_build_result, tuple) else graph_build_result
+
                 if graph:
-                    edge_list = graph.get_edge_list()
+                    node_ids = sorted(node.node_id for node in nodes_to_use)
+                    node_hash = hashlib.md5('|'.join(node_ids).encode()).hexdigest()[:8]
                     cache_filename = os.path.join(
                         graph_cache_dir,
-                        f"ai-face_{split_name}_{graph_type_str}_{'balanced' if balance_nodes else 'full'}_nodes_{len(nodes_to_use)}_q{quality_threshold:.3f}_s{symmetry_threshold:.3f}_e{embedding_threshold:.3f}_graph.pkl"
+                        f"ai-face_{split_name}_{graph_type_str}_{'balanced' if balance_nodes else 'full'}_nodes_{len(nodes_to_use)}_q{quality_threshold:.3f}_s{symmetry_threshold:.3f}_e{embedding_threshold:.3f}_hash{node_hash}_modefull_edges_edges.csv.gz"
                     )
-                    with open(cache_filename, 'wb') as f:
-                        dill.dump(edge_list, f)
-                    print(f"Graph cache saved to {cache_filename}")
+                    written = graph.export_edges_csv(cache_filename)
+                    print(f"Graph cache saved to {cache_filename} ({written} edges)")
         
         print("Cache generation completed successfully")
         
@@ -593,9 +677,10 @@ def configure():
 @app.route('/configure/<config_name>')
 def edit_config(config_name):
     """Edit existing configuration."""
-    config = config_manager.load_configuration(config_name)
-    if not config:
+    saved_config = config_manager.load_configuration(config_name)
+    if not saved_config:
         return redirect(url_for('configure'))
+    config = saved_config.get('config', saved_config)
     # Try to get attribute_metadata from config, else use default
     attribute_metadata = config.get('attribute_metadata') if config else None
     if not attribute_metadata:
@@ -799,6 +884,7 @@ def view_run(run_id):
     if not run:
         return redirect(url_for('runs'))
     
+    _enrich_run_for_display(run)
     logs = gpu_queue_manager.get_run_logs(run_id)
     return render_template('run_details.html', run=run, logs=logs)
 
@@ -822,39 +908,8 @@ def results():
     #     if 'accuracy' in run:
     #         print(f"DEBUG: Run {i}: accuracy value: {run['accuracy']}")
     
-    # Flatten results data for template compatibility
     for run in completed_runs:
-        if 'results' in run and run['results']:
-            # Flatten accuracy
-            if 'final_accuracy' in run['results']:
-                run['accuracy'] = run['results']['final_accuracy']
-            # Flatten loss and duration
-            if 'loss' in run['results']:
-                run['loss'] = run['results']['loss']
-            if 'duration' in run['results']:
-                run['duration'] = run['results']['duration']
-            # Flatten architecture and traversal
-            if 'architecture' in run['results']:
-                run['architecture'] = run['results']['architecture']
-            if 'traversal_type' in run['results']:
-                run['traversal_type'] = run['results']['traversal_type']
-        
-        # Add architecture and traversal from configuration (fallback)
-        if 'config' in run and run['config']:
-            config = run['config']
-            if 'architecture' not in run and 'architecture' in config:
-                run['architecture'] = config['architecture']
-            if 'traversal_type' not in run and 'traversal_type' in config:
-                run['traversal_type'] = config['traversal_type']
-            # Add reduction/restoration strategy info
-            if 'reduction_strategy' in config:
-                run['reduction_strategy'] = config['reduction_strategy']
-            if 'reduction_percentage' in config:
-                run['reduction_percentage'] = config['reduction_percentage']
-            if 'restoration_strategy' in config:
-                run['restoration_strategy'] = config['restoration_strategy']
-            if 'restoration_percentage' in config:
-                run['restoration_percentage'] = config['restoration_percentage']
+        _enrich_run_for_display(run)
     
     return render_template('results.html', runs=completed_runs)
 
@@ -877,38 +932,7 @@ def api_compare_results():
     for run_id in run_ids:
         run = gpu_queue_manager.get_run(run_id)
         if run:
-            # Flatten results data for easier access in comparison
-            if 'results' in run and run['results']:
-                # Copy bias metrics to top level for comparison
-                if 'race_gender_bias' in run['results']:
-                    run['race_gender_bias'] = run['results']['race_gender_bias']
-                if 'gender_bias' in run['results']:
-                    run['gender_bias'] = run['results']['gender_bias']
-                if 'race_bias' in run['results']:
-                    run['race_bias'] = run['results']['race_bias']
-                if 'average_attribute_bias' in run['results']:
-                    run['average_attribute_bias'] = run['results']['average_attribute_bias']
-                # Also flatten accuracy, loss, and duration for consistency
-                if 'final_accuracy' in run['results']:
-                    run['accuracy'] = run['results']['final_accuracy']
-                if 'loss' in run['results']:
-                    run['loss'] = run['results']['loss']
-                if 'duration' in run['results']:
-                    run['duration'] = run['results']['duration']
-                # Also flatten architecture and traversal from results
-                if 'architecture' in run['results']:
-                    run['architecture'] = run['results']['architecture']
-                if 'traversal_type' in run['results']:
-                    run['traversal_type'] = run['results']['traversal_type']
-            
-            # Add architecture and traversal from configuration (fallback)
-            if 'config' in run and run['config']:
-                config = run['config']
-                if 'architecture' not in run and 'architecture' in config:
-                    run['architecture'] = config['architecture']
-                if 'traversal_type' not in run and 'traversal_type' in config:
-                    run['traversal_type'] = config['traversal_type']
-            
+            _enrich_run_for_display(run)
             comparison['runs'].append(run)
     
     return jsonify(comparison)

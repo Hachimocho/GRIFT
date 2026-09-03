@@ -33,7 +33,7 @@ class RandomTraversal(Traversal):
         self.pointers = []
         self.visited_nodes.clear()  # Clear visited nodes on reset
         for _ in range(self.num_pointers):
-            self.pointers.append({'current_node': self.graph.get_random_node()})
+            self.pointers.append({'current_node': self.graph.get_random_node(rng=self.rng)})
         
     def traverse(self, batch_size=32):
         """
@@ -64,11 +64,11 @@ class RandomTraversal(Traversal):
                 
                 # If there are no adjacent nodes or with small probability,
                 # move the pointer to a random node
-                if not adj_nodes or random.random() < 0.001:  # .1% chance to jump randomly
-                    pointer['current_node'] = self.graph.get_random_node()
+                if not adj_nodes or self.rng.random() < 0.001:  # .1% chance to jump randomly
+                    pointer['current_node'] = self.graph.get_random_node(rng=self.rng)
                 else:
                     # Randomly select an adjacent node
-                    pointer['current_node'] = random.choice(adj_nodes)
+                    pointer['current_node'] = self.rng.choice(adj_nodes)
                 
                 # Add current node if not already visited
                 if pointer['current_node'] not in self.visited_nodes:
