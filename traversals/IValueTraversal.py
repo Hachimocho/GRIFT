@@ -44,7 +44,7 @@ from nodes.atrnode import AttributeNode
 from traversals.Traversal import Traversal
 
 #: How `IValueTraversal` picks a candidate from the pool.
-SELECTION_MODES = ("max", "band", "min")
+SELECTION_MODES = ("max", "band", "min", "midband")
 
 #: Graph types whose clusters are disjoint, so a pointer cannot walk between them.
 CLUSTERED_GRAPH_PREFIX = "clustered"
@@ -102,11 +102,17 @@ class IValueTraversal(Traversal):
         # the hypothesis being that the very hardest samples are outliers and label noise
         # on a 87.55%-imbalanced corpus, so the useful signal sits somewhere in the middle.
         # `min` is the deliberate opposite, kept as a control: if `min` also beats i.i.d.
-        # then the ranking is not what is doing the work.
+        # then the ranking is not what is doing the work. `midband` is `band`'s smooth
+        # analogue: instead of a hard cutoff at `selection_band`'s edges, every candidate is
+        # eligible with a probability that rises from 0 at the low edge, plateaus over the
+        # band's middle, and falls back to 0 at the high edge -- see
+        # `trainers.capabilities.loss_weighting.trapezoid_desirability`, which this reuses
+        # rather than reimplements, so the "avoid both extremes" shape cannot drift between
+        # the selection and loss-weighting versions of the same idea.
         #
-        # A quantile over the ~8 k-NN neighbours a bare walk sees is noise, so `band` is
-        # only meaningful with `candidate_pool` set -- Phase 0 measured those neighbours at
-        # 2.3x less batch diversity than i.i.d., which is why the pool exists.
+        # A quantile over the ~8 k-NN neighbours a bare walk sees is noise, so `band` and
+        # `midband` are only meaningful with `candidate_pool` set -- Phase 0 measured those
+        # neighbours at 2.3x less batch diversity than i.i.d., which is why the pool exists.
         if selection_mode not in SELECTION_MODES:
             raise ValueError(
                 f"unknown selection_mode {selection_mode!r}; choose from "
@@ -226,6 +232,12 @@ class IValueTraversal(Traversal):
         quantile range, so it is a *rank* criterion and unaffected by the I-value's scale --
         which matters because different estimators output wildly different ranges (the legacy
         family sits in a 0.02-wide band around 0.31; the fixed ones are unbounded).
+
+        `midband` also ranks, then draws from *every* candidate with probability proportional
+        to `trapezoid_desirability` -- 0 at and beyond `selection_band`'s edges, 1 on a
+        plateau inside them. Unlike `band`, a candidate just outside the window is not
+        impossible, only unlikely, and one just inside is not certain, only likely: the
+        distribution is smooth rather than a hard yes/no.
         """
         if not candidates:
             return None
@@ -236,6 +248,22 @@ class IValueTraversal(Traversal):
             return candidates[i_values.index(max(i_values))]
         if self.selection_mode == "min":
             return candidates[i_values.index(min(i_values))]
+
+        if self.selection_mode == "midband":
+            from trainers.capabilities.loss_weighting import ivalue_weights
+
+            # Reuses the loss-weighting module's `midband` shape rather than reimplementing
+            # it, so this and `ivalue_loss_weight=midband` cannot silently diverge. `clip`
+            # here only sets how sharply the plateau is preferred over the tails as a
+            # *sampling* probability -- it has no relationship to any loss magnitude, so the
+            # default is used rather than threading `--ivalue-weight-clip` through, which
+            # belongs to the loss-weighting arm.
+            weights = ivalue_weights(i_values, mode="midband", band=self.selection_band)
+            if weights is None:
+                return candidates[self.rng.randrange(len(candidates))]
+            return candidates[self.rng.choices(
+                range(len(candidates)), weights=weights.tolist(), k=1
+            )[0]]
 
         # band: rank the candidates, keep the requested slice, draw from it.
         order = sorted(range(len(candidates)), key=lambda index: i_values[index])

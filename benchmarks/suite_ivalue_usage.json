@@ -1,6 +1,6 @@
 {
   "ivalue_usage": {
-    "description": "Phase 1: seven ways of USING an I-value, against the i.i.d. sampler that beats all of them so far. Selecting by predicted I-value has lost three independent comparisons, and Phase 0 found the likely reason: an i-value walk's batches are 2.3x less diverse than i.i.d. ones (mean pairwise embedding distance 0.0385 vs 0.0872, p10 0.0121 vs 0.0623), because its argmax ranges over the current node's k-NN neighbours -- similar faces by construction. So treat_pool_only is the headline arm: it keeps the estimator and the selection rule and changes only the locality. The rest test mechanisms that are not 'pick the argmax': weighting instead of selecting (keeps i.i.d. coverage), banning nodes whose measured gain stays negative (38% of trained samples show one), targeting weak demographic GROUPS but sampling uniformly inside them (group means cancel per-sample label noise), and a mid-quantile band instead of the extreme. Every arm trains on exactly 10,000 nodes/epoch for 15 epochs and records its own selection diagnostic, so what each arm trained on is measured rather than reconstructed afterwards.",
+    "description": "Phase 1: ten ways of USING an I-value, against the i.i.d. sampler that beats all of them so far. Selecting by predicted I-value has lost three independent comparisons, and Phase 0 found the likely reason: an i-value walk's batches are 2.3x less diverse than i.i.d. ones (mean pairwise embedding distance 0.0385 vs 0.0872, p10 0.0121 vs 0.0623), because its argmax ranges over the current node's k-NN neighbours -- similar faces by construction. So treat_pool_only is the headline arm: it keeps the estimator and the selection rule and changes only the locality. The rest test mechanisms that are not 'pick the argmax': weighting instead of selecting (keeps i.i.d. coverage), banning nodes whose measured gain stays negative (38% of trained samples show one), targeting weak demographic GROUPS but sampling uniformly inside them (group means cancel per-sample label noise), a mid-quantile band instead of the extreme (treat_band_mid_pool: a hard cutoff), and its smooth analogue (treat_midband_*: every candidate stays eligible with a probability/weight that peaks on a mid-high plateau and tapers -- never zero -- toward both the low end, already mastered, and the high end, where mislabels and corrupted samples land on this 87.55%-imbalanced corpus, rather than hard-excluding either). Every arm trains on exactly 10,000 nodes/epoch for 15 epochs and records its own selection diagnostic, so what each arm trained on is measured rather than reconstructed afterwards.",
     "reference": {
       "architectures": ["resnestdf"],
       "traversal_type": "comprehensive",
@@ -79,6 +79,34 @@
           "ivalue_diagnostic": true,
           "ivalue_candidate_pool": 128,
           "ivalue_loss_weight": "rank"
+        },
+        "treat_midband_pool": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128,
+          "ivalue_selection": "midband",
+          "ivalue_band": "0.35,0.9"
+        },
+        "treat_midband_weight": {
+          "traversal_type": "comprehensive",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_loss_weight": "midband",
+          "ivalue_band": "0.35,0.9",
+          "ivalue_weight_clip": 2.0
+        },
+        "treat_midband_pool_plus_weight": {
+          "traversal_type": "i-value",
+          "ivalue_reward": "learning_gain",
+          "ivalue_state_features": true,
+          "ivalue_diagnostic": true,
+          "ivalue_candidate_pool": 128,
+          "ivalue_selection": "midband",
+          "ivalue_loss_weight": "midband",
+          "ivalue_band": "0.35,0.9"
         }
       }
     }

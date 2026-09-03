@@ -11,24 +11,89 @@ Why one module: `CapabilityManager.train_with_traversal` routes *every* traversa
 `BasicTrainingCapability` is unreachable exactly when the I-value it needs is available. That
 is not a hypothetical -- the first version of this weighting was silently dead for that reason,
 and the arm would have run as its own control. Both paths now call the same function.
+
+`midband` is also reused, unmodified, by `IValueTraversal`'s `selection_mode="midband"` --
+see its docstring for why sharing this implementation (rather than writing the shape twice)
+matters here specifically.
 """
 
 import torch
 
 #: How an I-value may scale a sample's loss.
 #:
-#: ``linear`` scales by the I-value normalised within the batch; ``rank`` scales by its rank,
-#: which is invariant to the estimator's output range -- and that matters, because the legacy
-#: estimators live in a 0.02-wide band around 0.31 while the fixed ones are unbounded.
-LOSS_WEIGHT_MODES = ("none", "linear", "rank")
+#: ``linear`` and ``rank`` are monotonic: the highest I-value always gets the most weight,
+#: which is the wrong shape for "train on what the model half-knows" -- the very top of the
+#: I-value range is exactly where mislabelled and corrupted samples land (nothing about a high
+#: I-value distinguishes "hard" from "wrong"), and the very bottom is samples already mastered.
+#: ``midband`` scales by ``trapezoid_desirability`` instead, which peaks on a plateau inside
+#: `band` and tapers to zero at both ends -- a smooth, distribution-shaped analogue of
+#: `IValueTraversal`'s hard-cutoff `selection_mode="band"`, sharing its `band` parameter.
+#:
+#: ``rank`` scales by the I-value's rank within the batch, which is invariant to the
+#: estimator's output range -- and that matters, because the legacy estimators live in a
+#: 0.02-wide band around 0.31 while the fixed ones are unbounded. `midband` inherits this by
+#: also ranking first, for the same reason.
+LOSS_WEIGHT_MODES = ("none", "linear", "rank", "midband")
 
 #: Weights are clipped to `[1/clip, clip]`, geometric about 1 so the mean weight stays ~1 and
 #: a weighted arm remains comparable to its control in total gradient magnitude. Unbounded
 #: weights on a target this heavy-tailed (kurtosis +45) would let a few samples own the step.
 DEFAULT_WEIGHT_CLIP = 2.0
 
+#: `--ivalue-band`'s default, reused here so `midband` has a sane shape with no flags of its
+#: own -- see `trapezoid_desirability` for what the two numbers mean.
+DEFAULT_BAND = (0.4, 0.7)
 
-def ivalue_weights(values, mode, clip=DEFAULT_WEIGHT_CLIP, device=None):
+#: Fraction of the band's width spent ramping up (and, symmetrically, ramping down) at each
+#: edge, rather than jumping straight from 0 to full weight. 0.3 leaves a plateau covering the
+#: middle 40% of the band -- narrow enough that "mid-band" still means something, wide enough
+#: that the plateau is not a knife-edge a single rank can fall off of. There is no principled
+#: value here; it is a shape choice, which is exactly why it is a constant and not another CLI
+#: flag -- one polished trapezoid beats a family of untested ones.
+RAMP_FRACTION = 0.3
+
+
+def trapezoid_desirability(scaled, low, high, ramp_fraction=RAMP_FRACTION):
+    """`d in [0, 1]`, 0 at and beyond `low`/`high`, 1 on a plateau strictly inside them.
+
+    `scaled` is a rank-quantile in `[0, 1]` (0 = lowest I-value in the batch, 1 = highest),
+    exactly the quantity `ivalue_weights(mode="rank")` already computes -- this is a drop-in
+    replacement for that mode's monotonic ramp, not a new quantity. Works identically on a
+    python float or a `torch.Tensor` of any shape: every operation below is elementwise and
+    defined for both.
+
+    The ramp is a *fraction* of the band's width, not an absolute quantile amount, so the
+    plateau always occupies the band's middle `1 - 2 * ramp_fraction` (40% at the default
+    0.3) -- a narrow band gets a narrow plateau rather than losing it outright. Only a
+    `ramp_fraction >= 0.5` removes the plateau entirely, degrading to a pure triangle (tent)
+    peaking at the band's midpoint; the default is well under that.
+    """
+    low, high = float(low), float(high)
+    if high <= low:
+        raise ValueError(f"band must have low < high, got ({low}, {high})")
+
+    ramp = max(1e-6, ramp_fraction * (high - low))
+    # Two triangular ramps: one rising out of `low`, one falling into `high`. Their pointwise
+    # minimum is 0 outside the band, rises to 1 by `low + ramp`, stays at 1 (whichever ramp
+    # is not yet saturated) until `high - ramp`, then falls back to 0 by `high` -- a trapezoid,
+    # with the narrow-band/triangle case falling out for free when the two ramps cross before
+    # either reaches 1.
+    rising = (scaled - low) / ramp
+    falling = (high - scaled) / ramp
+    return _clamp01(_min(rising, falling))
+
+
+def _min(a, b):
+    return torch.minimum(a, b) if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor) \
+        else min(a, b)
+
+
+def _clamp01(value):
+    return value.clamp(0.0, 1.0) if isinstance(value, torch.Tensor) \
+        else max(0.0, min(1.0, value))
+
+
+def ivalue_weights(values, mode, clip=DEFAULT_WEIGHT_CLIP, band=DEFAULT_BAND, device=None):
     """Bounded per-sample weights from raw I-values. Returns None when there is no signal."""
     if mode == "none" or values is None or len(values) == 0:
         return None
@@ -44,13 +109,17 @@ def ivalue_weights(values, mode, clip=DEFAULT_WEIGHT_CLIP, device=None):
     if raw.numel() == 1:
         return torch.ones_like(raw)
 
-    if mode == "rank":
+    if mode in ("rank", "midband"):
         order = raw.argsort().argsort().float()
         scaled = order / float(raw.numel() - 1)
     else:
         spread = float(raw.max() - raw.min())
         scaled = ((raw - raw.min()) / spread if spread > 1e-12
                   else torch.full_like(raw, 0.5))
+
+    if mode == "midband":
+        low, high = band
+        scaled = trapezoid_desirability(scaled, low, high)
 
     clip = max(1.0, float(clip))
     return clip ** (2.0 * scaled - 1.0)
@@ -64,7 +133,7 @@ class LossWeighter:
     weight has to be reported alongside the accuracy or the comparison is not readable.
     """
 
-    def __init__(self, mode="none", clip=DEFAULT_WEIGHT_CLIP):
+    def __init__(self, mode="none", clip=DEFAULT_WEIGHT_CLIP, band=DEFAULT_BAND):
         if mode not in LOSS_WEIGHT_MODES:
             raise ValueError(
                 f"unknown loss weight mode {mode!r}; choose from "
@@ -72,6 +141,10 @@ class LossWeighter:
             )
         self.mode = mode
         self.clip = float(clip)
+        # Unused by every mode except `midband`; stored regardless so `apply` needs no
+        # special-casing and a caller can always pass the same `--ivalue-band` value it
+        # already threads to `IValueTraversal`.
+        self.band = tuple(band)
         self.weight_applied = 0.0
         self.weighted_samples = 0
 
@@ -83,7 +156,7 @@ class LossWeighter:
         """Weighted mean of `per_sample_loss`; the plain mean when there is no signal."""
         if not self.enabled:
             return per_sample_loss.mean()
-        weights = ivalue_weights(values, self.mode, self.clip,
+        weights = ivalue_weights(values, self.mode, self.clip, band=self.band,
                                  device=per_sample_loss.device)
         if weights is None or weights.numel() != per_sample_loss.numel():
             return per_sample_loss.mean()

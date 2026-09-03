@@ -71,7 +71,7 @@ from trainers.capabilities.BasicTrainingCapability import MAX_CONSECUTIVE_EMPTY_
 from trainers.capabilities.node_state import (
     DEFAULT_UNSEEN_PRIOR, NodeTrainingState, STATE_FEATURE_COUNT, STATE_LOSS_INDEX,
 )
-from trainers.capabilities.loss_weighting import DEFAULT_WEIGHT_CLIP, LossWeighter
+from trainers.capabilities.loss_weighting import DEFAULT_BAND, DEFAULT_WEIGHT_CLIP, LossWeighter
 from trainers.capabilities.selection_diagnostic import SelectionDiagnostic
 from trainers.capabilities.uncertainty_logging import (
     uncertainty_summary_for_logging as _uncertainty_summary_for_logging,
@@ -145,6 +145,7 @@ class DQNCapability:
         self.weighter = LossWeighter(
             mode=getattr(trainer, 'ivalue_loss_weight', None) or 'none',
             clip=getattr(trainer, 'ivalue_weight_clip', None) or DEFAULT_WEIGHT_CLIP,
+            band=getattr(trainer, 'ivalue_selection_band', None) or DEFAULT_BAND,
         )
         self.unseen_prior = getattr(trainer, 'ivalue_unseen_prior', None) or DEFAULT_UNSEEN_PRIOR
         self.node_state = (

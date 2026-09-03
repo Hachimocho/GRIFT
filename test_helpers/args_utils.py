@@ -374,23 +374,36 @@ def parse_args(argv=None):
                         help="Let the comprehensive traversal's visited set persist across "
                              "epochs, making it a real exhaustive curriculum. Without this it "
                              "resamples every epoch and can never run out of data.")
-    parser.add_argument('--ivalue-selection', choices=('max', 'band', 'min'), default='max',
+    parser.add_argument('--ivalue-selection', choices=('max', 'band', 'min', 'midband'),
+                        default='max',
                         help="How a candidate is chosen. 'max' takes the most informative, "
                              "the historical premise. 'band' draws from a quantile RANGE "
                              "(--ivalue-band), on the hypothesis that the very hardest "
                              "samples are outliers and mislabels on an 87.55%%-imbalanced "
-                             "corpus. 'min' is the deliberate opposite, kept as a control. "
-                             "'band' needs --ivalue-candidate-pool to mean anything: a "
-                             "quantile over ~8 neighbours is noise.")
+                             "corpus. 'midband' is 'band' with a smooth probability instead "
+                             "of a hard cutoff: every candidate is eligible, weighted highest "
+                             "on a plateau inside --ivalue-band and tapering to its lowest "
+                             "weight at and beyond the edges, so nothing is impossible, only "
+                             "more or less likely. 'min' is the deliberate opposite of 'max', "
+                             "kept as a control. 'band'/'midband' need "
+                             "--ivalue-candidate-pool to mean anything: a quantile over ~8 "
+                             "neighbours is noise.")
     parser.add_argument('--ivalue-band', default='0.4,0.7',
-                        help="Quantile range for --ivalue-selection band, as low,high.")
-    parser.add_argument('--ivalue-loss-weight', choices=('none', 'linear', 'rank'),
+                        help="Quantile range for --ivalue-selection band/midband and "
+                             "--ivalue-loss-weight midband, as low,high.")
+    parser.add_argument('--ivalue-loss-weight', choices=('none', 'linear', 'rank', 'midband'),
                         default='none',
                         help="Scale each sample's loss by its I-value instead of selecting "
                              "with it, keeping i.i.d. sampling and therefore its batch "
-                             "diversity. 'rank' is invariant to the estimator's output scale. "
-                             "Applies to the basic training path and only with "
-                             "--uncertainty-head none.")
+                             "diversity. 'rank' and 'linear' are monotonic: the single "
+                             "highest I-value always gets the most weight, which is also "
+                             "where mislabelled and corrupted samples land on this corpus. "
+                             "'midband' instead weights highest on a plateau inside "
+                             "--ivalue-band, tapering toward both the low end (already "
+                             "mastered) and the high end (too hard, or wrong) -- the "
+                             "loss-weighting analogue of --ivalue-selection midband, sharing "
+                             "its shape and its --ivalue-band. Applies to the basic training "
+                             "path and only with --uncertainty-head none.")
     parser.add_argument('--ivalue-weight-clip', type=float, default=2.0,
                         help="Loss weights are bounded to [1/clip, clip], geometric about 1.")
     parser.add_argument('--ivalue-ban-negative-gain', type=int, default=0,

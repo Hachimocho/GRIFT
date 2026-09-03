@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.cuda.amp import GradScaler
 
 from trainers.capabilities.loss_weighting import (
-    DEFAULT_WEIGHT_CLIP, LOSS_WEIGHT_MODES, LossWeighter,
+    DEFAULT_BAND, DEFAULT_WEIGHT_CLIP, LOSS_WEIGHT_MODES, LossWeighter,
 )
 
 #: Consecutive empty traversal batches tolerated before an epoch is declared exhausted.
@@ -51,6 +51,7 @@ class BasicTrainingCapability:
         self.weighter = LossWeighter(
             mode=getattr(trainer, 'ivalue_loss_weight', None) or 'none',
             clip=getattr(trainer, 'ivalue_weight_clip', None) or DEFAULT_WEIGHT_CLIP,
+            band=getattr(trainer, 'ivalue_selection_band', None) or DEFAULT_BAND,
         )
         self.scaler = GradScaler()
         

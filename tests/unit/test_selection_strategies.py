@@ -123,3 +123,72 @@ def test_group_targeting_restricts_the_drawn_pool():
     for node in extras:
         assert node.attributes["Ground Truth Race"] == "A", \
             "only targeted groups may enter the pool"
+
+
+# --------------------------------------------------------------------------- #
+# midband: `band`'s smooth analogue -- a weighted distribution, not a hard cutoff
+# --------------------------------------------------------------------------- #
+
+def test_midband_favours_the_middle_over_many_draws():
+    """Not a hard window like `band`: over many draws, the plateau should be picked most
+    often, but the extremes must remain reachable -- exactly the "unlikely, not
+    impossible" contract `_pick`'s docstring makes."""
+    import collections
+
+    graph, nodes, _e = build_ring_graph(count=20)
+    candidates = nodes[:10]
+    values = [i / 9.0 for i in range(10)]  # ranks 0..9 map to quantiles 0..1 exactly
+    walk = _traversal(graph, selection_mode="midband", selection_band=(0.4, 0.7),
+                      candidate_pool=0)
+    walk._rng = __import__("random").Random(11)
+
+    counts = collections.Counter(
+        candidates.index(walk._pick(candidates, values)) for _ in range(4000)
+    )
+    # Quantile 0.5 (index 4-5) sits on the plateau; quantiles 0 and 1 (indices 0, 9) sit
+    # outside the band entirely.
+    assert counts[4] + counts[5] > counts[0] + counts[9]
+    # "Unlikely, not impossible": the extremes must still appear sometimes.
+    assert counts[0] > 0 and counts[9] > 0
+
+
+def test_midband_is_reproducible_under_a_fixed_seed():
+    graph, nodes, _e = build_ring_graph(count=20)
+    candidates = nodes[:10]
+    values = [i / 9.0 for i in range(10)]
+
+    walk_a = _traversal(graph, selection_mode="midband", selection_band=(0.4, 0.7))
+    walk_a._rng = __import__("random").Random(3)
+    picks_a = [candidates.index(walk_a._pick(candidates, values)) for _ in range(50)]
+
+    walk_b = _traversal(graph, selection_mode="midband", selection_band=(0.4, 0.7))
+    walk_b._rng = __import__("random").Random(3)
+    picks_b = [candidates.index(walk_b._pick(candidates, values)) for _ in range(50)]
+
+    assert picks_a == picks_b
+
+
+def test_midband_is_scale_free_like_band():
+    """Same rationale as `band`: a rank criterion must be unaffected by the estimator's
+    raw output range."""
+    graph, nodes, _e = build_ring_graph(count=40)
+    candidates = nodes[:8]
+    walk = _traversal(graph, selection_mode="midband", selection_band=(0.3, 0.7))
+    small = [0.310, 0.311, 0.312, 0.313, 0.314, 0.315, 0.316, 0.317]
+    large = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
+
+    walk._rng = __import__("random").Random(7)
+    first = candidates.index(walk._pick(candidates, small))
+    walk._rng = __import__("random").Random(7)
+    second = candidates.index(walk._pick(candidates, large))
+    assert first == second
+
+
+def test_midband_falls_back_to_uniform_when_ivalues_are_unusable():
+    """`ivalue_weights` returns `None` when every value is non-finite -- `_pick` must not
+    propagate that as a crash."""
+    graph, nodes, _e = build_ring_graph(count=8)
+    candidates = nodes[:4]
+    walk = _traversal(graph, selection_mode="midband")
+    picked = walk._pick(candidates, [float("nan")] * 4)
+    assert picked in candidates

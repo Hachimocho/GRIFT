@@ -15,6 +15,7 @@ from trainers.capabilities.loss_weighting import (
     DEFAULT_WEIGHT_CLIP,
     LOSS_WEIGHT_MODES,
     LossWeighter,
+    ivalue_weights,
 )
 
 
@@ -31,16 +32,17 @@ class _Trainer:
         return self._values[node]
 
 
-def _capability(values, mode="linear", clip=2.0):
-    trainer = _Trainer(values, ivalue_loss_weight=mode, ivalue_weight_clip=clip)
+def _capability(values, mode="linear", clip=2.0, band=(0.4, 0.7)):
+    trainer = _Trainer(values, ivalue_loss_weight=mode, ivalue_weight_clip=clip,
+                       ivalue_selection_band=band)
     capability = BasicTrainingCapability.__new__(BasicTrainingCapability)
     capability.trainer = trainer
-    capability.weighter = LossWeighter(mode=mode, clip=clip)
+    capability.weighter = LossWeighter(mode=mode, clip=clip, band=band)
     return capability
 
 
 def test_modes_and_default_clip():
-    assert LOSS_WEIGHT_MODES == ("none", "linear", "rank")
+    assert LOSS_WEIGHT_MODES == ("none", "linear", "rank", "midband")
     assert DEFAULT_WEIGHT_CLIP > 1.0
 
 
@@ -154,3 +156,78 @@ def test_both_training_paths_share_one_weighter():
     assert dqn.weighter.enabled and dqn.weighter.mode == "rank"
     basic = _capability({}, mode="rank")
     assert type(dqn.weighter) is type(basic.weighter)
+
+
+# --------------------------------------------------------------------------- #
+# midband: weight highest in the middle-high of the range, tapering at both ends
+# --------------------------------------------------------------------------- #
+
+def test_midband_gives_the_lowest_weight_to_both_extremes():
+    """The property distinguishing `midband` from `rank`/`linear`: the single *highest*
+    I-value must not be the most heavily weighted sample, because on this corpus that is
+    also where mislabelled and corrupted samples land."""
+    nodes = [f"n{i}" for i in range(9)]
+    capability = _capability({n: float(i) for i, n in enumerate(nodes)},
+                             mode="midband", band=(0.3, 0.7))
+    logits = torch.zeros(9)
+    labels = torch.ones(9)
+    weights = ivalue_weights([float(i) for i in range(9)], "midband",
+                             clip=2.0, band=(0.3, 0.7))
+    lowest_ivalue_weight = weights[0].item()
+    highest_ivalue_weight = weights[-1].item()
+    middle_weight = weights[4].item()
+    assert middle_weight > lowest_ivalue_weight
+    assert middle_weight > highest_ivalue_weight
+    # Symmetric band (0.3, 0.7 around a midpoint of 0.5) -> the two extremes should be
+    # weighted about the same, not one favoured over the other.
+    assert lowest_ivalue_weight == pytest.approx(highest_ivalue_weight, abs=0.05)
+
+
+def test_midband_plateau_sits_inside_the_band_at_the_clip():
+    """Deep inside the band, weight should saturate at `clip` -- the same ceiling `rank`
+    reaches at its single best sample, so the two modes are on a comparable scale."""
+    values = [i / 99.0 for i in range(100)]  # ranks are exactly `values` here
+    weights = ivalue_weights(values, "midband", clip=2.0, band=(0.4, 0.7))
+    # Rank 0.55 sits in the middle of (0.4, 0.7), well past the 0.3-width ramp on either
+    # side (ramp = 0.3 * 0.3 = 0.09, so the plateau covers roughly [0.49, 0.61]).
+    middle_index = int(0.55 * 99)
+    assert weights[middle_index].item() == pytest.approx(2.0, abs=1e-3)
+
+
+def test_midband_stays_inside_the_clip_bounds():
+    values = [float(i) for i in range(50)]
+    weights = ivalue_weights(values, "midband", clip=2.0, band=(0.3, 0.8))
+    assert torch.all(weights >= 0.5 - 1e-6)
+    assert torch.all(weights <= 2.0 + 1e-6)
+
+
+def test_midband_is_rank_invariant_like_rank_mode():
+    """Same rationale as `rank`: the estimator's raw output scale must not matter."""
+    ranks = list(range(10))
+    small_scale = [r * 0.001 + 0.31 for r in ranks]
+    large_scale = [r * 1000.0 + 10.0 for r in ranks]
+    small_weights = ivalue_weights(small_scale, "midband", clip=2.0, band=(0.3, 0.7))
+    large_weights = ivalue_weights(large_scale, "midband", clip=2.0, band=(0.3, 0.7))
+    assert torch.allclose(small_weights, large_weights, atol=1e-6)
+
+
+def test_midband_default_band_matches_selection_bands_default():
+    """No flags of its own -- `midband` inherits --ivalue-band's default exactly."""
+    from trainers.capabilities.loss_weighting import DEFAULT_BAND
+    assert DEFAULT_BAND == (0.4, 0.7)
+    weighter = LossWeighter(mode="midband")
+    assert weighter.band == (0.4, 0.7)
+
+
+def test_midband_uses_the_bands_it_is_given():
+    """Two different bands over the same I-values must produce different weight shapes,
+    or the parameter is not actually reaching the computation."""
+    values = [float(i) for i in range(20)]
+    low_band = ivalue_weights(values, "midband", clip=2.0, band=(0.0, 0.3))
+    high_band = ivalue_weights(values, "midband", clip=2.0, band=(0.7, 1.0))
+    assert not torch.allclose(low_band, high_band)
+    # Index 5 (rank ~0.26) sits inside the low band and outside the high one; index 15
+    # (rank ~0.79) is the mirror image. Index 0 is excluded from *both* -- it sits exactly
+    # on (0.0, 0.3)'s edge, not inside it -- so it is deliberately not used here.
+    assert low_band[5] > high_band[5]
+    assert high_band[15] > low_band[15]
